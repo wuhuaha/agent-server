@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-server.local/schemas/realtime/session-envelope.schema.json",
+  "title": "Realtime Session Envelope",
+  "type": "object",
+  "required": ["type", "seq", "ts", "payload"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "session.start",
+        "session.update",
+        "audio.in.append",
+        "audio.in.commit",
+        "text.in",
+        "image.in",
+        "response.start",
+        "response.chunk",
+        "audio.out.chunk",
+        "session.end",
+        "error"
+      ]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "auth": {
+      "type": "object"
+    },
+    "device": {
+      "type": "object"
+    },
+    "trace": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

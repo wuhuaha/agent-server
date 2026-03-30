@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-server-desktop-client"
+version = "0.1.0"
+description = "Desktop debug client for the agent-server RTOS WebSocket profile."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "websockets>=15.0,<16.0",
+]
+
+[project.scripts]
+agent-server-desktop-client = "agent_server_desktop_client.app:main"
+agent-server-desktop-runner = "agent_server_desktop_client.runner:main"
+agent-server-rtos-mock = "agent_server_desktop_client.rtos_mock:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_server_desktop_client"]

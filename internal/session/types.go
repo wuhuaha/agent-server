@@ -1,0 +1,26 @@
+package session
+
+type State string
+
+type CloseReason string
+
+const (
+	StateIdle     State = "idle"
+	StateArmed    State = "armed"
+	StateActive   State = "active"
+	StateThinking State = "thinking"
+	StateSpeaking State = "speaking"
+	StateClosing  State = "closing"
+)
+
+const (
+	CloseReasonClientStop    CloseReason = "client_stop"
+	CloseReasonServerStop    CloseReason = "server_stop"
+	CloseReasonCompleted     CloseReason = "completed"
+	CloseReasonWakeCancelled CloseReason = "wake_cancelled"
+	CloseReasonDeviceSleep   CloseReason = "device_sleep"
+	CloseReasonNetworkStop   CloseReason = "network_shutdown"
+	CloseReasonIdle          CloseReason = "idle_timeout"
+	CloseReasonMaxDuration   CloseReason = "max_duration"
+	CloseReasonError         CloseReason = "error"
+)

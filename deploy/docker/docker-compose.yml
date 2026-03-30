@@ -1,0 +1,12 @@
+services:
+  agentd:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      AGENT_SERVER_ADDR: :8080
+      AGENT_SERVER_ENV: docker
+      AGENT_SERVER_NAME: agent-server
+      AGENT_SERVER_VERSION: 0.1.0-dev
+    ports:
+      - "8080:8080"

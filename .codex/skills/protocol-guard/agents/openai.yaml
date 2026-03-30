@@ -1,0 +1,6 @@
+interface:
+  display_name: "Protocol Guard"
+  short_description: "Tracks wire contracts and schema drift."
+  default_prompt: "Use $protocol-guard to update the realtime protocol, schema, and compatibility notes together."
+policy:
+  allow_implicit_invocation: true

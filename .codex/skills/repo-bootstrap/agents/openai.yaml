@@ -1,0 +1,6 @@
+interface:
+  display_name: "Repo Bootstrap"
+  short_description: "Keeps plans, context, and logs aligned."
+  default_prompt: "Use $repo-bootstrap to initialize or refresh AGENTS.md, plan.md, and project memory for this repository."
+policy:
+  allow_implicit_invocation: true

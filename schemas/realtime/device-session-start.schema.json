@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-server.local/schemas/realtime/device-session-start.schema.json",
+  "title": "RTOS Device Session Start Payload",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "device",
+    "audio",
+    "session",
+    "capabilities"
+  ],
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "const": "rtos-ws-v0"
+    },
+    "device": {
+      "type": "object",
+      "required": [
+        "device_id",
+        "client_type"
+      ],
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Client implementation identifier. The current server requires a non-empty string and the docs use values such as rtos, desktop-script, and rtos-mock."
+        },
+        "firmware_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "audio": {
+      "type": "object",
+      "required": [
+        "codec",
+        "sample_rate_hz",
+        "channels"
+      ],
+      "properties": {
+        "codec": {
+          "type": "string",
+          "enum": [
+            "pcm16le",
+            "opus"
+          ],
+          "description": "Wire codec for inbound binary audio. opus currently means speech-oriented SILK-only packets that are normalized by the Go gateway before ASR."
+        },
+        "sample_rate_hz": {
+          "type": "integer",
+          "minimum": 8000,
+          "description": "Must match the discovery-advertised realtime input sample rate. The bootstrap default is 16000."
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "description": "Must match the discovery-advertised realtime input channel count. The bootstrap default is 1."
+        }
+      },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "required": [
+        "mode",
+        "client_can_end",
+        "server_can_end"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "voice",
+            "multimodal"
+          ]
+        },
+        "wake_reason": {
+          "type": "string"
+        },
+        "client_can_end": {
+          "type": "boolean"
+        },
+        "server_can_end": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "text_input": {
+          "type": "boolean"
+        },
+        "image_input": {
+          "type": "boolean"
+        },
+        "half_duplex": {
+          "type": "boolean"
+        },
+        "local_wake_word": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

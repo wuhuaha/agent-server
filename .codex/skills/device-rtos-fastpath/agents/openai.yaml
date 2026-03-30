@@ -1,0 +1,6 @@
+interface:
+  display_name: "RTOS Fast Path"
+  short_description: "Guides the first RTOS voice path."
+  default_prompt: "Use $device-rtos-fastpath to implement or review the RTOS realtime voice session path."
+policy:
+  allow_implicit_invocation: true

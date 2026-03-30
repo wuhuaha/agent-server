@@ -1,0 +1,6 @@
+interface:
+  display_name: "Architecture Guard"
+  short_description: "Protects boundaries in agent-server."
+  default_prompt: "Use $agent-architecture-guard to review or update architecture boundaries for agent-server."
+policy:
+  allow_implicit_invocation: true

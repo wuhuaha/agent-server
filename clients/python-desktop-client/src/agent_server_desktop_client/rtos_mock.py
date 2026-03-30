@@ -1,0 +1,285 @@
+"""RTOS-oriented reference client for the agent-server realtime wire profile."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import asdict, dataclass, field
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
+from urllib.request import urlopen
+
+import websockets
+
+from .audio import chunk_pcm_bytes, generate_silence, load_pcm_wav, write_pcm_wav
+from .protocol import DiscoveryInfo, build_event, http_base_to_ws_base, join_ws_url, new_session_id
+
+
+@dataclass(slots=True)
+class MockRunResult:
+    session_id: str
+    ok: bool
+    interrupt_sent: bool
+    close_reason: str | None
+    response_texts: list[str] = field(default_factory=list)
+    audio_chunks: list[int] = field(default_factory=list)
+    received_audio_bytes: int = 0
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+
+class RTOSMockClient:
+    """Reference client that behaves closer to an RTOS voice endpoint."""
+
+    def __init__(
+        self,
+        http_base: str,
+        device_id: str,
+        client_type: str = "rtos-mock",
+        firmware_version: str = "rtos-mock-0.1.0",
+        timeout_sec: float = 30.0,
+    ) -> None:
+        self.http_base = http_base.rstrip("/")
+        self.device_id = device_id
+        self.client_type = client_type
+        self.firmware_version = firmware_version
+        self.timeout_sec = timeout_sec
+        self.discovery = self._discover()
+        self.ws_url = join_ws_url(http_base_to_ws_base(self.http_base), self.discovery.ws_path)
+        self._seq = 0
+
+    def _discover(self) -> DiscoveryInfo:
+        discovery_url = urljoin(f"{self.http_base}/", "v1/realtime")
+        with urlopen(discovery_url, timeout=10) as response:
+            payload = json.load(response)
+        return DiscoveryInfo.from_dict(payload)
+
+    async def run(
+        self,
+        wav_path: str | None,
+        text: str | None,
+        silence_ms: int,
+        frame_ms: int,
+        interrupt_wav_path: str | None,
+        interrupt_silence_ms: int,
+        send_interrupt_update: bool,
+        auto_end: bool,
+        save_audio_path: str | None,
+    ) -> MockRunResult:
+        session_id = new_session_id()
+        result = MockRunResult(session_id=session_id, ok=False, interrupt_sent=False, close_reason=None)
+        received_audio = bytearray()
+        primary_chunks = self._build_chunks(wav_path, silence_ms, frame_ms)
+        interrupt_chunks = self._build_chunks(interrupt_wav_path, interrupt_silence_ms, frame_ms) if interrupt_wav_path or interrupt_silence_ms > 0 else []
+        turns_sent = 0
+        responses_started = 0
+
+        async with websockets.connect(
+            self.ws_url,
+            subprotocols=[self.discovery.subprotocol],
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=20,
+        ) as ws:
+            await self._start_session(ws, session_id)
+            if text:
+                await self._send_event(ws, "text.in", {"text": text}, session_id=session_id)
+                turns_sent += 1
+            else:
+                await self._send_audio(ws, primary_chunks, frame_ms)
+                await self._send_event(ws, "audio.in.commit", {"reason": "end_of_speech"}, session_id=session_id)
+                turns_sent += 1
+
+            client_end_sent = False
+            while True:
+                message = await asyncio.wait_for(ws.recv(), timeout=self.timeout_sec)
+                if isinstance(message, bytes):
+                    result.audio_chunks.append(len(message))
+                    received_audio.extend(message)
+                    result.events.append({"type": "audio.out.chunk", "bytes": len(message)})
+                    if interrupt_chunks and not result.interrupt_sent:
+                        if send_interrupt_update:
+                            await self._send_event(
+                                ws,
+                                "session.update",
+                                {"interrupt": True},
+                                session_id=session_id,
+                            )
+                        await self._send_audio(ws, interrupt_chunks, frame_ms)
+                        await self._send_event(
+                            ws,
+                            "audio.in.commit",
+                            {"reason": "barge_in"},
+                            session_id=session_id,
+                        )
+                        result.interrupt_sent = True
+                        turns_sent += 1
+                    continue
+
+                event = json.loads(message)
+                result.events.append(event)
+                event_type = event.get("type")
+                payload = event.get("payload", {})
+                if event_type == "response.start":
+                    responses_started += 1
+                if event_type == "response.chunk" and isinstance(payload, dict):
+                    text_chunk = payload.get("text")
+                    if isinstance(text_chunk, str):
+                        result.response_texts.append(text_chunk)
+                if event_type == "session.end" and isinstance(payload, dict):
+                    reason = payload.get("reason")
+                    if isinstance(reason, str):
+                        result.close_reason = reason
+                    break
+                if auto_end and event_type == "session.update" and isinstance(payload, dict):
+                    state = payload.get("state")
+                    if (
+                        not client_end_sent
+                        and state == "active"
+                        and responses_started > 0
+                        and responses_started >= turns_sent
+                        and (not interrupt_chunks or result.interrupt_sent)
+                    ):
+                        await self._send_event(
+                            ws,
+                            "session.end",
+                            {"reason": "client_stop", "message": "rtos mock completed"},
+                            session_id=session_id,
+                        )
+                        client_end_sent = True
+
+        result.received_audio_bytes = len(received_audio)
+        if save_audio_path and received_audio:
+            write_pcm_wav(
+                save_audio_path,
+                bytes(received_audio),
+                self.discovery.output_sample_rate_hz,
+                self.discovery.output_channels,
+            )
+        result.ok = bool(result.response_texts) and bool(result.close_reason)
+        return result
+
+    def _build_chunks(self, wav_path: str | None, silence_ms: int, frame_ms: int) -> list[bytes]:
+        if wav_path:
+            clip = load_pcm_wav(wav_path, self.discovery.input_sample_rate_hz, self.discovery.input_channels)
+        else:
+            clip = generate_silence(silence_ms, self.discovery.input_sample_rate_hz, self.discovery.input_channels)
+        return chunk_pcm_bytes(clip.frames, clip.sample_rate_hz, clip.channels, frame_ms=frame_ms)
+
+    async def _start_session(self, ws: websockets.ClientConnection, session_id: str) -> None:
+        await self._send_event(
+            ws,
+            "session.start",
+            {
+                "protocol_version": self.discovery.protocol_version,
+                "device": {
+                    "device_id": self.device_id,
+                    "client_type": self.client_type,
+                    "firmware_version": self.firmware_version,
+                },
+                "audio": {
+                    "codec": self.discovery.input_codec,
+                    "sample_rate_hz": self.discovery.input_sample_rate_hz,
+                    "channels": self.discovery.input_channels,
+                },
+                "session": {
+                    "mode": "voice",
+                    "wake_reason": "keyword",
+                    "client_can_end": True,
+                    "server_can_end": True,
+                },
+                "capabilities": {
+                    "text_input": self.discovery.allow_text_input,
+                    "image_input": self.discovery.allow_image_input,
+                    "half_duplex": False,
+                    "local_wake_word": True,
+                },
+            },
+            session_id=session_id,
+        )
+
+    async def _send_audio(self, ws: websockets.ClientConnection, chunks: list[bytes], frame_ms: int) -> None:
+        frame_interval = max(0.0, frame_ms / 1000)
+        for chunk in chunks:
+            await ws.send(chunk)
+            if frame_interval > 0:
+                await asyncio.sleep(frame_interval)
+
+    async def _send_event(
+        self,
+        ws: websockets.ClientConnection,
+        event_type: str,
+        payload: dict[str, Any],
+        session_id: str | None,
+    ) -> None:
+        self._seq += 1
+        event = build_event(event_type, self._seq, payload, session_id=session_id)
+        await ws.send(json.dumps(event, ensure_ascii=False))
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="RTOS-oriented reference client for agent-server.")
+    parser.add_argument("--http-base", default="http://127.0.0.1:8080", help="HTTP base URL for agent-server.")
+    parser.add_argument("--device-id", default="rtos-mock-001", help="Device ID for session.start.")
+    parser.add_argument("--client-type", default="rtos-mock", help="Client type for session.start.")
+    parser.add_argument("--firmware-version", default="rtos-mock-0.1.0", help="Firmware version for session.start.")
+    parser.add_argument("--wav", dest="wav_path", default=None, help="Primary PCM16LE 16k mono WAV file.")
+    parser.add_argument("--text", default=None, help="Optional text turn instead of primary audio.")
+    parser.add_argument("--silence-ms", type=int, default=1000, help="Fallback silence duration for the primary turn.")
+    parser.add_argument("--frame-ms", type=int, default=20, help="PCM frame size in milliseconds.")
+    parser.add_argument("--interrupt-wav", dest="interrupt_wav_path", default=None, help="Optional WAV clip used for barge-in.")
+    parser.add_argument(
+        "--interrupt-silence-ms",
+        type=int,
+        default=0,
+        help="Optional silence clip used for barge-in when interrupt-wav is omitted.",
+    )
+    parser.add_argument(
+        "--no-interrupt-update",
+        action="store_true",
+        help="Do not send session.update {interrupt:true} before the barge-in audio clip.",
+    )
+    parser.add_argument("--no-auto-end", action="store_true", help="Keep the session open after the final active state.")
+    parser.add_argument("--timeout-sec", type=float, default=30.0, help="Per-receive timeout in seconds.")
+    parser.add_argument("--output", default=None, help="Optional JSON summary output path.")
+    parser.add_argument("--save-rx", default=None, help="Optional path for received PCM16 WAV output.")
+    return parser
+
+
+async def _run_from_args(args: argparse.Namespace) -> MockRunResult:
+    client = RTOSMockClient(
+        http_base=args.http_base,
+        device_id=args.device_id,
+        client_type=args.client_type,
+        firmware_version=args.firmware_version,
+        timeout_sec=args.timeout_sec,
+    )
+    return await client.run(
+        wav_path=args.wav_path,
+        text=args.text,
+        silence_ms=args.silence_ms,
+        frame_ms=args.frame_ms,
+        interrupt_wav_path=args.interrupt_wav_path,
+        interrupt_silence_ms=args.interrupt_silence_ms,
+        send_interrupt_update=not args.no_interrupt_update,
+        auto_end=not args.no_auto_end,
+        save_audio_path=args.save_rx,
+    )
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+    result = asyncio.run(_run_from_args(args))
+    payload = asdict(result)
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
+
+
+if __name__ == "__main__":
+    main()

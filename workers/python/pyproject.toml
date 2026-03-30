@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-server-workers"
+version = "0.1.0"
+description = "Future Python workers for voice and vision tasks in agent-server."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agent-server-funasr-worker = "agent_server_workers.funasr_service:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_server_workers"]

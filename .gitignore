@@ -1,0 +1,8 @@
+bin/
+dist/
+.tmp/
+tmp/
+.codex/artifacts/
+.codex/tmp-*
+**/.pytest_cache/
+**/__pycache__/

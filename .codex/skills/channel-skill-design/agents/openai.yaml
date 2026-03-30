@@ -1,0 +1,6 @@
+interface:
+  display_name: "Channel Skill Design"
+  short_description: "Designs Feishu-like channel adapters cleanly."
+  default_prompt: "Use $channel-skill-design to define or review a channel adapter for agent-server."
+policy:
+  allow_implicit_invocation: true
