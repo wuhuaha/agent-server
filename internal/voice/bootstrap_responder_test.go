@@ -23,4 +23,7 @@ func TestBootstrapResponderForText(t *testing.T) {
 	if len(response.AudioChunks) != 2 {
 		t.Fatalf("expected 2 bootstrap audio chunks, got %d", len(response.AudioChunks))
 	}
+	if len(response.Deltas) != 1 || response.Deltas[0].Kind != ResponseDeltaKindText {
+		t.Fatalf("expected one text delta, got %+v", response.Deltas)
+	}
 }

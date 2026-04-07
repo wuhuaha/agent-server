@@ -105,6 +105,7 @@ func NewRealtimeHandler(profile RealtimeProfile) http.Handler {
 			DeviceProfileDoc: "docs/protocols/rtos-device-ws-v0.md",
 			Notes: []string{
 				"session.start must be sent before the first inbound binary audio frame",
+				"user turns currently complete only after explicit audio.in.commit or text.in",
 				"client and server may both terminate the dialog with session.end",
 				"bootstrap websocket handler is available at the advertised ws_path",
 				"idle timeout is enforced only while the session is active",

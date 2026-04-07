@@ -14,17 +14,55 @@
 - The first bootstrap implementation now supports: WebSocket upgrade, `session.start`, binary audio uplink, `audio.in.commit`, placeholder streamed response events, and bidirectional `session.end`.
 - A Python desktop debug client now exists under `clients/python-desktop-client` and is the primary manual validation tool for the bootstrap realtime protocol until a smaller RTOS reference client is added.
 - The same Python client package now also provides a headless scripted runner for repeatable discovery/text/audio/server-end validation.
-- The local Go toolchain is now installed and repository-level verification uses `GOPROXY=https://goproxy.cn,direct` in this environment because `proxy.golang.org` is not reachable.
+- The local Go toolchain is now installed and this machine now persists `GOPROXY=https://goproxy.cn,direct` plus `GOSUMDB=sum.golang.google.cn` via `go env -w`, so repository-level Go verification no longer depends on per-command shell overrides.
 - A live smoke run against `agentd` on `http://127.0.0.1:8080` has verified the bootstrap realtime contract, including binary audio uplink, placeholder streamed response events, and bidirectional session close semantics.
 - The latest `full` scripted validation report is stored at `.codex/artifacts/desktop-runner-full.json` and confirms text turn, audio turn, and server-initiated close behaviour.
 - The server now has a configurable `funasr_http` voice provider that sends committed turn audio to a local Python ASR worker and returns recognized text through the existing realtime contract.
 - The directly usable local ASR reference path on this machine is:
   - worker env `xiaozhi-esp32-server`
   - model `iic/SenseVoiceSmall`
-  - device `cpu`
+  - device `cpu` by default, with `cuda:0` now validated on the local RTX 5060
+  - `trust_remote_code=false`
   - server script `scripts/dev-funasr.ps1`
   - worker script `scripts/start-funasr-worker.ps1`
-- The current RTX 5060 cannot run the existing `torch 2.2.2+cu121` FunASR stack for this model; CPU is the stable path until the env is upgraded.
+- The `xiaozhi-esp32-server` env on this machine now carries `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, and both direct `FunASR AutoModel` inference and the HTTP worker path have been validated on `device=cuda:0`.
+- The local `SenseVoiceSmall` cache under `/root/.cache/modelscope/hub/models/iic/SenseVoiceSmall` is now prewarmed on this machine, and the worker has been validated end-to-end through `/healthz`, `/v1/asr/info`, and `/v1/asr/transcribe` with `trust_remote_code=false`.
+- Optional cloud voice providers now stay inside `internal/voice` behind the same `Transcriber` and `StreamingSynthesizer` contracts as the local FunASR and MiMo paths.
+- `iflytek_rtasr`, `iflytek_tts_ws`, and `volcengine_tts` are now selectable from app bootstrap by environment without changing the realtime websocket/session contract.
+- Optional cloud LLM providers now stay inside `internal/agent` behind the same `TurnExecutor` boundary as bootstrap execution, memory hooks, and tool hooks.
+- `deepseek_chat` is now the first selectable cloud LLM provider from app bootstrap, and it uses DeepSeek's OpenAI-compatible chat completions API without leaking provider code into transports.
+- The default cloud-LLM persona is now a Chinese household smart-home control-screen assistant template with assistant-name substitution, natural-language-only output, and concealed debug-stage simulation rules.
+- `AGENT_SERVER_AGENT_ASSISTANT_NAME` controls the built-in assistant name, and custom prompt overrides may use `{{assistant_name}}`.
+- The current built-in default assistant name is `小欧管家`.
+- The next optimization sequence for `agent-server` is now explicitly staged as:
+  - `P0`: runtime correctness, semantic alignment, observability, and prompt-mode separation
+  - `P1`: real agent-runtime intelligence, layered memory, structured speech understanding, and household grounding
+  - `P2`: companion-like turn control, multimodal screen context, multi-user memory, and bounded proactive behaviour
+- `RealtimeSession` snapshots must stay lightweight metadata views; accumulated turn audio is now stored privately in the session and exported only once at `CommitTurn`.
+- The currently advertised realtime turn-taking contract is `client_wakeup_client_commit`; discovery, config defaults, docs, and schemas must not imply server-side VAD until that path exists end to end.
+- The shared agent runtime now owns prompt composition as three layers: persona template, runtime output contract, and execution-mode policy.
+- `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is now treated as a persona-template override, while execution-mode policy remains runtime-owned and still gets appended.
+- The current built-in execution-mode set is `simulation`, `dry_run`, and `live_control`; transports and voice responders must stay unaware of those prompt-policy details.
+- The Python desktop runner report is now the first baseline quality artifact for end-to-end comparison: it records discovery metadata, per-scenario latency metrics, and a top-level `quality_summary` in archived JSON output.
+- The shared agent runtime now owns the full cloud-model tool loop: streamed text deltas, tool-call handling, tool invocation, tool-result reinjection, and loop step budgets stay inside `internal/agent`.
+- Provider-specific tool-name constraints must be absorbed inside `internal/agent`; runtime tool identities such as `session.describe` and `memory.recall` stay stable even when a model provider requires sanitized function names.
+- The shared runtime memory contract is now layered: `RecentMessages` carries the short conversational window, while `Summary` and `Facts` remain the compact recall layer.
+- The default in-process memory backend now stores turns under `session`, `user`, `device`, `room`, and `household` scopes when identifiers exist, then selects the most relevant available scope at recall time.
+- Structured speech-understanding data is now normalized inside `internal/voice` and passed into `internal/agent` only as `speech.*` turn metadata; provider-native ASR payloads must not cross that boundary.
+- A first bounded household-control router now lives inside `internal/agent` ahead of the open-ended model path; common lights, curtains, air-conditioning, and simple scene requests can bypass the LLM path.
+- The `xiaozhi` compatibility adapter now emits audio-turn `stt` transcript echo, but it still derives that text from shared responder output instead of parsing ASR provider payloads directly.
+- Web or H5 direct clients now reuse the native `/v1/realtime/ws` contract; browser-specific microphone and playback quirks are handled in the page layer instead of creating a second browser-only websocket protocol.
+- The service now hosts a same-origin browser bring-up surface at `/debug/realtime-h5/`, but that page belongs to the control plane and must stay a debug surface over the shared realtime contract rather than a second orchestration path.
+- The standalone repository browser tool now lives at `tools/web-client`; unlike the built-in same-origin page, it must stay usable without direct browser discovery fetches, so manual profile entry plus pasted discovery JSON is the primary standalone bring-up model.
+- Both browser bring-up paths are now intentionally split into `settings` and `debug` pages. Configuration and discovery sync belong on the settings page; live websocket turns, TTS playback, and protocol logs belong on the debug page.
+- The shared MiMo TTS path now prefetches the first non-empty streaming audio chunk and falls back to buffered synthesis when the provider closes a stream without audio, so transports do not surface successful-but-silent TTS turns to clients.
+- Gateway websocket handlers must treat any `ReadMessage()` failure, including deadline timeouts, as terminal for that connection. Timeout-driven close paths may emit one final `session.end` or compat `tts stop`, but they must not loop back into another websocket read on the failed connection.
+- Repository hygiene rule: when curating a dirty worktree, treat `.claude/`, `.codex/skills/*`, and copied vendor reference notes as local collaboration context first. Only keep them when they carry semantic repository decisions; line-ending-only or no-op formatting drift should be reverted before commit.
+- The current first zero-external-dependency loopback smoke stack on this machine is:
+  - FunASR worker from `xiaozhi-esp32-server` on `127.0.0.1:8091`
+  - `agentd` on `127.0.0.1:8080` with `AGENT_SERVER_VOICE_PROVIDER=funasr_http`, `AGENT_SERVER_TTS_PROVIDER=none`, and `AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap`
+  - standalone tool static server on `127.0.0.1:18081`
+- The latest live local loopback runner report is archived at `.codex/artifacts/local-loopback-full-2026-04-07.json`.
 
 ## Working Defaults
 
@@ -34,3 +72,33 @@
 - The realtime gateway now accepts optional speech-oriented `opus` uplink, but the supported path is intentionally narrow: mono `SILK-only` packets are decoded in Go and normalized to `pcm16le/16000/mono` before ASR.
 - The realtime MiMo TTS path now prefers provider-streamed `pcm16` audio and forwards chunks as they arrive; buffered `wav` decoding remains only as a compatibility fallback inside the synthesizer.
 - `session.start.payload.device.client_type` is intentionally modeled as a non-empty implementation identifier rather than a closed enum so `rtos`, `desktop-script`, `rtos-mock`, and future clients can reuse the same schema.
+- The roadmap now inserts `M1.5 Agent Runtime Core` before the first channel adapter milestone so Feishu-like adapters target one shared execution boundary instead of responder-local bootstrap logic.
+- `internal/agent` is now the transport-neutral turn execution boundary; realtime voice responders delegate bootstrap text policy and session-close intent through its `TurnExecutor` contract.
+- The websocket gateway should own transport mechanics only; turn-completion policy now returns from runtime/responder output instead of being hard-coded in the transport handler.
+- Runtime turn output is now modeled as an ordered delta stream; the realtime gateway adapts it into repeated `response.chunk` events instead of flattening everything into one text field.
+- `response.chunk.payload.delta_type` is now the stable discriminator for streamed reply pieces, and tool arguments or results currently cross the wire as serialized JSON strings in `tool_input` and `tool_output`.
+- When a runtime turn returns both audio and an end-session directive, the gateway now waits until audio playback finishes before sending `session.end`.
+- Memory and tool integration points now live under `internal/agent` as `MemoryStore`, `ToolRegistry`, and `ToolInvoker`; transports and channel adapters must not talk to those backends directly.
+- The first real runtime backend pair is intentionally in-process: `InMemoryMemoryStore` is the default recent-turn recall path and `BuiltinToolBackend` is the default tool provider.
+- `InMemoryMemoryStore` now keeps a bounded recent-turn window plus compact summary facts in process, and it can recall from `session`, `user`, `device`, `room`, or `household` scopes without durable storage.
+- `BuiltinToolBackend` currently exposes only local runtime-safe tools: `time.now`, `session.describe`, and `memory.recall`.
+- The preferred cloud-model path is now streaming-first when the provider supports it, but the shared `ChatModel` compatibility path still exists for non-streaming adapters and tests.
+- Metadata keys such as `user_id`, `room_id`, and `household_id` are now interpreted inside `internal/agent` for memory scoping; transports do not need dedicated new protocol fields for that first layered-memory slice.
+- Metadata keys under `speech.*` are now the shared runtime contract for ASR-derived language, emotion, speaker, endpoint, event, and partial-hypothesis hints.
+- Sensitive household domains such as locks, gas, and security must stay on conservative clarification-oriented replies until a richer household graph and real execution policy exist.
+- Existing `xiaozhi` firmware should connect through a dedicated compatibility adapter mounted at `/xiaozhi/ota/` and `/xiaozhi/v1/`, while new RTOS clients should still target the native `/v1/realtime/ws` contract.
+- The `xiaozhi` compatibility adapter stays an ingress/egress shim over the shared session core: it may translate `hello` / `listen` / `abort`, wrap or unwrap binary protocol versions `1` / `2` / `3`, and transcode downlink audio, but it must not own turn orchestration.
+- Current `xiaozhi` compatibility defaults are `opus/16000/mono/60ms` uplink and `opus/24000/mono/60ms` downlink, while the shared runtime source audio remains realtime-output `pcm16le`.
+- `docs/protocols/xiaozhi-compat-ws-v0.md` is now the canonical detailed bring-up guide for existing `xiaozhi` firmware, including OTA, handshake, turn sequencing, framing, and troubleshooting.
+- `docs/protocols/web-h5-realtime-adaptation.md` is now the canonical guide for browser or H5 direct bring-up against the native realtime websocket profile.
+- `tools/web-client/README.md` is now the quick-start guide for the standalone repository browser tool used for native realtime test/debug work.
+- Current browser page entrypoints are:
+  - built-in same-origin settings: `/debug/realtime-h5/settings.html`
+  - built-in same-origin debug: `/debug/realtime-h5/`
+  - standalone settings: `tools/web-client/settings.html`
+  - standalone debug: `tools/web-client/index.html`
+- Current local reference quality caveat: silence-only audio on the `funasr_http` reference path may still produce false-positive text such as `그.`, so silence rejection still needs follow-up tuning.
+- The reserved bootstrap commands `/tool <name> <json>` and `/memory` exist only to validate the shared runtime memory and tool paths during bring-up; they are not the long-term product surface.
+- Bootstrap control commands are not persisted into turn memory so local debug operations do not overwrite conversation recall.
+- `internal/agent` now supports both `TurnExecutor` and sink-based `StreamingTurnExecutor`; compatibility wrappers remain, but the preferred runtime path is streaming-first.
+- `internal/voice` and the realtime gateway now adapt streamed runtime deltas directly into `response.chunk` events instead of waiting for a fully materialized delta list.

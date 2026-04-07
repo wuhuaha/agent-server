@@ -12,8 +12,9 @@ Build a reusable agent service framework for multimodal voice, image, and text i
 
 1. Architecture first.
 2. RTOS voice fast path second.
-3. Channel skill extensibility third.
-4. Authentication, tenancy, and policy after the fast path is stable.
+3. Agent Runtime Core stabilization third.
+4. Channel skill extensibility fourth.
+5. Authentication, tenancy, and policy after the fast path and runtime boundary are stable.
 
 ## Guardrails
 

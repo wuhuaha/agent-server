@@ -70,3 +70,270 @@
 - Updated the realtime WebSocket runtime to build per-session input normalizers, stream normalized uplink audio into the existing ASR path, and forward streamed TTS chunks incrementally to the device.
 - Added regression coverage for Opus normalization and MiMo streaming, plus repository test data under `testdata/opus-tiny.ogg`.
 - Aligned protocol/schema/runtime docs with the current `session.start` contract, flexible `client_type` handling, optional `opus` bring-up rules, and the MiMo streaming TTS path.
+- Replanned the roadmap to insert `M1.5 Agent Runtime Core` before the first channel adapter milestone.
+- Added `internal/agent` with a shared `TurnExecutor` contract and bootstrap executor so responder policy can move behind a transport-neutral boundary.
+- Moved bootstrap session-end policy out of the realtime websocket handler and into responder/runtime output directives.
+- Added architecture follow-through for the new boundary in `docs/architecture/overview.md`, `docs/architecture/agent-runtime-core.md`, `docs/adr/0003-agent-runtime-core-before-channel-adapters.md`, and `docs/protocols/channel-skill-contract-v0.md`.
+- Added transport-neutral streamed turn delta contracts (`text`, `tool_call`, `tool_result`) across `internal/agent`, `internal/voice`, and the realtime websocket gateway.
+- The realtime `response.chunk` event now streams ordered runtime deltas with `delta_type`, tool metadata, and serialized tool input or output fields under one stable event name.
+- Added websocket regression coverage for streamed text/tool deltas and runtime-driven session close after audio playback, and tightened protocol/schema docs to match.
+- Added runtime-owned `MemoryStore`, `ToolRegistry`, and `ToolInvoker` contracts under `internal/agent`, plus default no-op implementations wired from app bootstrap.
+- Extended the bootstrap executor to load or save memory hooks on every turn and to exercise the shared tool path with a reserved `/tool <name> <json>` debug command that emits ordered tool deltas.
+- Updated the roadmap and architecture docs to treat a true streaming executor interface as the next runtime milestone before channel adapters.
+- Added sink-based `StreamingTurnExecutor` / `StreamingResponder` paths so runtime deltas can flush through the realtime gateway before final turn assembly completes.
+- Added regression coverage for true streamed gateway emission, including a responder that releases later deltas only after the first chunk has already reached the client.
+- Added ADR follow-through for the streaming runtime decision and clarified protocol notes that `response.start.payload.modalities` is an early hint during streamed execution.
+
+## 2026-03-31
+
+- Added a `xiaozhi` compatibility adapter over the shared realtime session core, including config wiring, app route mounting, and default env switches under `AGENT_SERVER_XIAOZHI_*`.
+- Added `/xiaozhi/ota/` discovery plus `/xiaozhi/v1/` websocket handling so existing firmware can connect with less client-side churn.
+- Extended the compatibility websocket handler to:
+  - accept `hello` without `audio_params` by falling back to compat defaults
+  - unwrap and rewrap firmware binary protocol versions `1`, `2`, and `3`
+  - emit `stt` for `listen.detect` text turns and prefer `tts.start` / `tts.sentence_start` / `tts.stop` around spoken replies
+  - fall back to one-shot `llm.text` only when a reply has no audio
+- Added regression coverage for compat OTA discovery, relaxed `hello`, version `3` binary frame bridging, and app-side route exposure.
+- Added `docs/protocols/xiaozhi-compat-ws-v0.md` plus `schemas/xiaozhi/compat-message.schema.json`, and updated the RTOS checklist plus `README.md` to distinguish native vs compat device bring-up.
+
+- Replaced the app-wired no-op runtime defaults with first real backends under `internal/agent`.
+- Added `InMemoryMemoryStore`, which keeps a bounded recent-turn window in process and scopes memory by device first, then session.
+- Added `BuiltinToolBackend`, which now serves both tool catalog and invocation for `time.now`, `session.describe`, and `memory.recall`.
+- Wired new `AGENT_SERVER_AGENT_*` config defaults so runtime memory or tool backends can be selected without changing transport code.
+- Extended the bootstrap executor with a reserved `/memory` command and kept bootstrap control commands out of persisted turn memory.
+- Added regression coverage for the real runtime backends, `/memory` recall, and default app bootstrap wiring.
+- Recorded the in-process backend decision in `docs/architecture/overview.md`, `docs/architecture/agent-runtime-core.md`, and `docs/adr/0006-first-runtime-memory-and-tool-backends-are-in-process.md`.
+- Added `docs/protocols/rtos-client-adaptation-checklist.md` so RTOS teams have one precise checklist for websocket events, barge-in behavior, and exact uplink/downlink audio formats.
+- Linked the new RTOS adaptation checklist from `README.md` for faster firmware bring-up.
+
+## 2026-04-02
+
+- Installed the local Go toolchain on this machine and verified repository Go tests with `go1.24.4`.
+- Persisted Go module settings on this machine with `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn` and revalidated `go test ./...` against a fresh temporary module cache.
+- Installed repository Python dependencies plus a dedicated `xiaozhi-esp32-server` FunASR runtime env on Python `3.11`.
+- Installed `ffmpeg` system-wide so the local FunASR stack has a complete audio backend.
+- Completed a local `SenseVoiceSmall` cache warm-up under `/root/.cache/modelscope/hub/models/iic/SenseVoiceSmall` and verified the worker endpoints plus one end-to-end transcription on CPU.
+- Changed the local FunASR worker reference defaults to `trust_remote_code=false` in code, scripts, and docs because the cached `SenseVoiceSmall` bundle loads correctly from local files but fails with remote-code loading enabled.
+
+## 2026-04-03
+
+- Upgraded the `xiaozhi-esp32-server` environment from CPU-only PyTorch to `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, including the required NVIDIA CUDA runtime packages.
+- Verified GPU execution on the local RTX 5060 with:
+  - low-level `cuInit(0)` outside the default sandbox
+  - direct `torch` CUDA tensor placement on `cuda:0`
+  - direct `FunASR AutoModel` inference for `iic/SenseVoiceSmall`
+  - GPU-backed HTTP worker inference on `127.0.0.1:8092`
+- Updated local worker and runtime docs so they no longer claim the machine is CPU-only for FunASR; CPU remains the default script target, but GPU is now a validated path.
+- Expanded `docs/protocols/xiaozhi-compat-ws-v0.md` into a step-by-step RTOS device integration guide covering:
+  - server-side env prerequisites
+  - OTA validation
+  - websocket headers and `hello`
+  - `listen.start / stop / detect`
+  - binary protocol versions `1 / 2 / 3`
+  - spoken reply sequencing and troubleshooting
+- Updated `README.md` so the detailed `xiaozhi` compatibility guide is easier to discover from the top-level bring-up section.
+- Migrated validated cloud voice providers into the main Go service runtime behind existing `internal/voice` interfaces:
+  - `iflytek_rtasr` as an optional websocket ASR provider
+  - `iflytek_tts_ws` as an optional websocket TTS provider
+  - `volcengine_tts` as an optional SSE TTS provider
+- Extended app bootstrap and runtime config parsing so those providers can be selected by environment without changing the device-facing realtime contract.
+- Added regression coverage for:
+  - iFlytek RTASR websocket ASR request/response handling
+  - iFlytek websocket TTS stream handling
+  - Volcengine SSE TTS stream handling
+  - app-side provider selection for the new ASR/TTS backends
+- Revalidated the repository with `go test ./...` after wiring the new providers.
+- Fixed a live `xiaozhi` compatibility downlink deadlock in `internal/gateway/xiaozhi_audio.go` by starting the PCM feed into `ffmpeg` before waiting for Ogg/Opus headers.
+- Added gateway regression coverage that verifies the `xiaozhi` ffmpeg encoder can produce a first packet instead of hanging during stream startup.
+- Brought up a live `xiaozhi` compatibility stack on `127.0.0.1:18080` with:
+  - `AGENT_SERVER_XIAOZHI_ENABLED=true`
+  - `AGENT_SERVER_VOICE_PROVIDER=iflytek_rtasr`
+  - `AGENT_SERVER_TTS_PROVIDER=iflytek_tts_ws`
+- Completed live smoke validation for:
+  - `POST /xiaozhi/ota/`
+  - websocket `hello`
+  - `listen.detect` text turn
+  - protocol-version `3` binary audio turn with raw `pcm16le/16000/mono` uplink
+- Saved the latest compatibility smoke artifact at `.codex/artifacts/xiaozhi-compat-live-smoke.json`.
+
+## 2026-04-04
+
+- Added the first optional cloud LLM provider under `internal/agent` instead of wiring model calls into transports or the voice runtime.
+- Added a shared `ChatModel` contract plus `LLMTurnExecutor`, preserving the existing memory, tool, and streamed-delta boundaries.
+- Added a DeepSeek chat-completions client and app bootstrap wiring so `AGENT_SERVER_AGENT_LLM_PROVIDER=deepseek_chat` selects the official OpenAI-compatible API from inside the agent runtime.
+- Added regression coverage for:
+  - LLM executor selection and memory propagation
+  - preserved `/memory` bootstrap command behaviour under an LLM-backed executor
+  - DeepSeek-compatible request construction and response parsing
+- Updated `.env.example`, `README.md`, runtime configuration docs, architecture overview, agent-runtime docs, `plan.md`, and a new ADR to document the cloud LLM boundary.
+- Replaced the generic LLM fallback prompt with a built-in household smart-home control-screen assistant template, added `AGENT_SERVER_AGENT_ASSISTANT_NAME`, and made custom prompt overrides support `{{assistant_name}}` substitution.
+- Set the built-in assistant default name to `小欧管家` so runtime defaults, docs, and tests match the intended product naming.
+- Added `docs/architecture/voice-agent-companion-research-2026-04.md`, a focused research note on modern open-source voice-agent patterns and their implications for making `agent-server` more companion-like.
+- Added `docs/architecture/voice-agent-companion-research-zh-2026-04.md`, a Chinese companion version of the same research note for project-local discussion and design follow-up.
+- Added `docs/architecture/project-optimization-roadmap-zh-2026-04.md`, a Chinese project optimization roadmap that translates the current analysis into executable `P0 / P1 / P2` work items aligned with the existing architecture.
+- Updated `plan.md` to reflect the active `P0 / P1 / P2` optimization track and moved the immediate next step to `P0 Foundation Hardening`.
+- Linked the new research note from `README.md` and `docs/architecture/overview.md` so it is discoverable from the main documentation paths.
+- Completed `P0-1` for realtime turn buffering:
+  - moved accumulated turn audio out of `session.Snapshot`
+  - kept `RealtimeSession` snapshots as lightweight metadata views
+  - exported committed audio only once at `CommitTurn`
+  - updated both native realtime and `xiaozhi` compatibility gateways to consume committed turns
+  - added session regression coverage plus a benchmark for repeated audio-frame ingestion
+- Completed `P0-2` for published turn semantics:
+  - changed the default advertised turn mode from `client_wakeup_server_vad` to `client_wakeup_client_commit`
+  - removed the unused public `armed` session state from the current contract
+  - tightened protocol docs, RTOS adaptation docs, and the session-envelope schema around current `session.update` semantics
+  - recorded the durable decision in `docs/adr/0009-advertise-commit-driven-turn-semantics-until-server-vad-exists.md`
+- Completed `P0-3` for runtime prompt-policy separation:
+  - split the built-in LLM prompt assembly into persona template, shared runtime output contract, and execution-mode policy
+  - added `AGENT_SERVER_AGENT_PERSONA` and `AGENT_SERVER_AGENT_EXECUTION_MODE` config defaults
+  - made the runtime support `simulation`, `dry_run`, and `live_control` without rewriting the assistant persona
+  - preserved `{{assistant_name}}` substitution for custom prompt overrides while still appending runtime-owned execution-mode policy
+  - recorded the durable decision in `docs/adr/0010-separate-agent-persona-from-execution-mode.md`
+- Completed the first `P0-4` quality-reporting slice:
+  - extended the Python desktop runner report with discovery metadata such as `turn_mode`, `voice_provider`, and `tts_provider`
+  - added per-scenario latency metrics including response-start, first-text, first-audio, and response-complete timings
+  - added top-level `quality_summary` aggregation so archived JSON reports can compare runtime configurations across runs
+  - updated the desktop-client README and root README to document the richer report shape
+- Revalidated the affected packages after `P0-1` and `P0-2` with:
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/app`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/session`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/gateway`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/session -run ^$ -bench BenchmarkRealtimeSessionIngestAudioFrame -benchmem`
+- Revalidated the affected packages after `P0-3` with:
+  - `go test ./internal/agent`
+  - `go test ./internal/app`
+  - `go test ./...`
+- Revalidated the affected Python desktop-runner path after `P0-4` with:
+  - `PYTHONPATH=clients/python-desktop-client/src python3 -m unittest discover -s clients/python-desktop-client/tests -v`
+
+## 2026-04-05
+
+- Added a standalone repository browser client under `tools/web-client`:
+  - static UI for native `/v1/realtime/ws` usage, bring-up, and debug work
+  - manual realtime-profile fields plus pasted discovery-JSON import so the tool still works when it is not served from the same origin as `agent-server`
+  - text turns, microphone turns, interrupt send, raw JSON control send, assistant transcript view, and raw event logging
+  - simple `serve.py` helper for local static hosting
+- Revalidated the standalone tool assets with:
+  - `node --check tools/web-client/app.js`
+  - `python3 -m py_compile tools/web-client/serve.py`
+- Completed a live local loopback validation on 2026-04-07 with:
+  - FunASR worker on `127.0.0.1:8091` from the `xiaozhi-esp32-server` conda env
+  - `agentd` on `127.0.0.1:8080` with `funasr_http + tts=none + bootstrap`
+  - standalone `tools/web-client` static server on `127.0.0.1:18081`
+  - full desktop-runner validation saved to `.codex/artifacts/local-loopback-full-2026-04-07.json`
+- The local loopback report confirmed:
+  - `ok=true` across `text`, `audio`, and `server-end`
+  - realtime discovery advertising `voice_provider=funasr_http`, `tts_provider=none`, and `/v1/realtime/ws`
+  - the standalone tool index served successfully on `http://127.0.0.1:18081/`
+- Fixed a live websocket timeout panic in both gateway adapters:
+  - native `/v1/realtime/ws` and `xiaozhi` compatibility handlers no longer continue reading after a timeout-triggered websocket read failure
+  - timeout-triggered close paths now terminate the handler after emitting final close signals instead of looping back into `ReadMessage()`
+  - added regression tests that assert timeout-driven teardown does not log `panic serving` or `repeated read on failed websocket connection`
+- Recorded the durable transport rule in `docs/architecture/overview.md` and `docs/adr/0017-websocket-read-failures-are-terminal.md`.
+- Completed the first Web/H5 direct realtime bring-up slice:
+  - added a built-in browser debug page at `/debug/realtime-h5/`
+  - kept browser direct access on the native `GET /v1/realtime` plus `/v1/realtime/ws` contract instead of introducing a browser-only websocket dialect
+  - implemented browser-side microphone capture to raw mono `pcm16le` uplink and browser-side queued `pcm16le` playback for server binary audio
+- Added or updated regression coverage for:
+  - the built-in Web/H5 debug route mounted from the main service
+- Recorded the durable browser-path decision in `docs/adr/0016-web-h5-direct-clients-reuse-native-realtime-contract.md`.
+- Revalidated the repository after the Web/H5 slice with:
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/app ./internal/control`
+  - `node --check internal/control/webh5_assets/app.js`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./...`
+- Completed `P1-1` for runtime streaming and tool execution:
+  - extended the shared agent-runtime model contract with explicit chat messages, tool definitions, and a `StreamingChatModel` path
+  - upgraded `LLMTurnExecutor` from single-shot completion to a bounded model-tool loop with tool-result reinjection
+  - preserved `/memory` and `/tool ...` bootstrap commands on their direct runtime path
+  - added provider-facing tool-name aliasing inside `internal/agent` so model-safe function names do not rename the runtime tool catalog globally
+- Upgraded the DeepSeek adapter to:
+  - send explicit message history and tool definitions to the official chat-completions API
+  - parse non-stream tool-call responses
+  - parse streamed SSE text deltas and streamed tool-call fragments
+- Added or updated regression coverage for:
+  - streaming text deltas through `LLMTurnExecutor`
+  - tool-loop execution with tool-result reinjection into follow-up model steps
+  - DeepSeek tool-aware request construction
+  - DeepSeek streamed text and tool-call parsing
+- Recorded the durable runtime-loop decision in `docs/adr/0011-runtime-tool-loop-stays-inside-agent-runtime.md`.
+- Revalidated the repository after `P1-1` with:
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/agent`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/app`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./...`
+- Completed `P1-2` for layered runtime memory:
+  - extended `MemoryContext` with an explicit `RecentMessages` window in addition to `Summary` and `Facts`
+  - added runtime helpers that derive `user`, `room`, and `household` scope hints from turn metadata without pushing those fields into transports
+  - upgraded the default in-memory backend to save turns under `session`, `user`, `device`, `room`, and `household` scopes, then reload the most relevant available scope
+  - injected recent-message history into the shared LLM executor ahead of the current user turn
+  - extended `memory.recall` output to expose recent messages alongside summary and facts
+- Added or updated regression coverage for:
+  - recent-message retention in the in-memory store
+  - user-scoped memory recall on shared devices
+  - recent-message injection into the LLM request path
+- Recorded the durable layered-memory decision in `docs/adr/0012-layer-recent-messages-over-summary-memory.md`.
+- Revalidated the repository after `P1-2` with:
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/agent`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/app`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./...`
+- Completed `P1-3` for structured speech metadata:
+  - extended `TranscriptionResult` with optional normalized speech-understanding fields such as language, emotion, speaker, endpoint reason, audio events, and partials
+  - added voice-runtime helpers that normalize those fields into `speech.*` turn metadata before calling `internal/agent`
+  - updated the HTTP and iFlytek RTASR transcribers to populate the richer result contract when fields are available
+  - extended `TurnRequest` to carry runtime metadata into the shared agent turn input
+- Added or updated regression coverage for:
+  - structured speech metadata injection from `ASRResponder` into captured agent turn input
+  - richer HTTP transcriber response parsing
+  - iFlytek RTASR partials and endpoint metadata
+- Recorded the durable speech-metadata decision in `docs/adr/0013-normalize-speech-metadata-before-agent-runtime.md`.
+- Completed the first `P1-4` household-routing slice:
+  - added a bounded deterministic household-intent path inside `internal/agent` ahead of the open-ended model path
+  - recognized a first common control set for lights, curtains, air conditioning, and simple scenes
+  - used room hints from text or runtime metadata to improve reply specificity
+  - kept sensitive domains such as locks, gas, and security on a conservative clarification path
+- Added or updated regression coverage for:
+  - deterministic household routing in the bootstrap executor
+  - model bypass for deterministic household control in the LLM executor
+  - conservative clarification on sensitive household requests
+- Recorded the bounded-routing decision in `docs/adr/0014-first-household-routing-stays-bounded-and-runtime-owned.md`.
+- Completed the first `P1-5` compatibility slice:
+  - added audio-turn `stt` echo on the `xiaozhi` compatibility path after ASR completes
+  - routed the compat-layer transcript echo through shared responder output instead of adapter-owned ASR parsing
+- Added or updated regression coverage for:
+  - `ASRResponder` carrying normalized input text on audio turns
+  - `xiaozhi` protocol-version `3` audio turns emitting `stt` before the spoken reply path
+- Updated `docs/protocols/xiaozhi-compat-ws-v0.md` so it no longer claims that audio-turn transcript echo is missing.
+- Recorded the compat transcript-echo decision in `docs/adr/0015-xiaozhi-stt-echo-comes-from-shared-responder-output.md`.
+
+## 2026-04-07
+
+- Curated the long-lived dirty worktree before commit:
+  - reverted `.claude/` collaboration files that only carried CRLF line-ending drift
+  - reverted `.codex/skills/*` and `.codex/mimo-*` files that had no semantic changes
+  - normalized the remaining modified text files back to LF so the kept diff now reflects product changes instead of formatting noise
+- Installed the requested `ui-ux-pro-max` design skill locally under `/root/.codex/skills/ui-ux-pro-max`.
+- Reworked the browser bring-up surfaces into a two-page flow instead of one overloaded screen:
+  - standalone tool now has `tools/web-client/settings.html` plus `tools/web-client/index.html`
+  - built-in same-origin page now has `/debug/realtime-h5/settings.html` plus `/debug/realtime-h5/`
+- Added dedicated browser-side settings scripts:
+  - `tools/web-client/settings.js`
+  - `internal/control/webh5_assets/settings.js`
+- Updated both browser debug pages so they stay focused on live work only:
+  - websocket connect and session control
+  - text turn, microphone turn, raw JSON send
+  - assistant transcript, event log, and TTS diagnostics
+- Kept both browser paths on the same native `GET /v1/realtime` plus `/v1/realtime/ws` contract instead of adding any browser-specific transport.
+- Fixed the realtime MiMo TTS path for normal turns:
+  - prefetch the first non-empty provider stream chunk before committing to stream mode
+  - fall back to buffered synthesis immediately when the provider closes a stream without audio
+  - preserve the existing native websocket binary-audio contract
+- Revalidated the browser/TTS slice with:
+  - `node --check tools/web-client/app.js`
+  - `node --check tools/web-client/settings.js`
+  - `node --check internal/control/webh5_assets/app.js`
+  - `node --check internal/control/webh5_assets/settings.js`
+  - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/voice ./internal/app ./internal/control`
+- Restarted local `agentd` on `127.0.0.1:8080` with `funasr_http + mimo_v2_tts` and reran the desktop runner end to end.
+- Saved the latest live validation report at `/tmp/agent-server-web-tts-runner.json`, which now reports:
+  - `response_with_audio_ratio = 1.0`
+  - audio chunks arriving for `text`, `audio`, and `server-end`

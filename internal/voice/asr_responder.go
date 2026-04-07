@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"agent-server/internal/agent"
 )
 
 type ASRResponder struct {
 	Transcriber            Transcriber
+	Executor               agent.TurnExecutor
 	Synthesizer            Synthesizer
 	Language               string
 	OutputCodec            string
@@ -35,23 +38,33 @@ func NewASRResponder(
 }
 
 func (r ASRResponder) Respond(ctx context.Context, req TurnRequest) (TurnResponse, error) {
+	return collectTurnResponse(ctx, req, r.RespondStream)
+}
+
+func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponse, error) {
 	switch {
 	case strings.TrimSpace(req.Text) != "":
-		text := fmt.Sprintf("已收到文本输入: %s", strings.TrimSpace(req.Text))
-		audioChunks, audioStream := r.audioOutput(ctx, req, req.Text, text)
-		return TurnResponse{
-			Text:        text,
+		userText := strings.TrimSpace(req.Text)
+		turn, err := executeTurnStream(ctx, r.Executor, req, userText, sink)
+		if err != nil {
+			return TurnResponse{}, err
+		}
+		audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
+		response := TurnResponse{
+			InputText:   userText,
+			Text:        turn.Text,
 			AudioChunks: audioChunks,
 			AudioStream: audioStream,
-		}, nil
+			EndSession:  turn.EndSession,
+			EndReason:   turn.EndReason,
+			EndMessage:  turn.EndMessage,
+		}
+		if sink == nil {
+			response.Deltas = responseDeltasFromTurn(turn)
+		}
+		return response, nil
 	case len(req.AudioPCM) == 0:
-		text := "未收到有效音频输入。"
-		audioChunks, audioStream := r.audioOutput(ctx, req, req.Text, text)
-		return TurnResponse{
-			Text:        text,
-			AudioChunks: audioChunks,
-			AudioStream: audioStream,
-		}, nil
+		return r.singleTextResponse(ctx, req, req.Text, "未收到有效音频输入。", sink)
 	case r.Transcriber == nil:
 		return TurnResponse{}, fmt.Errorf("asr transcriber is not configured")
 	}
@@ -69,19 +82,54 @@ func (r ASRResponder) Respond(ctx context.Context, req TurnRequest) (TurnRespons
 		return TurnResponse{}, err
 	}
 
-	text := strings.TrimSpace(result.Text)
-	if text == "" {
-		text = "未识别到有效语音。"
-	} else {
-		text = fmt.Sprintf("识别结果: %s", text)
+	userText := strings.TrimSpace(result.Text)
+	if userText == "" {
+		return r.singleTextResponse(ctx, req, req.Text, "未识别到有效语音。", sink)
 	}
 
-	audioChunks, audioStream := r.audioOutput(ctx, req, result.Text, text)
-	return TurnResponse{
+	req.Metadata = turnMetadataWithTranscription(req.Metadata, result)
+	turn, err := executeTurnStream(ctx, r.Executor, req, userText, sink)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+
+	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
+	response := TurnResponse{
+		InputText:   userText,
+		Text:        turn.Text,
+		AudioChunks: audioChunks,
+		AudioStream: audioStream,
+		EndSession:  turn.EndSession,
+		EndReason:   turn.EndReason,
+		EndMessage:  turn.EndMessage,
+	}
+	if sink == nil {
+		response.Deltas = responseDeltasFromTurn(turn)
+	}
+	return response, nil
+}
+
+func (r ASRResponder) singleTextResponse(ctx context.Context, req TurnRequest, userText, text string, sink ResponseDeltaSink) (TurnResponse, error) {
+	delta := ResponseDelta{Kind: ResponseDeltaKindText, Text: text}
+	if err := emitResponseDelta(ctx, sink, delta); err != nil {
+		return TurnResponse{}, err
+	}
+	audioChunks, audioStream := r.audioOutput(ctx, req, userText, text)
+	response := TurnResponse{
+		InputText:   strings.TrimSpace(userText),
 		Text:        text,
 		AudioChunks: audioChunks,
 		AudioStream: audioStream,
-	}, nil
+	}
+	if sink == nil {
+		response.Deltas = []ResponseDelta{delta}
+	}
+	return response, nil
+}
+
+func (r ASRResponder) WithTurnExecutor(executor agent.TurnExecutor) ASRResponder {
+	r.Executor = executor
+	return r
 }
 
 func (r ASRResponder) WithSynthesizer(s Synthesizer) ASRResponder {

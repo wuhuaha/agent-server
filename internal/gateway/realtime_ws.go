@@ -90,7 +90,13 @@ type responseStartPayload struct {
 
 type responseChunkPayload struct {
 	ResponseID string `json:"response_id"`
+	DeltaType  string `json:"delta_type,omitempty"`
 	Text       string `json:"text,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	ToolStatus string `json:"tool_status,omitempty"`
+	ToolInput  string `json:"tool_input,omitempty"`
+	ToolOutput string `json:"tool_output,omitempty"`
 }
 
 type errorPayload struct {
@@ -183,7 +189,7 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if handleErr != nil {
 					return
 				}
-				continue
+				return
 			}
 			return
 		}
@@ -221,7 +227,12 @@ func (h *realtimeWSHandler) handleReadError(runtime *connectionRuntime, err erro
 	snapshot := runtime.session.Snapshot()
 	reason, shouldClose := deadlineCloseReason(snapshot, h.profile, time.Now().UTC())
 	if !shouldClose {
-		return true, applyReadDeadline(runtime.conn, snapshot, h.profile)
+		if snapshot.SessionID == "" {
+			return true, nil
+		}
+
+		runtime.interruptOutput(100 * time.Millisecond)
+		return true, h.endSession(runtime, session.CloseReasonError, closeMessageForReason(session.CloseReasonError))
 	}
 
 	runtime.interruptOutput(100 * time.Millisecond)
@@ -371,7 +382,7 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		})
 	}
 
-	snapshot, err := runtime.session.CommitTurn()
+	turn, err := runtime.session.CommitTurn()
 	if err != nil {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
 			Code:        "session_not_started",
@@ -380,15 +391,15 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		})
 	}
 
-	if err := applyReadDeadline(runtime.conn, snapshot, h.profile); err != nil {
+	if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.profile); err != nil {
 		return err
 	}
 
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
 		return err
 	}
 
-	return h.emitBootstrapResponse(ctx, runtime, snapshot, "", payload.Reason)
+	return h.emitTurnResponse(ctx, runtime, turn, "")
 }
 
 func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -421,7 +432,7 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		})
 	}
 
-	snapshot, err := runtime.session.CommitTurn()
+	turn, err := runtime.session.CommitTurn()
 	if err != nil {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
 			Code:        "session_not_started",
@@ -430,15 +441,15 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		})
 	}
 
-	if err := applyReadDeadline(runtime.conn, snapshot, h.profile); err != nil {
+	if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.profile); err != nil {
 		return err
 	}
 
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
 		return err
 	}
 
-	return h.emitBootstrapResponse(ctx, runtime, snapshot, payload.Text, "text_input")
+	return h.emitTurnResponse(ctx, runtime, turn, payload.Text)
 }
 
 func (h *realtimeWSHandler) handleClientEnd(runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -508,53 +519,172 @@ func (h *realtimeWSHandler) handleSessionUpdate(runtime *connectionRuntime, enve
 	})
 }
 
-func (h *realtimeWSHandler) emitBootstrapResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, text string, _ string) error {
-	inputCodec := snapshot.InputCodec
-	inputSampleRate := snapshot.InputSampleRate
-	inputChannels := snapshot.InputChannels
+func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, text string) error {
+	request := buildTurnRequest(turn, runtime, text)
+	responseID := fmt.Sprintf("resp_%d", time.Now().UTC().UnixNano())
+
+	if streamingResponder, ok := h.responder.(voice.StreamingResponder); ok {
+		return h.emitStreamingTurnResponse(ctx, runtime, turn.Snapshot, responseID, request, streamingResponder)
+	}
+
+	response, err := h.responder.Respond(ctx, request)
+	if err != nil {
+		return h.terminateWithError(runtime, "response_generation_failed", err.Error())
+	}
+
+	responseDeltas := responseDeltasForEmission(response, true)
+	if err := runtime.peer.WriteEvent(events.TypeResponseStart, turn.Snapshot.SessionID, responseStartPayload{
+		ResponseID: responseID,
+		Modalities: responseModalities(responseDeltas, response),
+	}); err != nil {
+		return err
+	}
+
+	if err := h.emitResponseDeltas(runtime, turn.Snapshot.SessionID, responseID, responseDeltas); err != nil {
+		return err
+	}
+
+	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, response)
+}
+
+func (h *realtimeWSHandler) emitStreamingTurnResponse(
+	ctx context.Context,
+	runtime *connectionRuntime,
+	snapshot session.Snapshot,
+	responseID string,
+	request voice.TurnRequest,
+	streamingResponder voice.StreamingResponder,
+) error {
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type streamedResponseResult struct {
+		response voice.TurnResponse
+		err      error
+	}
+
+	deltaCh := make(chan voice.ResponseDelta, 8)
+	responseCh := make(chan streamedResponseResult, 1)
+
+	go func() {
+		defer close(deltaCh)
+		response, err := streamingResponder.RespondStream(streamCtx, request, voice.ResponseDeltaSinkFunc(func(ctx context.Context, delta voice.ResponseDelta) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case deltaCh <- delta:
+				return nil
+			}
+		}))
+		responseCh <- streamedResponseResult{response: response, err: err}
+	}()
+
+	var response voice.TurnResponse
+	responseReady := false
+	sentResponseStart := false
+	sawStreamedDelta := false
+	var responseChRef <-chan streamedResponseResult = responseCh
+
+	for !responseReady || deltaCh != nil {
+		select {
+		case delta, ok := <-deltaCh:
+			if !ok {
+				deltaCh = nil
+				continue
+			}
+			sawStreamedDelta = true
+			if !sentResponseStart {
+				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{ResponseID: responseID, Modalities: []string{"text"}}); err != nil {
+					cancel()
+					return err
+				}
+				sentResponseStart = true
+			}
+			if err := h.emitResponseDelta(runtime, snapshot.SessionID, responseID, delta); err != nil {
+				cancel()
+				return err
+			}
+		case result := <-responseChRef:
+			responseChRef = nil
+			if result.err != nil {
+				cancel()
+				return h.terminateWithError(runtime, "response_generation_failed", result.err.Error())
+			}
+			response = result.response
+			responseReady = true
+			if !sentResponseStart {
+				responseDeltas := responseDeltasForEmission(response, true)
+				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{ResponseID: responseID, Modalities: responseModalities(responseDeltas, response)}); err != nil {
+					cancel()
+					return err
+				}
+				sentResponseStart = true
+				if err := h.emitResponseDeltas(runtime, snapshot.SessionID, responseID, responseDeltas); err != nil {
+					cancel()
+					return err
+				}
+			} else if !sawStreamedDelta {
+				responseDeltas := responseDeltasForEmission(response, true)
+				if err := h.emitResponseDeltas(runtime, snapshot.SessionID, responseID, responseDeltas); err != nil {
+					cancel()
+					return err
+				}
+			}
+		}
+	}
+
+	return h.finalizeTurnResponse(ctx, runtime, snapshot, response)
+}
+
+func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, text string) voice.TurnRequest {
+	inputCodec := turn.Snapshot.InputCodec
+	inputSampleRate := turn.Snapshot.InputSampleRate
+	inputChannels := turn.Snapshot.InputChannels
 	if runtime.inputNormalizer != nil {
 		inputCodec = runtime.inputNormalizer.OutputCodec()
 		inputSampleRate = runtime.inputNormalizer.OutputSampleRate()
 		inputChannels = runtime.inputNormalizer.OutputChannels()
 	}
 
-	response, err := h.responder.Respond(ctx, voice.TurnRequest{
-		SessionID:       snapshot.SessionID,
-		DeviceID:        snapshot.DeviceID,
+	return voice.TurnRequest{
+		SessionID:       turn.Snapshot.SessionID,
+		DeviceID:        turn.Snapshot.DeviceID,
+		ClientType:      turn.Snapshot.ClientType,
 		Text:            text,
-		AudioPCM:        snapshot.TurnAudio,
-		AudioBytes:      snapshot.AudioBytes,
-		InputFrames:     snapshot.InputFrames,
+		AudioPCM:        turn.AudioPCM,
+		AudioBytes:      turn.Snapshot.AudioBytes,
+		InputFrames:     turn.Snapshot.InputFrames,
 		InputCodec:      inputCodec,
 		InputSampleRate: inputSampleRate,
 		InputChannels:   inputChannels,
-	})
-	if err != nil {
-		return h.terminateWithError(runtime, "response_generation_failed", err.Error())
 	}
+}
 
-	responseID := fmt.Sprintf("resp_%d", time.Now().UTC().UnixNano())
-	modalities := []string{"text"}
+func responseDeltasForEmission(response voice.TurnResponse, allowTextFallback bool) []voice.ResponseDelta {
+	if len(response.Deltas) > 0 {
+		return response.Deltas
+	}
+	if allowTextFallback && strings.TrimSpace(response.Text) != "" {
+		return []voice.ResponseDelta{{Kind: voice.ResponseDeltaKindText, Text: response.Text}}
+	}
+	return nil
+}
+
+func responseModalities(deltas []voice.ResponseDelta, response voice.TurnResponse) []string {
+	modalities := make([]string, 0, 2)
+	if len(deltas) > 0 {
+		modalities = append(modalities, "text")
+	}
 	if len(response.AudioChunks) > 0 || response.AudioStream != nil {
 		modalities = append(modalities, "audio")
 	}
-
-	if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{
-		ResponseID: responseID,
-		Modalities: modalities,
-	}); err != nil {
-		return err
+	if len(modalities) == 0 {
+		modalities = append(modalities, "text")
 	}
+	return modalities
+}
 
-	if response.Text != "" {
-		if err := runtime.peer.WriteEvent(events.TypeResponseChunk, snapshot.SessionID, responseChunkPayload{
-			ResponseID: responseID,
-			Text:       response.Text,
-		}); err != nil {
-			return err
-		}
-	}
-
+func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, response voice.TurnResponse) error {
 	runtime.session.ClearTurn()
 
 	audioStream := response.AudioStream
@@ -567,21 +697,19 @@ func (h *realtimeWSHandler) emitBootstrapResponse(ctx context.Context, runtime *
 		if err != nil {
 			return err
 		}
-
 		if err := applyReadDeadline(runtime.conn, speaking, h.profile); err != nil {
 			return err
 		}
-
 		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: session.StateSpeaking}); err != nil {
 			return err
 		}
-
-		h.startAudioStream(ctx, runtime, snapshot.SessionID, text, audioStream)
+		h.startAudioStream(ctx, runtime, snapshot.SessionID, audioStream, response.EndSession, response.EndReason, response.EndMessage)
 		return nil
 	}
 
-	if shouldServerEnd(text) {
-		return h.endSession(runtime, session.CloseReasonCompleted, closeMessageForReason(session.CloseReasonCompleted))
+	if response.EndSession {
+		reason, message := responseCloseDirective(response)
+		return h.endSession(runtime, reason, message)
 	}
 
 	active, err := runtime.session.SetState(session.StateActive)
@@ -592,18 +720,17 @@ func (h *realtimeWSHandler) emitBootstrapResponse(ctx context.Context, runtime *
 		return err
 	}
 
-	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{
-		State:          active.State,
-		BargeInEnabled: true,
-	})
+	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true})
 }
 
 func (h *realtimeWSHandler) startAudioStream(
 	ctx context.Context,
 	runtime *connectionRuntime,
 	sessionID string,
-	requestText string,
 	audioStream voice.AudioStream,
+	endSession bool,
+	endReason string,
+	endMessage string,
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	stream := runtime.installOutput(cancel)
@@ -631,11 +758,7 @@ func (h *realtimeWSHandler) startAudioStream(
 				}
 				current := runtime.session.Snapshot()
 				if current.SessionID == sessionID && current.State == session.StateSpeaking {
-					_ = runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{
-						Code:        "audio_stream_failed",
-						Message:     err.Error(),
-						Recoverable: false,
-					})
+					_ = runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{Code: "audio_stream_failed", Message: err.Error(), Recoverable: false})
 					_ = h.endSession(runtime, session.CloseReasonError, err.Error())
 				}
 				return
@@ -662,8 +785,13 @@ func (h *realtimeWSHandler) startAudioStream(
 			return
 		}
 
-		if shouldServerEnd(requestText) {
-			_ = h.endSession(runtime, session.CloseReasonCompleted, closeMessageForReason(session.CloseReasonCompleted))
+		if endSession {
+			reason := session.CloseReason(defaultCloseReason(endReason, string(session.CloseReasonCompleted)))
+			message := strings.TrimSpace(endMessage)
+			if message == "" {
+				message = closeMessageForReason(reason)
+			}
+			_ = h.endSession(runtime, reason, message)
 			return
 		}
 
@@ -674,10 +802,7 @@ func (h *realtimeWSHandler) startAudioStream(
 		if err := applyReadDeadline(runtime.conn, active, h.profile); err != nil {
 			return
 		}
-		_ = runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-			State:          active.State,
-			BargeInEnabled: true,
-		})
+		_ = runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true})
 	}()
 }
 
@@ -715,10 +840,7 @@ func (h *realtimeWSHandler) endSession(runtime *connectionRuntime, reason sessio
 		return err
 	}
 
-	if err := runtime.peer.WriteEvent(events.TypeSessionEnd, snapshot.SessionID, sessionEndPayload{
-		Reason:  string(reason),
-		Message: message,
-	}); err != nil {
+	if err := runtime.peer.WriteEvent(events.TypeSessionEnd, snapshot.SessionID, sessionEndPayload{Reason: string(reason), Message: message}); err != nil {
 		return err
 	}
 
@@ -731,11 +853,7 @@ func (h *realtimeWSHandler) terminateWithError(runtime *connectionRuntime, code,
 	snapshot := runtime.session.Snapshot()
 	sessionID := snapshot.SessionID
 
-	if err := runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{
-		Code:        code,
-		Message:     message,
-		Recoverable: false,
-	}); err != nil {
+	if err := runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{Code: code, Message: message, Recoverable: false}); err != nil {
 		return err
 	}
 
@@ -766,14 +884,30 @@ func decodePayload(raw *json.RawMessage, target any) error {
 	return nil
 }
 
-func shouldServerEnd(text string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(text))
-	switch normalized {
-	case "/end", "bye", "goodbye", "结束", "结束对话":
-		return true
-	default:
-		return false
+func (h *realtimeWSHandler) emitResponseDeltas(runtime *connectionRuntime, sessionID, responseID string, deltas []voice.ResponseDelta) error {
+	for _, delta := range deltas {
+		if err := h.emitResponseDelta(runtime, sessionID, responseID, delta); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (h *realtimeWSHandler) emitResponseDelta(runtime *connectionRuntime, sessionID, responseID string, delta voice.ResponseDelta) error {
+	payload := responseChunkPayload{ResponseID: responseID, DeltaType: string(delta.Kind), Text: delta.Text, ToolCallID: delta.ToolCallID, ToolName: delta.ToolName, ToolStatus: delta.ToolStatus, ToolInput: delta.ToolInput, ToolOutput: delta.ToolOutput}
+	if payload.DeltaType == "" {
+		payload.DeltaType = string(voice.ResponseDeltaKindText)
+	}
+	return runtime.peer.WriteEvent(events.TypeResponseChunk, sessionID, payload)
+}
+
+func responseCloseDirective(response voice.TurnResponse) (session.CloseReason, string) {
+	reason := session.CloseReason(defaultCloseReason(response.EndReason, string(session.CloseReasonCompleted)))
+	message := strings.TrimSpace(response.EndMessage)
+	if message == "" {
+		message = closeMessageForReason(reason)
+	}
+	return reason, message
 }
 
 func defaultCloseReason(reason, fallback string) string {

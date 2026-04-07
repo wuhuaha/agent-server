@@ -19,6 +19,8 @@ The bootstrap WebSocket handler is implemented in the repository for the first b
 - TTS: Xiaomi `mimo-v2-tts` with streaming `pcm16` for the realtime path
 - output pacing: `20 ms` PCM frames over the same WebSocket
 
+For browser or H5 direct bring-up against the same native profile, the service also exposes a built-in debug page at `/debug/realtime-h5/`. That page still talks to `GET /v1/realtime` and `/v1/realtime/ws`; it does not introduce a second browser-only wire contract.
+
 ## Goals
 
 - Wake word hit on the client can immediately open a session.
@@ -34,6 +36,12 @@ Before opening the WebSocket, a client may fetch:
 - `GET /v1/realtime`
 
 The response publishes the current wire profile, WebSocket path, subprotocol, audio defaults, capability flags such as `allow_opus`, timeout policy, and links to the current schema and protocol documents.
+
+Current discovery note:
+
+- `turn_mode` is currently advertised as `client_wakeup_client_commit`
+- this means the device starts the session after local wakeup or explicit action, then ends each user audio turn with `audio.in.commit`
+- the current bootstrap profile does not yet expose a server-side VAD commit path
 
 ## Connection
 
@@ -270,17 +278,15 @@ Common server states:
 - `active`
 - `thinking`
 - `speaking`
-- `closing`
 
 Optional hints:
 
 - `barge_in_enabled`
-- `server_vad_active`
 - `turn_id`
 
 ### `response.start`
 
-Marks the beginning of one server reply turn.
+Marks the beginning of one server reply turn. During streamed runtime execution, `modalities` is an early hint and clients must tolerate the server ultimately sending only a subset of those modalities.
 
 ```json
 {
@@ -299,6 +305,8 @@ Marks the beginning of one server reply turn.
 
 Streams partial text or structured deltas.
 
+Text delta example:
+
 ```json
 {
   "type": "response.chunk",
@@ -307,10 +315,59 @@ Streams partial text or structured deltas.
   "ts": "2026-03-25T08:00:03Z",
   "payload": {
     "response_id": "resp_01HQ...",
+    "delta_type": "text",
     "text": "好的，我来为你查询"
   }
 }
 ```
+
+Tool call delta example:
+
+```json
+{
+  "type": "response.chunk",
+  "session_id": "sess_01HQ...",
+  "seq": 5,
+  "ts": "2026-03-25T08:00:03Z",
+  "payload": {
+    "response_id": "resp_01HQ...",
+    "delta_type": "tool_call",
+    "tool_call_id": "tool_01HQ...",
+    "tool_name": "calendar.lookup",
+    "tool_status": "started",
+    "tool_input": "{\"date\":\"2026-03-31\"}"
+  }
+}
+```
+
+Tool result delta example:
+
+```json
+{
+  "type": "response.chunk",
+  "session_id": "sess_01HQ...",
+  "seq": 6,
+  "ts": "2026-03-25T08:00:03Z",
+  "payload": {
+    "response_id": "resp_01HQ...",
+    "delta_type": "tool_result",
+    "tool_call_id": "tool_01HQ...",
+    "tool_name": "calendar.lookup",
+    "tool_status": "completed",
+    "tool_output": "{\"events\":1}"
+  }
+}
+```
+
+`tool_input` and `tool_output` currently carry serialized JSON strings when structured tool arguments or results need to cross the wire without changing the shared envelope shape.
+
+Current delta kinds:
+
+- `text`
+- `tool_call`
+- `tool_result`
+
+Clients should ignore unknown `delta_type` values so newer servers can add more structured deltas without breaking the socket contract.
 
 ### `session.end`
 

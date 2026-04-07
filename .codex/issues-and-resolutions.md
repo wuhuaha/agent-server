@@ -17,14 +17,20 @@
 ### Go Proxy Reachability
 
 - Problem: `go mod tidy` could not reach `https://proxy.golang.org` from the current network environment, which blocked dependency resolution for `github.com/gorilla/websocket`.
-- Resolution: used `GOPROXY=https://goproxy.cn,direct` for module resolution and verification commands.
-- Status: resolved for this environment.
+- Resolution: persisted `GOPROXY=https://goproxy.cn,direct` and `GOSUMDB=sum.golang.google.cn` through `go env -w`, then revalidated repository-wide `go test ./...` against a fresh temporary module cache.
+- Status: resolved on this machine.
 
 ### FunASR GPU Compatibility On RTX 5060
 
 - Problem: the existing `xiaozhi-esp32-server` conda environment uses `torch 2.2.2+cu121`, and `SenseVoiceSmall` failed on the local RTX 5060 with `CUDA error: no kernel image is available for execution on the device`.
-- Resolution: switched the local FunASR worker default device to `cpu`, which successfully loads the model and completes inference. GPU enablement now depends on upgrading the Python/Torch/CUDA stack in that environment.
-- Status: resolved with CPU fallback.
+- Resolution: upgraded the environment to CUDA-enabled `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, then revalidated low-level CUDA init, direct `torch` tensor placement, direct `FunASR AutoModel` inference, and the HTTP worker path on `device=cuda:0`.
+- Status: resolved on this machine.
+
+### CUDA Driver Probes Failed Inside The Default Codex Sandbox
+
+- Problem: the first post-upgrade `torch.cuda` probe still failed with `cudaGetDeviceCount error 304`, but the failure was coming from the sandboxed execution context rather than the machine GPU stack itself.
+- Resolution: reran the same low-level `cuInit(0)` and `torch.cuda` checks outside the sandbox, confirmed successful CUDA initialization plus real GPU tensor execution, and used the same unrestricted context for GPU FunASR validation.
+- Status: resolved as a tooling caveat.
 
 ### Git Safe Directory Warning On E Drive
 
@@ -45,3 +51,167 @@
 - Problem: `clients/python-desktop-client/tests/test_audio.py` can still fail in this Windows sandbox because `tempfile.TemporaryDirectory()` does not always get a writable location outside the workspace.
 - Resolution: not changed in this task; repository-level Go verification remains the authoritative check here, and the Python audio test caveat stays environment-specific.
 - Status: open environment caveat.
+
+### Transport-Owned Bootstrap Policy
+
+- Problem: the realtime websocket handler still owned bootstrap end-of-dialog policy, which would have pushed channel adapters toward transport-specific orchestration instead of one shared agent execution boundary.
+- Resolution: introduced `internal/agent` with a `TurnExecutor` contract and moved bootstrap close directives behind responder/runtime output so transports stay adapters.
+- Status: resolved.
+
+### Runtime Output Had No Structured Delta Contract
+
+- Problem: the new `Agent Runtime Core` could return text, but the realtime transport still effectively treated `response.chunk` as a single plain-text field, leaving no shared wire contract for tool progress or other ordered runtime deltas.
+- Resolution: added shared delta kinds across `internal/agent` and `internal/voice`, taught the realtime gateway to emit ordered `response.chunk` events with `delta_type` plus tool metadata, and documented the contract in both protocol docs and schema.
+- Status: resolved.
+
+### Memory And Tool Hooks Had No Runtime-Owned Injection Point
+
+- Problem: after adding the `TurnExecutor`, the service still had no canonical place to inject memory backends or tool providers without leaking that orchestration into transports or future channel adapters.
+- Resolution: added `MemoryStore`, `ToolRegistry`, and `ToolInvoker` contracts under `internal/agent`, wired default no-op implementations from app bootstrap, and kept the first hook orchestration inside the bootstrap executor.
+- Status: resolved.
+
+### Materialized Delta Lists Blocked True Streaming
+
+- Problem: the first runtime delta contract still required collecting all deltas into `TurnOutput.Deltas` before the gateway could emit them, which blocked early tool progress and future model streaming.
+- Resolution: added sink-based `StreamingTurnExecutor` and `StreamingResponder` interfaces, then wired the realtime gateway to forward streamed deltas immediately as `response.chunk` events.
+- Status: resolved.
+
+## 2026-03-31
+
+### Runtime Hook Boundary Was Real But Still Functionally Empty
+
+- Problem: the runtime-owned memory and tool interfaces existed, but app bootstrap still defaulted to no-op providers, so the boundary could not yet prove real recall or tool behavior without transport-specific hacks.
+- Resolution: added an in-process recent-turn memory store plus a builtin tool backend, made them the default app-wired providers, and surfaced recall through runtime commands instead of transport-specific code.
+- Status: resolved.
+
+### Existing `xiaozhi` Firmware Could Not Reuse The New Server Directly
+
+- Problem: the native `rtos-ws-v0` transport was intentionally cleaner than `xiaozhi-esp32-server`, but current firmware still expected `/xiaozhi/ota/`, `/xiaozhi/v1/`, `hello` / `listen` / `abort`, and legacy binary frame wrappers.
+- Resolution: added a compatibility adapter that mounts the legacy paths, accepts `hello` without strict `audio_params`, bridges firmware binary protocol versions `1` / `2` / `3`, and maps spoken replies back into `tts.start` / `tts.sentence_start` / `tts.stop` plus wrapped binary audio.
+- Status: resolved for first voice bring-up; transcript echo for audio ASR turns and `llm.emotion` mapping remain follow-up polish items.
+
+## 2026-04-02
+
+### SenseVoiceSmall Local Load Failed With `trust_remote_code=true`
+
+- Problem: after the local `SenseVoiceSmall` model cache completed, the FunASR worker still failed at first model load when `AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE=true`, raising `No module named 'model'`.
+- Resolution: verified that the cached model bundle loads successfully with `trust_remote_code=false`, then changed the worker default, the PowerShell start script, and the runtime docs to keep the local reference path on that setting.
+- Status: resolved.
+
+## 2026-04-03
+
+### Xiaozhi Compatibility Opus Downlink Hung Before First Packet
+
+- Problem: live `xiaozhi` compatibility smoke reached `tts stream started`, but the device side never received `tts.start` or the first binary audio frame because the Opus encoder path blocked before producing initial Ogg headers.
+- Resolution: started the PCM feed goroutine before waiting on `oggreader.NewWith(...)`, added a regression test for first-packet production, then revalidated live `hello`, `listen.detect`, and protocol-version `3` audio-turn flows against `127.0.0.1:18080`.
+- Status: resolved.
+
+## 2026-04-03
+
+### Validated Cloud Voice Providers Lived Only In External Debug Tools
+
+- Problem: the verified iFlytek RTASR, iFlytek websocket TTS, and Volcengine SSE TTS flows existed only in external debug tooling, so the main `agent-server` runtime could not select them as first-class ASR/TTS backends.
+- Resolution: migrated those providers into `internal/voice`, kept them behind the shared `Transcriber` and `StreamingSynthesizer` interfaces, wired selection through app config, and confirmed the repository still passes `go test ./...`.
+- Status: resolved.
+
+## 2026-04-04
+
+### The Agent Runtime Had No Real LLM Provider Boundary
+
+- Problem: `internal/agent` had a transport-neutral turn executor, memory hooks, tool hooks, and streamed deltas, but there was still no real cloud LLM path. Wiring DeepSeek directly into gateways or the voice runtime would have broken the runtime boundary before the first channel adapter landed.
+- Resolution: added a shared `ChatModel` contract plus `LLMTurnExecutor` under `internal/agent`, implemented `deepseek_chat` against DeepSeek's OpenAI-compatible chat completions API, and selected it only from app bootstrap config.
+- Status: resolved.
+
+### The First Cloud LLM Path Still Used A Generic Assistant Prompt
+
+- Problem: after wiring DeepSeek into `internal/agent`, the runtime still defaulted to a generic assistant prompt that did not match the household control-screen product role or the debug-stage requirement to confirm control naturally without exposing simulation details.
+- Resolution: replaced the default prompt with a built-in Chinese home-control assistant template, added assistant-name runtime config, and made custom prompt overrides support `{{assistant_name}}` substitution so the persona remains configurable without moving prompt logic into transports.
+- Status: resolved.
+
+### Realtime Turn Buffer Copies Accumulated Audio On Every Frame
+
+- Problem: the current `RealtimeSession` snapshot path still clones the full accumulated `TurnAudio` buffer whenever audio frames are ingested, which will inflate copy cost and memory pressure as turns get longer.
+- Resolution: `RealtimeSession` now keeps accumulated turn audio in a private buffer, leaves `Snapshot` as metadata-only state, and exports one copied `AudioPCM` buffer only at `CommitTurn`. The native realtime gateway and `xiaozhi` compatibility gateway were both updated to consume the committed-turn boundary instead of reading turn audio from snapshots. Session regression coverage and a benchmark were also added.
+- Status: resolved.
+
+### Published `turn_mode` Suggests Server VAD But Runtime Still Depends On Client Commit
+
+- Problem: discovery and config defaults still publish `client_wakeup_server_vad`, but the current realtime turn flow is still driven by explicit client-side `audio.in.commit` or text input rather than a true server-side VAD pipeline.
+- Resolution: aligned the public contract to the current implementation by changing the default advertised mode to `client_wakeup_client_commit`, removing the unused public `armed` state, and updating discovery notes, protocol docs, RTOS adaptation docs, config defaults, and the realtime envelope schema. The decision is recorded in `docs/adr/0009-advertise-commit-driven-turn-semantics-until-server-vad-exists.md`.
+- Status: resolved.
+
+## 2026-04-05
+
+### Silence On The Local FunASR Reference Path Still Produces False Positives
+
+- Problem: during the 2026-04-07 local loopback validation, the full runner used a silence-based audio turn against `funasr_http`, but the ASR result still came back as `그.` instead of an empty utterance. That means the current local reference stack still lacks a robust silence-rejection gate before or after ASR.
+- Resolution: not fixed yet. The live run was otherwise successful, and the issue has been recorded for follow-up tuning around silence detection, VAD, or post-ASR empty-utterance filtering.
+- Status: open.
+
+### Standalone Static Web Tool Could Not Assume Same-Origin Discovery
+
+- Problem: the built-in `/debug/realtime-h5/` page can call `GET /v1/realtime` because it is served by the same Go process, but a separate static tool under `tools/` would often run on another origin and therefore could not safely depend on browser-side discovery fetches.
+- Resolution: the standalone tool under `tools/web-client` now treats manual realtime-profile entry as the primary path and supports pasted discovery JSON as an optional sync aid, while still connecting to the same native `/v1/realtime/ws` contract.
+- Status: resolved.
+
+### Web Or H5 Direct Access Risked Becoming A Second Protocol Surface
+
+- Problem: the repository already had a native realtime websocket contract and a `xiaozhi` compatibility adapter. Adding browser access by inventing a third browser-only websocket dialect would have duplicated transport behavior and weakened the shared session core boundary.
+- Resolution: added a built-in debug page at `/debug/realtime-h5/`, but kept it on the existing `GET /v1/realtime` plus `/v1/realtime/ws` contract. Browser-specific microphone capture and `pcm16le` playback adaptation stay inside the page instead of creating a new gateway protocol.
+- Status: resolved for the first browser slice; raw browser `opus` uplink and richer multimodal browser input remain follow-up work.
+
+### The First LLM Runtime Path Was Still Single-Shot And Could Not Run Real Tools
+
+- Problem: the first `deepseek_chat` integration stayed behind the correct `internal/agent` boundary, but `LLMTurnExecutor` still reduced it to one blocking completion call. That meant no provider-streamed text deltas, no model-proposed tool calls, and no shared runtime loop for tool execution or reinjection.
+- Resolution: added `StreamingChatModel`, explicit chat-message and tool-definition contracts, a bounded model-tool loop inside `LLMTurnExecutor`, and a DeepSeek adapter that now parses both non-stream and streamed tool-call responses. Tool-name sanitization for provider requests now also stays inside `internal/agent` instead of renaming the runtime tool catalog globally.
+- Status: resolved.
+
+### Runtime Memory Was Still Summary-Only And Too Device-Centric
+
+- Problem: the first in-process memory backend proved the `MemoryStore` boundary existed, but it still returned only a summary string plus facts and primarily keyed recall by device. That limited multi-turn continuity and made shared-device recall too dependent on `device_id`.
+- Resolution: extended `MemoryContext` with a bounded `RecentMessages` window, taught the default in-memory backend to store turns under `session`, `user`, `device`, `room`, and `household` scopes, and injected recent-message history into `LLMTurnExecutor` ahead of the current user turn. Metadata-derived scope hints now stay inside `internal/agent`.
+- Status: resolved.
+
+### The Runtime Lost Most ASR Semantics Beyond Final Transcript Text
+
+- Problem: the ASR path only forwarded final transcript text into `internal/agent`, which discarded useful signals such as detected language, endpoint reason, speaker, audio events, and partial hypotheses. Passing provider-native ASR payloads through transports would have broken the runtime boundary.
+- Resolution: extended the shared transcription result with optional structured fields, normalized them into `speech.*` metadata inside `internal/voice`, and injected that metadata into the shared agent turn input without changing the websocket protocols.
+- Status: resolved.
+
+### Common Household Control Was Still Too Dependent On Open-Ended Generation
+
+- Problem: even after adding richer runtime context, obvious household commands such as lights, curtains, and air conditioning still depended on the open-ended model path, which kept simple home-control behavior less predictable than it should be.
+- Resolution: added a first bounded deterministic household-routing slice inside `internal/agent`, using room hints from text or metadata and keeping sensitive domains on a conservative clarification path instead of pushing control parsing into transports.
+- Status: resolved for the first bounded slice.
+
+### Xiaozhi Audio Turns Still Had No Transcript Echo
+
+- Problem: the `xiaozhi` compatibility adapter echoed `stt` for `listen.detect` text turns, but audio turns still had no transcript echo, which made RTOS audio-turn debugging and UI feedback weaker than the text path.
+- Resolution: extended the shared voice response contract with normalized input text and had the `xiaozhi` adapter emit audio-turn `stt` from that transport-neutral responder output instead of parsing ASR provider results itself.
+- Status: resolved for the first compatibility slice.
+
+## 2026-04-07
+
+### Historical Collaboration Noise Obscured The Real Repository State
+
+- Problem: the worktree had accumulated long-lived dirty changes from prior sessions, especially `.claude/` files, `.codex/skills/*`, and `.codex/mimo-*`. Those diffs were only CRLF line-ending drift or other no-op formatting changes, which made `git status` and review output much harder to trust.
+- Resolution: reverted the no-op collaboration and vendor-note diffs, then normalized the remaining changed text files back to LF so the kept worktree now reflects semantic product work only.
+- Status: resolved.
+
+### Websocket Timeout Retry Panic In Gateway Read Loops
+
+- Problem: live browser-side usage hit `http: panic serving ... repeated read on failed websocket connection` because the native realtime handler continued into another `ReadMessage()` after a timeout-triggered read failure. The `xiaozhi` compatibility websocket loop used the same recoverable-timeout pattern and carried the same risk.
+- Resolution: changed both gateway handlers so any timeout-triggered websocket read failure becomes terminal for that connection. The native realtime path still emits `session.end` when the timeout maps to an idle or max-duration close, the `xiaozhi` path still emits compat `tts stop`, and both handlers now return instead of re-entering `ReadMessage()`. Added regression tests that capture server logs and assert timeout-driven teardown no longer logs `panic serving` or `repeated read on failed websocket connection`.
+- Status: resolved.
+
+### Browser Bring-Up Had Too Much Configuration Mixed Into The Live Debug Page
+
+- Problem: after the first browser bring-up slice, both the standalone tool and the built-in `/debug/realtime-h5/` page still mixed endpoint setup, discovery sync, device preset, session control, TTS playback, and protocol logs into one dense surface. That made the page harder to scan during real debugging and made the intended bring-up flow less obvious.
+- Resolution: split both browser paths into dedicated `settings` and `debug` pages. Settings now owns endpoint/audio profile and device preset work, while the debug page focuses on websocket turns, TTS playback, and logs.
+- Status: resolved.
+
+### MiMo Streaming TTS Could Close Successfully With Zero Audio On Normal Turns
+
+- Problem: live validation on 2026-04-07 showed `mimo_v2_tts` frequently returning a stream that completed successfully with `0` chunks and `0` bytes for normal text and audio turns. The websocket path therefore entered `speaking` and returned to `active` without ever delivering binary audio to browser or desktop debug clients.
+- Resolution: changed the shared synthesis path to prefetch the first non-empty streaming chunk before committing to stream mode, and to fall back immediately to buffered synthesis when the provider closes the stream without audio. After restarting `agentd`, the latest live runner report at `/tmp/agent-server-web-tts-runner.json` showed `response_with_audio_ratio = 1.0`.
+- Status: resolved.

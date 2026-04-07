@@ -84,6 +84,8 @@ class DiscoveryInfo:
     subprotocol: str
     auth_mode: str
     turn_mode: str
+    voice_provider: str
+    tts_provider: str
     input_codec: str
     input_sample_rate_hz: int
     input_channels: int
@@ -110,7 +112,9 @@ class DiscoveryInfo:
             ws_path=str(payload.get("ws_path", "/v1/realtime/ws")),
             subprotocol=str(payload.get("subprotocol", "agent-server.realtime.v0")),
             auth_mode=str(payload.get("auth_mode", "disabled")),
-            turn_mode=str(payload.get("turn_mode", "client_wakeup_server_vad")),
+            turn_mode=str(payload.get("turn_mode", "client_wakeup_client_commit")),
+            voice_provider=str(payload.get("voice_provider", "")),
+            tts_provider=str(payload.get("tts_provider", "")),
             input_codec=str(input_audio.get("codec", "pcm16le")),
             input_sample_rate_hz=int(input_audio.get("sample_rate_hz", 16000)),
             input_channels=int(input_audio.get("channels", 1)),

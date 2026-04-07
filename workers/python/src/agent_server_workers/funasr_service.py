@@ -224,7 +224,7 @@ def build_config() -> WorkerConfig:
     parser.add_argument(
         "--trust-remote-code",
         action="store_true",
-        default=_env_bool("AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE", True),
+        default=_env_bool("AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE", False),
     )
     parser.add_argument(
         "--disable-update",

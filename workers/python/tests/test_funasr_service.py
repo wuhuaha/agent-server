@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
-from agent_server_workers.funasr_service import FunASREngine, WorkerConfig, _env_bool
+from agent_server_workers.funasr_service import FunASREngine, WorkerConfig, _env_bool, build_config
 
 
 class FunASRServiceTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class FunASRServiceTests(unittest.TestCase):
                 model="iic/SenseVoiceSmall",
                 device="cpu",
                 language="auto",
-                trust_remote_code=True,
+                trust_remote_code=False,
                 disable_update=True,
                 batch_size_s=60,
                 use_itn=True,
@@ -30,6 +31,12 @@ class FunASRServiceTests(unittest.TestCase):
         )
         self.assertEqual(engine._extract_raw_text([{"text": "hello"}]), "hello")
         self.assertEqual(engine._extract_raw_text({"text": "world"}), "world")
+
+    def test_build_config_defaults_trust_remote_code_false(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("sys.argv", ["funasr_service.py"]):
+                config = build_config()
+        self.assertFalse(config.trust_remote_code)
 
 
 if __name__ == "__main__":

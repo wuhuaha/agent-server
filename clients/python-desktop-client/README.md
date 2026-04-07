@@ -60,6 +60,12 @@ Useful options:
 - `--output .\runner-report.json`
 - `--save-rx-dir .\artifacts`
 
+The JSON report now includes:
+
+- discovery metadata such as `turn_mode`, `voice_provider`, and `tts_provider`
+- per-scenario latency metrics such as `response_start_latency_ms`, `first_text_latency_ms`, `first_audio_latency_ms`, and `response_complete_latency_ms`
+- top-level `quality_summary` aggregates for quick cross-run comparison
+
 The `full` scenario runs:
 
 1. a text turn and client-side close

@@ -6,7 +6,6 @@ type CloseReason string
 
 const (
 	StateIdle     State = "idle"
-	StateArmed    State = "armed"
 	StateActive   State = "active"
 	StateThinking State = "thinking"
 	StateSpeaking State = "speaking"

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>agent-server realtime web/h5 settings</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero-panel">
+        <nav class="page-nav" aria-label="Web/H5 pages">
+          <a class="page-link is-current" href="settings.html">Settings</a>
+          <a class="page-link" href="index.html">Debug</a>
+        </nav>
+
+        <div class="hero-copy-block">
+          <p class="eyebrow">Built-In Web/H5 Console</p>
+          <h1>Browser Bring-Up Setup</h1>
+          <p class="hero-copy">
+            这页只做浏览器侧接入准备：确认 device preset、刷新同源 discovery、核对当前服务端的 ASR/TTS 能力，然后再去 Debug 页做实际会话联调。
+          </p>
+          <div class="hero-actions">
+            <button id="save-settings-btn" type="button">Save Preset</button>
+            <a class="button-link button-subtle" href="index.html" id="open-debug-link">Open Debug Console</a>
+          </div>
+        </div>
+
+        <div class="hero-summary-grid">
+          <article class="summary-card">
+            <span class="summary-label">Preset State</span>
+            <span id="settings-status" class="badge badge-neutral">draft</span>
+            <p>这里保存 device id 和 wake reason，调试页会直接复用，不再重复输入。</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Discovery</span>
+            <span id="discovery-status" class="badge badge-idle">pending</span>
+            <p>同源模式下直接访问当前服务的 <code>GET /v1/realtime</code>，用于核对音频合同和 provider。</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Next Step</span>
+            <span class="badge badge-ok">open debug</span>
+            <p>确认无误后进入 Debug 页，执行 connect、text turn、mic turn 和 TTS 播放验证。</p>
+          </article>
+        </div>
+      </header>
+
+      <main class="console-grid settings-grid">
+        <section class="stack">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Session Preset</p>
+                <h2>Browser Identity</h2>
+              </div>
+              <span class="panel-chip">same-origin</span>
+            </div>
+
+            <label class="field">
+              <span>HTTP base</span>
+              <input id="http-base" type="text" readonly>
+            </label>
+
+            <label class="field">
+              <span>Device id</span>
+              <input id="device-id" type="text" placeholder="web-h5-001">
+            </label>
+
+            <label class="field">
+              <span>Wake reason</span>
+              <input id="wake-reason" type="text" value="manual_browser_debug">
+            </label>
+
+            <div class="summary-strip">
+              <article class="mini-summary">
+                <span>Route</span>
+                <strong id="profile-value">loading</strong>
+              </article>
+              <article class="mini-summary">
+                <span>Preset</span>
+                <strong id="session-preset-value">web-h5 / manual_browser_debug</strong>
+              </article>
+            </div>
+          </article>
+        </section>
+
+        <aside class="stack summary-stack">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Realtime Snapshot</p>
+                <h2>Discovery Summary</h2>
+              </div>
+              <button id="refresh-discovery-btn" type="button" class="button-subtle">Refresh Discovery</button>
+            </div>
+
+            <div class="summary-strip">
+              <article class="mini-summary">
+                <span>Input</span>
+                <strong id="input-audio-value">loading</strong>
+              </article>
+              <article class="mini-summary">
+                <span>Output</span>
+                <strong id="output-audio-value">loading</strong>
+              </article>
+              <article class="mini-summary">
+                <span>Voice Provider</span>
+                <strong id="voice-provider-value">unknown</strong>
+              </article>
+              <article class="mini-summary">
+                <span>TTS Provider</span>
+                <strong id="tts-provider-value">unknown</strong>
+              </article>
+            </div>
+
+            <p id="requirement-note" class="note">
+              这里展示当前服务端真实 discovery。调试页不会再堆一整块设置表单，只负责实际连线与日志观察。
+            </p>
+          </article>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="settings.js"></script>
+  </body>
+</html>

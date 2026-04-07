@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/xiaozhi/compat-message.schema.json",
+  "title": "Xiaozhi Compatibility Message",
+  "description": "JSON text-frame messages for the /xiaozhi/v1/ compatibility adapter.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/listen" },
+    { "$ref": "#/$defs/abort" },
+    { "$ref": "#/$defs/tts" },
+    { "$ref": "#/$defs/stt" },
+    { "$ref": "#/$defs/llm" },
+    { "$ref": "#/$defs/server" }
+  ],
+  "$defs": {
+    "audioParams": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["opus", "pcm16le"]
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frame_duration": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "hello": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "hello" },
+        "version": {
+          "type": "integer",
+          "enum": [1, 2, 3]
+        },
+        "transport": { "type": "string" },
+        "session_id": { "type": "string" },
+        "device_id": { "type": "string" },
+        "device_name": { "type": "string" },
+        "device_mac": { "type": "string" },
+        "token": { "type": "string" },
+        "audio_params": { "$ref": "#/$defs/audioParams" },
+        "features": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    },
+    "listen": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "listen" },
+        "session_id": { "type": "string" },
+        "state": {
+          "type": "string",
+          "enum": ["start", "stop", "detect"]
+        },
+        "mode": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "state"],
+      "additionalProperties": true
+    },
+    "abort": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "abort" },
+        "session_id": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    },
+    "tts": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "tts" },
+        "session_id": { "type": "string" },
+        "state": {
+          "type": "string",
+          "enum": ["start", "sentence_start", "stop"]
+        },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "state"],
+      "additionalProperties": true
+    },
+    "stt": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "stt" },
+        "session_id": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["type", "text"],
+      "additionalProperties": true
+    },
+    "llm": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "llm" },
+        "session_id": { "type": "string" },
+        "text": { "type": "string" },
+        "emotion": { "type": "string" }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "server" },
+        "session_id": { "type": "string" },
+        "status": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["type"],
+      "additionalProperties": true
+    }
+  }
+}

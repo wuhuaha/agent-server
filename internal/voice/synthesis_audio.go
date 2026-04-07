@@ -1,6 +1,10 @@
 package voice
 
-import "context"
+import (
+	"context"
+	"errors"
+	"io"
+)
 
 func synthesizedAudio(ctx context.Context, synthesizer Synthesizer, req TurnRequest, userText, responseText string) ([][]byte, AudioStream) {
 	if synthesizer == nil {
@@ -17,13 +21,73 @@ func synthesizedAudio(ctx context.Context, synthesizer Synthesizer, req TurnRequ
 	if streaming, ok := synthesizer.(StreamingSynthesizer); ok {
 		stream, err := streaming.StreamSynthesize(ctx, synthesisReq)
 		if err == nil && stream != nil {
-			return nil, stream
+			if prepared := prepareStreamingAudio(ctx, stream, synthesizer, synthesisReq); prepared != nil {
+				return nil, prepared
+			}
 		}
 	}
 
-	result, err := synthesizer.Synthesize(ctx, synthesisReq)
+	return nil, bufferedSynthesisAudio(synthesizer, ctx, synthesisReq)
+}
+
+func bufferedSynthesisAudio(synthesizer Synthesizer, ctx context.Context, req SynthesisRequest) AudioStream {
+	result, err := synthesizer.Synthesize(ctx, req)
 	if err != nil || len(result.AudioPCM) == 0 {
-		return nil, nil
+		return nil
 	}
-	return chunkPCM16(result.AudioPCM, result.SampleRateHz, result.Channels, 20), nil
+	return NewStaticAudioStream(chunkPCM16(result.AudioPCM, result.SampleRateHz, result.Channels, 20))
+}
+
+type fallbackSynthesisAudioStream struct {
+	firstChunk []byte
+	rest       AudioStream
+}
+
+func (s *fallbackSynthesisAudioStream) Next(ctx context.Context) ([]byte, error) {
+	if len(s.firstChunk) > 0 {
+		chunk := append([]byte(nil), s.firstChunk...)
+		s.firstChunk = nil
+		return chunk, nil
+	}
+	if s.rest == nil {
+		return nil, io.EOF
+	}
+	return s.rest.Next(ctx)
+}
+
+func (s *fallbackSynthesisAudioStream) Close() error {
+	if s.rest != nil {
+		_ = s.rest.Close()
+		s.rest = nil
+	}
+	return nil
+}
+
+func prepareStreamingAudio(ctx context.Context, stream AudioStream, synthesizer Synthesizer, req SynthesisRequest) AudioStream {
+	firstChunk, err := nextNonEmptyChunk(ctx, stream)
+	if err == nil && len(firstChunk) > 0 {
+		return &fallbackSynthesisAudioStream{
+			firstChunk: firstChunk,
+			rest:       stream,
+		}
+	}
+
+	_ = stream.Close()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return bufferedSynthesisAudio(synthesizer, ctx, req)
+}
+
+func nextNonEmptyChunk(ctx context.Context, stream AudioStream) ([]byte, error) {
+	for {
+		chunk, err := stream.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(chunk) == 0 {
+			continue
+		}
+		return chunk, nil
+	}
 }

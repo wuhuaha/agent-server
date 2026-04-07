@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"errors"
 	"io"
 )
 
@@ -29,4 +30,36 @@ func (s *staticAudioStream) Next(context.Context) ([]byte, error) {
 
 func (s *staticAudioStream) Close() error {
 	return nil
+}
+
+func collectAudioStream(ctx context.Context, stream AudioStream) ([]byte, error) {
+	var collected []byte
+	for {
+		chunk, err := stream.Next(ctx)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return collected, nil
+			}
+			return nil, err
+		}
+		collected = append(collected, chunk...)
+	}
+}
+
+func pcm16FrameBytes(sampleRateHz, channels int) int {
+	if sampleRateHz <= 0 || channels <= 0 {
+		return 0
+	}
+	return sampleRateHz / 50 * channels * 2
+}
+
+func nextPCMChunk(pending *[]byte, frameBytes int) []byte {
+	if len(*pending) <= frameBytes || frameBytes <= 0 {
+		chunk := append([]byte(nil), (*pending)...)
+		*pending = nil
+		return chunk
+	}
+	chunk := append([]byte(nil), (*pending)[:frameBytes]...)
+	*pending = append([]byte(nil), (*pending)[frameBytes:]...)
+	return chunk
 }

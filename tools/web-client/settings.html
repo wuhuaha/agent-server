@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>agent-server web client settings</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero-panel">
+        <nav class="page-nav" aria-label="Workbench pages">
+          <a class="page-link is-current" href="settings.html">Settings</a>
+          <a class="page-link" href="index.html">Debug</a>
+        </nav>
+
+        <div class="hero-copy-block">
+          <p class="eyebrow">Standalone Voice Console</p>
+          <h1>Profile Setup</h1>
+          <p class="hero-copy">
+            先把 endpoint、音频参数、设备侧会话预设和 discovery 对齐，再进入调试页发文本、开麦和核对 TTS。这样配置与联调职责分开，页面会更轻，也更不容易误操作。
+          </p>
+          <div class="hero-actions">
+            <button id="save-profile-btn" type="button">Save Settings</button>
+            <a class="button-link button-subtle" href="index.html" id="open-debug-link">Open Debug Console</a>
+          </div>
+        </div>
+
+        <div class="hero-summary-grid">
+          <article class="summary-card">
+            <span class="summary-label">Settings State</span>
+            <span id="settings-status" class="badge badge-neutral">draft</span>
+            <p>本地 profile、device id 和 wake reason 会一起保存，调试页直接复用。</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Discovery Sync</span>
+            <span id="discovery-status" class="badge badge-idle">manual</span>
+            <p>可以手填，也可以抓取或粘贴 <code>GET /v1/realtime</code> 的返回做对齐。</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Next Step</span>
+            <span class="badge badge-ok">debug ready</span>
+            <p>保存后直接进入 Debug 页，用同一份原生 realtime 合同联调文本、麦克风与 TTS。</p>
+          </article>
+        </div>
+      </header>
+
+      <main class="console-grid settings-grid">
+        <section class="stack">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Transport</p>
+                <h2>Endpoint And Session Preset</h2>
+              </div>
+              <span class="panel-chip">manual profile</span>
+            </div>
+
+            <label class="field">
+              <span>HTTP base</span>
+              <input id="http-base" type="text" placeholder="http://127.0.0.1:8080">
+            </label>
+
+            <div class="field-grid">
+              <label class="field">
+                <span>WS path</span>
+                <input id="ws-path" type="text" value="/v1/realtime/ws">
+              </label>
+
+              <label class="field">
+                <span>Subprotocol</span>
+                <input id="subprotocol" type="text" value="agent-server.realtime.v0">
+              </label>
+
+              <label class="field">
+                <span>Protocol version</span>
+                <input id="protocol-version" type="text" value="rtos-ws-v0">
+              </label>
+
+              <label class="field">
+                <span>Device id</span>
+                <input id="device-id" type="text" placeholder="web-tool-001">
+              </label>
+            </div>
+
+            <label class="field">
+              <span>Wake reason</span>
+              <input id="wake-reason" type="text" value="manual_web_tool">
+            </label>
+
+            <div class="summary-strip">
+              <article class="mini-summary">
+                <span>Profile</span>
+                <strong id="profile-summary">rtos-ws-v0 / agent-server.realtime.v0</strong>
+              </article>
+              <article class="mini-summary">
+                <span>Session Preset</span>
+                <strong id="session-preset-value">web-tool / manual_web_tool</strong>
+              </article>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Audio Contract</p>
+                <h2>Input And Output Profile</h2>
+              </div>
+              <span class="panel-chip">browser-compatible first</span>
+            </div>
+
+            <div class="field-grid">
+              <label class="field">
+                <span>Input codec</span>
+                <input id="input-codec" type="text" value="pcm16le">
+              </label>
+
+              <label class="field">
+                <span>Input sample rate</span>
+                <input id="input-sample-rate" type="number" value="16000">
+              </label>
+
+              <label class="field">
+                <span>Input channels</span>
+                <input id="input-channels" type="number" value="1">
+              </label>
+
+              <label class="field">
+                <span>Output codec</span>
+                <input id="output-codec" type="text" value="pcm16le">
+              </label>
+
+              <label class="field">
+                <span>Output sample rate</span>
+                <input id="output-sample-rate" type="number" value="16000">
+              </label>
+
+              <label class="field">
+                <span>Output channels</span>
+                <input id="output-channels" type="number" value="1">
+              </label>
+            </div>
+
+            <label class="field checkbox-field">
+              <input id="allow-text-input" type="checkbox" checked>
+              <span>Allow <code>text.in</code> from the standalone debug page</span>
+            </label>
+
+            <div class="summary-strip">
+              <article class="mini-summary">
+                <span>Input</span>
+                <strong id="input-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
+              </article>
+              <article class="mini-summary">
+                <span>Output</span>
+                <strong id="output-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
+              </article>
+            </div>
+          </article>
+        </section>
+
+        <aside class="stack summary-stack">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Discovery Sync</p>
+                <h2>Server Snapshot</h2>
+              </div>
+              <span class="panel-chip">optional fetch</span>
+            </div>
+
+            <label class="field">
+              <span>Paste discovery JSON from <code>GET /v1/realtime</code></span>
+              <textarea id="discovery-json" rows="9" placeholder='{"protocol_version":"rtos-ws-v0","ws_path":"/v1/realtime/ws","tts_provider":"mimo_v2_tts"}'></textarea>
+            </label>
+
+            <div class="button-row">
+              <button id="fetch-discovery-btn" type="button" class="button-subtle">Fetch Discovery</button>
+              <button id="apply-discovery-btn" type="button">Apply Discovery</button>
+            </div>
+
+            <div class="summary-strip">
+              <article class="mini-summary">
+                <span>Voice Provider</span>
+                <strong id="voice-provider-value">unknown</strong>
+              </article>
+              <article class="mini-summary">
+                <span>TTS Provider</span>
+                <strong id="tts-provider-value">unknown</strong>
+              </article>
+            </div>
+
+            <p id="requirement-note" class="note">
+              默认可手填 profile；如果服务端允许浏览器抓 discovery，也可以先抓取后再保存。
+            </p>
+          </article>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="settings.js"></script>
+  </body>
+</html>

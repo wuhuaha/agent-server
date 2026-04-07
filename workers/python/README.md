@@ -23,8 +23,11 @@ The default script targets:
 - port: `8091`
 - model: `iic/SenseVoiceSmall`
 - device: `cpu`
+- `trust_remote_code`: `false`
 
-CPU is the default because the currently installed `torch 2.2.2+cu121` in that env is not compatible with the local RTX 5060 GPU for this model.
+CPU remains the default bring-up target so local runs do not claim the GPU unless requested.
+The current `xiaozhi-esp32-server` env on this machine has been upgraded to `torch 2.11.0+cu128` / `torchaudio 2.11.0+cu128`, and `SenseVoiceSmall` has been validated on `cuda:0` with the local RTX 5060.
+`trust_remote_code` stays disabled for the local `SenseVoiceSmall` path because the downloaded model bundle does not include remote code files and local load fails when it is enabled.
 
 ## Manual Start
 
@@ -32,6 +35,8 @@ CPU is the default because the currently installed `torch 2.2.2+cu121` in that e
 $env:PYTHONPATH='E:\agent-server\workers\python\src'
 conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service --host 127.0.0.1 --port 8091 --device cpu
 ```
+
+For GPU validation on this machine, switch the device argument to `cuda:0`.
 
 ## Health Check
 

@@ -28,6 +28,7 @@ func NewInfoHandler(serviceName, environment, version string, profile RealtimePr
 			Priorities: []string{
 				"architecture",
 				"rtos-voice-fast-path",
+				"agent-runtime-core",
 				"channel-skill-extensibility",
 				"security-backfill",
 			},

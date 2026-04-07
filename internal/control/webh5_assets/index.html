@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>agent-server realtime web/h5 console</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero-panel">
+        <nav class="page-nav" aria-label="Web/H5 pages">
+          <a class="page-link" href="settings.html">Settings</a>
+          <a class="page-link is-current" href="index.html">Debug</a>
+        </nav>
+
+        <div class="hero-copy-block">
+          <p class="eyebrow">Built-In Web/H5 Console</p>
+          <h1>Browser Debug Console</h1>
+          <p class="hero-copy">
+            这里只做浏览器会话联调：connect、text turn、mic turn、TTS 播放和协议日志。实际连接仍然直达原生 <code>/v1/realtime/ws</code>；device preset 与 discovery 检查已经独立到 Settings 页。
+          </p>
+          <div class="hero-tags">
+            <span>Settings page for discovery</span>
+            <span>Native realtime contract</span>
+            <span>Mic uplink + TTS playback</span>
+            <span>Replay and WAV export</span>
+          </div>
+        </div>
+
+        <div class="hero-summary-grid">
+          <article class="summary-card">
+            <span class="summary-label">Connection</span>
+            <span id="connection-badge" class="badge badge-idle">idle</span>
+            <p>Discovery fetch, websocket reachability, and route health.</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Turn State</span>
+            <span id="turn-state" class="badge badge-neutral">ready</span>
+            <p>Session lifecycle and current response phase from the shared session core.</p>
+          </article>
+
+          <article class="summary-card">
+            <span class="summary-label">Audio State</span>
+            <span id="tts-badge" class="badge badge-idle">idle</span>
+            <p>TTS expectation, audio chunk arrival, and browser playback outcome.</p>
+          </article>
+        </div>
+      </header>
+
+      <main class="console-grid">
+        <section class="stack stack-left">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Session Control</p>
+                <h2>Connect And Run Turns</h2>
+              </div>
+              <a class="button-link button-subtle" href="settings.html">Open Settings</a>
+            </div>
+
+            <p class="note">
+              这个调试页默认读取 Settings 页保存的 browser preset，并在连接时自动同源抓取 discovery。改配置请回到 Settings 页，当前页只做实际联调。
+            </p>
+
+            <div class="button-row">
+              <button id="connect-btn" type="button">Connect</button>
+              <button id="disconnect-btn" type="button" class="button-subtle">Disconnect</button>
+            </div>
+
+            <div class="button-row">
+              <button id="start-session-btn" type="button">Start Session</button>
+              <button id="end-session-btn" type="button" class="button-subtle">End Session</button>
+            </div>
+
+            <div class="stat-grid compact-grid">
+              <div class="stat-card">
+                <span class="stat-label">Profile</span>
+                <strong id="profile-value">n/a</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Session</span>
+                <strong id="session-value">not started</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Input</span>
+                <strong id="input-audio-value">n/a</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Output</span>
+                <strong id="output-audio-value">n/a</strong>
+              </div>
+            </div>
+
+            <p id="requirement-note" class="note">
+              Same-origin 模式下会自动抓取 <code>GET /v1/realtime</code>。如果远程手机要开麦，仍然需要 HTTPS/WSS。
+            </p>
+
+            <div class="hidden-fields" aria-hidden="true">
+              <input id="http-base" type="text" value="http://127.0.0.1:8080">
+              <input id="device-id" type="text" value="">
+              <input id="wake-reason" type="text" value="manual_browser_debug">
+            </div>
+          </article>
+        </section>
+
+        <section class="stack stack-center">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Turn Deck</p>
+                <h2>Text, Mic, And Raw Control</h2>
+              </div>
+              <span id="response-modalities-value" class="panel-chip">modalities: n/a</span>
+            </div>
+
+            <div class="action-grid">
+              <article class="action-card">
+                <div class="action-head">
+                  <h3>Text Turn</h3>
+                  <span class="action-note">快速验证文字路径以及是否伴随 spoken reply。</span>
+                </div>
+                <label class="field">
+                  <span>Input text</span>
+                  <textarea id="text-input" rows="5" placeholder="Type a text turn for the current session."></textarea>
+                </label>
+                <div class="button-row">
+                  <button id="send-text-btn" type="button">Send Text</button>
+                  <button id="interrupt-btn" type="button" class="button-subtle">Interrupt</button>
+                </div>
+              </article>
+
+              <article class="action-card">
+                <div class="action-head">
+                  <h3>Mic Turn</h3>
+                  <span class="action-note">Browser PCM16 capture, commit, and barge-in.</span>
+                </div>
+                <div class="meter-block">
+                  <div class="meter-labels">
+                    <span>Mic level</span>
+                    <span id="mic-status">stopped</span>
+                  </div>
+                  <div class="meter-rail">
+                    <div id="mic-meter" class="meter-fill"></div>
+                  </div>
+                </div>
+                <div class="button-row">
+                  <button id="mic-start-btn" type="button">Start Mic Turn</button>
+                  <button id="mic-stop-btn" type="button" class="button-subtle">Stop And Commit</button>
+                </div>
+              </article>
+
+              <article class="action-card">
+                <div class="action-head">
+                  <h3>Raw JSON</h3>
+                  <span class="action-note">直接发送 envelope 做 session edge-case 调试。</span>
+                </div>
+                <label class="field">
+                  <span>JSON envelope or payload object</span>
+                  <textarea id="raw-json-input" rows="7" placeholder='{"type":"session.update","payload":{"interrupt":true}}'></textarea>
+                </label>
+                <div class="button-row">
+                  <button id="send-raw-btn" type="button">Send Raw JSON</button>
+                </div>
+              </article>
+            </div>
+          </article>
+
+          <article class="panel panel-tall">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Runtime Stream</p>
+                <h2>Assistant Transcript</h2>
+              </div>
+              <span class="panel-chip">ordered response.chunk text</span>
+            </div>
+            <pre id="assistant-output" class="stream-output transcript-output"></pre>
+          </article>
+        </section>
+
+        <aside class="stack stack-right">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Audio Diagnostics</p>
+                <h2>TTS Monitor</h2>
+              </div>
+              <span id="playback-state-value" class="panel-chip">idle</span>
+            </div>
+
+            <div class="stat-grid">
+              <div class="stat-card">
+                <span class="stat-label">Voice Provider</span>
+                <strong id="voice-provider-value">unknown</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">TTS Provider</span>
+                <strong id="tts-provider-value">unknown</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Audio Chunks</span>
+                <strong id="audio-chunks-value">0</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Audio Bytes</span>
+                <strong id="audio-bytes-value">0 B</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Last Artifact</span>
+                <strong id="last-audio-value">none</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Audio Compatibility</span>
+                <strong id="audio-compat-value">pending</strong>
+              </div>
+            </div>
+
+            <div class="meter-block meter-block-tts">
+              <div class="meter-labels">
+                <span>Playback energy</span>
+                <span id="tts-note">Waiting for a response.</span>
+              </div>
+              <div class="meter-rail meter-rail-tts">
+                <div id="tts-meter" class="meter-fill meter-fill-tts"></div>
+              </div>
+            </div>
+
+            <div class="field">
+              <span>Playback volume</span>
+              <input id="playback-volume" type="range" min="0" max="100" value="100">
+            </div>
+
+            <div class="button-row">
+              <button id="mute-playback-btn" type="button" class="button-subtle">Mute</button>
+              <button id="stop-playback-btn" type="button" class="button-subtle">Stop Audio</button>
+            </div>
+
+            <div class="button-row">
+              <button id="replay-tts-btn" type="button" class="button-subtle">Replay Last TTS</button>
+              <button id="download-tts-btn" type="button" class="button-subtle">Download WAV</button>
+            </div>
+          </article>
+
+          <article class="panel panel-log">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Protocol Trace</p>
+                <h2>Event Log</h2>
+              </div>
+              <button id="clear-log-btn" type="button" class="button-subtle">Clear</button>
+            </div>
+            <pre id="event-log" class="stream-output event-output"></pre>
+          </article>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

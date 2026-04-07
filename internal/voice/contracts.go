@@ -2,6 +2,14 @@ package voice
 
 import "context"
 
+type ResponseDeltaKind string
+
+const (
+	ResponseDeltaKindText       ResponseDeltaKind = "text"
+	ResponseDeltaKindToolCall   ResponseDeltaKind = "tool_call"
+	ResponseDeltaKindToolResult ResponseDeltaKind = "tool_result"
+)
+
 type SessionInput struct {
 	SessionID  string
 	Codec      string
@@ -23,7 +31,9 @@ type Runtime interface {
 type TurnRequest struct {
 	SessionID       string
 	DeviceID        string
+	ClientType      string
 	Text            string
+	Metadata        map[string]string
 	AudioPCM        []byte
 	AudioBytes      int
 	InputFrames     int
@@ -32,14 +42,43 @@ type TurnRequest struct {
 	InputChannels   int
 }
 
+type ResponseDelta struct {
+	Kind       ResponseDeltaKind
+	Text       string
+	ToolCallID string
+	ToolName   string
+	ToolStatus string
+	ToolInput  string
+	ToolOutput string
+}
+
 type TurnResponse struct {
+	InputText   string
 	Text        string
+	Deltas      []ResponseDelta
 	AudioChunks [][]byte
 	AudioStream AudioStream
+	EndSession  bool
+	EndReason   string
+	EndMessage  string
 }
 
 type Responder interface {
 	Respond(context.Context, TurnRequest) (TurnResponse, error)
+}
+
+type ResponseDeltaSink interface {
+	EmitResponseDelta(context.Context, ResponseDelta) error
+}
+
+type ResponseDeltaSinkFunc func(context.Context, ResponseDelta) error
+
+func (f ResponseDeltaSinkFunc) EmitResponseDelta(ctx context.Context, delta ResponseDelta) error {
+	return f(ctx, delta)
+}
+
+type StreamingResponder interface {
+	RespondStream(context.Context, TurnRequest, ResponseDeltaSink) (TurnResponse, error)
 }
 
 type TranscriptionRequest struct {
@@ -53,11 +92,17 @@ type TranscriptionRequest struct {
 }
 
 type TranscriptionResult struct {
-	Text       string
-	Segments   []string
-	DurationMs int
-	Model      string
-	Device     string
+	Text           string
+	Segments       []string
+	DurationMs     int
+	Model          string
+	Device         string
+	Language       string
+	Emotion        string
+	SpeakerID      string
+	AudioEvents    []string
+	EndpointReason string
+	Partials       []string
 }
 
 type Transcriber interface {

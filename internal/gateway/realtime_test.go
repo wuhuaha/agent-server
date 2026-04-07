@@ -13,7 +13,7 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 		ProtocolVersion:  "rtos-ws-v0",
 		Subprotocol:      "agent-server.realtime.v0",
 		AuthMode:         "disabled",
-		TurnMode:         "client_wakeup_server_vad",
+		TurnMode:         "client_wakeup_client_commit",
 		IdleTimeoutMs:    15000,
 		MaxSessionMs:     300000,
 		MaxFrameBytes:    4096,
@@ -46,5 +46,22 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 	}
 	if got := body["ws_path"]; got != "/v1/realtime/ws" {
 		t.Fatalf("expected ws_path /v1/realtime/ws, got %v", got)
+	}
+	if got := body["turn_mode"]; got != "client_wakeup_client_commit" {
+		t.Fatalf("expected turn_mode client_wakeup_client_commit, got %v", got)
+	}
+	notes, ok := body["notes"].([]any)
+	if !ok || len(notes) == 0 {
+		t.Fatalf("expected discovery notes, got %#v", body["notes"])
+	}
+	foundCommitNote := false
+	for _, item := range notes {
+		if item == "user turns currently complete only after explicit audio.in.commit or text.in" {
+			foundCommitNote = true
+			break
+		}
+	}
+	if !foundCommitNote {
+		t.Fatalf("expected discovery notes to mention explicit client commit, got %#v", notes)
 	}
 }

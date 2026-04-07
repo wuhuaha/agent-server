@@ -2,13 +2,16 @@ package voice
 
 import (
 	"context"
-	"fmt"
+	"strings"
+
+	"agent-server/internal/agent"
 )
 
 type BootstrapResponder struct {
 	OutputCodec      string
 	OutputSampleRate int
 	OutputChannels   int
+	Executor         agent.TurnExecutor
 	Synthesizer      Synthesizer
 }
 
@@ -21,20 +24,34 @@ func NewBootstrapResponder(outputCodec string, outputSampleRate, outputChannels 
 }
 
 func (r BootstrapResponder) Respond(ctx context.Context, req TurnRequest) (TurnResponse, error) {
-	text := "agent-server realtime bootstrap reply"
-	switch {
-	case req.Text != "":
-		text = fmt.Sprintf("agent-server received text input: %s", req.Text)
-	case req.InputFrames > 0:
-		text = fmt.Sprintf("agent-server received %d audio frames (%d bytes)", req.InputFrames, req.AudioBytes)
+	return collectTurnResponse(ctx, req, r.RespondStream)
+}
+
+func (r BootstrapResponder) RespondStream(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponse, error) {
+	turn, err := executeTurnStream(ctx, r.Executor, req, req.Text, sink)
+	if err != nil {
+		return TurnResponse{}, err
 	}
 
-	audioChunks, audioStream := r.audioOutput(ctx, req, req.Text, text)
-	return TurnResponse{
-		Text:        text,
+	audioChunks, audioStream := r.audioOutput(ctx, req, req.Text, turn.Text)
+	response := TurnResponse{
+		InputText:   strings.TrimSpace(req.Text),
+		Text:        turn.Text,
 		AudioChunks: audioChunks,
 		AudioStream: audioStream,
-	}, nil
+		EndSession:  turn.EndSession,
+		EndReason:   turn.EndReason,
+		EndMessage:  turn.EndMessage,
+	}
+	if sink == nil {
+		response.Deltas = responseDeltasFromTurn(turn)
+	}
+	return response, nil
+}
+
+func (r BootstrapResponder) WithTurnExecutor(executor agent.TurnExecutor) BootstrapResponder {
+	r.Executor = executor
+	return r
 }
 
 func (r BootstrapResponder) WithSynthesizer(s Synthesizer) BootstrapResponder {
