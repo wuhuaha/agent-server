@@ -156,6 +156,48 @@ func TestBuildTurnExecutorSupportsDeepSeekChat(t *testing.T) {
 	}
 }
 
+func TestBuildTurnExecutorAutoSelectsDeepSeekChatWhenAPIKeyPresent(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	executor := buildTurnExecutor(withRealtimeDefaults(Config{
+		Agent: AgentConfig{
+			DeepSeek: DeepSeekChatConfig{
+				APIKey: "test-key",
+			},
+		},
+	}), logger)
+
+	if _, ok := executor.(agent.LLMTurnExecutor); !ok {
+		t.Fatalf("expected LLMTurnExecutor, got %T", executor)
+	}
+}
+
+func TestRealtimeDiscoveryReportsEffectiveLLMProvider(t *testing.T) {
+	cfg := Config{
+		ListenAddr:  ":0",
+		ServiceName: "agent-server",
+		Environment: "test",
+		Version:     "test",
+		Agent: AgentConfig{
+			LLMProvider: "deepseek_chat",
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := NewServer(cfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	res := httptest.NewRecorder()
+	server.Handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, res.Code)
+	}
+	body := res.Body.String()
+	if !strings.Contains(body, `"llm_provider":"bootstrap"`) {
+		t.Fatalf("expected discovery to expose effective bootstrap fallback, got %q", body)
+	}
+}
+
 func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	cfg := withRealtimeDefaults(Config{})
 	if cfg.Realtime.TurnMode != "client_wakeup_client_commit" {
@@ -166,5 +208,8 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	}
 	if cfg.Agent.ExecutionMode != "simulation" {
 		t.Fatalf("expected simulation execution mode default, got %q", cfg.Agent.ExecutionMode)
+	}
+	if cfg.Agent.Skills != "household_control" {
+		t.Fatalf("expected household_control runtime skill default, got %q", cfg.Agent.Skills)
 	}
 }

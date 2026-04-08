@@ -6,6 +6,7 @@ type RealtimeProfile struct {
 	ProtocolVersion string `json:"protocol_version"`
 	WSPath          string `json:"ws_path"`
 	Subprotocol     string `json:"subprotocol"`
+	LLMProvider     string `json:"llm_provider,omitempty"`
 	AuthMode        string `json:"auth_mode"`
 	TurnMode        string `json:"turn_mode"`
 }

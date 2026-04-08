@@ -78,15 +78,6 @@ func (e BootstrapTurnExecutor) streamBootstrapOutput(ctx context.Context, input 
 	if toolCommand, ok := parseBootstrapToolCommand(trimmedText); ok {
 		return e.executeToolCommand(ctx, input, toolCommand, sink)
 	}
-	if routed, ok := deterministicHouseholdTurn(input, defaultAgentExecutionMode); ok {
-		if err := emitTurnDelta(ctx, sink, TurnDelta{
-			Kind: TurnDeltaKindText,
-			Text: routed.Text,
-		}); err != nil {
-			return TurnOutput{}, err
-		}
-		return routed, nil
-	}
 
 	output := TurnOutput{Text: "agent-server realtime bootstrap reply"}
 	switch {

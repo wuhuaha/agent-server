@@ -31,6 +31,7 @@ type AgentConfig struct {
 	MemoryProvider  string
 	MemoryMaxTurns  int
 	ToolProvider    string
+	Skills          string
 	LLMProvider     string
 	LLMTimeoutMs    int
 	Persona         string
@@ -193,7 +194,8 @@ func LoadConfig() Config {
 			MemoryProvider:  getenv("AGENT_SERVER_AGENT_MEMORY_PROVIDER", "in_memory"),
 			MemoryMaxTurns:  getenvInt("AGENT_SERVER_AGENT_MEMORY_MAX_TURNS", 8),
 			ToolProvider:    getenv("AGENT_SERVER_AGENT_TOOL_PROVIDER", "builtin"),
-			LLMProvider:     getenv("AGENT_SERVER_AGENT_LLM_PROVIDER", "bootstrap"),
+			Skills:          getenv("AGENT_SERVER_AGENT_SKILLS", "household_control"),
+			LLMProvider:     getenv("AGENT_SERVER_AGENT_LLM_PROVIDER", "auto"),
 			LLMTimeoutMs:    getenvInt("AGENT_SERVER_AGENT_LLM_TIMEOUT_MS", 30000),
 			Persona:         getenv("AGENT_SERVER_AGENT_PERSONA", "household_control_screen"),
 			ExecutionMode:   getenv("AGENT_SERVER_AGENT_EXECUTION_MODE", "simulation"),
@@ -320,6 +322,25 @@ func getenvFloat64(key string, fallback float64) float64 {
 	return parsed
 }
 
+func effectiveLLMProvider(cfg AgentConfig) string {
+	switch strings.ToLower(strings.TrimSpace(cfg.LLMProvider)) {
+	case "", "auto":
+		if strings.TrimSpace(cfg.DeepSeek.APIKey) != "" {
+			return "deepseek_chat"
+		}
+		return "bootstrap"
+	case "bootstrap":
+		return "bootstrap"
+	case "deepseek", "deepseek_chat":
+		if strings.TrimSpace(cfg.DeepSeek.APIKey) == "" {
+			return "bootstrap"
+		}
+		return "deepseek_chat"
+	default:
+		return "bootstrap"
+	}
+}
+
 func withRealtimeDefaults(cfg Config) Config {
 	if cfg.Realtime.WSPath == "" {
 		cfg.Realtime.WSPath = "/v1/realtime/ws"
@@ -425,6 +446,12 @@ func withRealtimeDefaults(cfg Config) Config {
 	}
 	if cfg.Agent.ToolProvider == "" {
 		cfg.Agent.ToolProvider = "builtin"
+	}
+	if cfg.Agent.Skills == "" {
+		cfg.Agent.Skills = "household_control"
+	}
+	if strings.TrimSpace(cfg.Agent.LLMProvider) == "" {
+		cfg.Agent.LLMProvider = "auto"
 	}
 	if cfg.Voice.Provider == "" {
 		cfg.Voice.Provider = "bootstrap"

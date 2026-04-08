@@ -70,7 +70,7 @@ func TestBootstrapTurnExecutorForText(t *testing.T) {
 	}
 }
 
-func TestBootstrapTurnExecutorDeterministicallyRoutesHouseholdControl(t *testing.T) {
+func TestBootstrapTurnExecutorDoesNotOwnHouseholdControlRules(t *testing.T) {
 	executor := NewBootstrapTurnExecutor()
 
 	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
@@ -82,11 +82,11 @@ func TestBootstrapTurnExecutorDeterministicallyRoutesHouseholdControl(t *testing
 	if err != nil {
 		t.Fatalf("ExecuteTurn failed: %v", err)
 	}
-	if output.Text != "好的，已经把客厅灯打开了。" {
-		t.Fatalf("unexpected deterministic household reply %q", output.Text)
+	if !strings.Contains(output.Text, "把灯打开") {
+		t.Fatalf("expected bootstrap echo path, got %q", output.Text)
 	}
-	if len(output.Deltas) != 1 || output.Deltas[0].Text != output.Text {
-		t.Fatalf("expected one text delta with routed reply, got %+v", output.Deltas)
+	if len(output.Deltas) != 1 || output.Deltas[0].Kind != TurnDeltaKindText {
+		t.Fatalf("expected one text delta, got %+v", output.Deltas)
 	}
 }
 

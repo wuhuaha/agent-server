@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0017](0017-domain-behavior-enters-through-runtime-skills.md)
 
 ## Context
 

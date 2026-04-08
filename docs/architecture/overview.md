@@ -16,17 +16,25 @@ Provider choice for LLM inference remains a runtime concern inside `internal/age
 
 The runtime now also owns the iterative model-tool loop for cloud chat execution. Provider-streamed text deltas, assistant tool-call proposals, tool invocation, tool-result reinjection, and loop step budgets all stay inside `internal/agent` instead of leaking into transports or the voice layer.
 
-The same runtime layer now owns both assistant persona selection and execution-mode policy. Built-in persona templates and custom prompt overrides stay inside `internal/agent`, while mode-specific behavior such as `simulation`, `dry_run`, or `live_control` is appended there instead of leaking debug-stage assumptions into transports.
+The same runtime layer now owns both assistant persona selection and execution-mode policy, but no longer as one opaque hardcoded string. Prompt composition is split into core prompt sections:
+
+- persona section
+- runtime output-contract section
+- execution-mode policy section
+
+Those core sections are then composed with any runtime-skill prompt sections, so the executor owns prompt assembly while product-vertical behavior stays pluggable.
 
 Runtime memory is now layered as well: a bounded recent-message window feeds immediate multi-turn continuity, while summary/fact recall remains a separate compact memory layer. The default in-process backend can already load from `session`, `user`, `device`, `room`, or `household` scopes without exposing that topology to transports.
 
-The agent runtime now also has a first deterministic household-routing slice ahead of the open-ended LLM path. For a bounded set of common home-control utterances, the runtime can respond directly using room hints from the current text or metadata, while sensitive domains such as locks, gas, and security stay on a more conservative clarification path.
+Domain-specific behavior should enter this layer through runtime skills, not by hardwiring household rules into the executor path. A runtime skill may contribute prompt fragments, tool definitions, and tool execution logic while still staying behind the shared runtime interfaces.
 
 ### 3. Voice Runtime
 
 Provides built-in voice capabilities such as turn detection, ASR, TTS, and stream control. It prepares spoken turns for the `Agent Runtime Core` and renders spoken output afterward.
 
 Provider choice remains a runtime concern inside `internal/voice`: local workers and optional cloud ASR/TTS backends are selected at app bootstrap, while transports still consume one shared responder contract.
+
+TTS is part of this shared voice-runtime output layer rather than a browser-only, RTOS-only, or channel-specific feature. Once the runtime has produced final user-facing text, the same synthesized audio path can be reused by native RTOS devices, browser debug pages, desktop clients, and future channel adapters that need spoken output.
 
 The voice runtime now also normalizes structured speech-understanding metadata before handing a turn to `internal/agent`. ASR providers may expose different fields, but the shared runtime path only sees normalized metadata keys such as language, emotion, speaker, endpoint reason, audio events, and partial hypotheses.
 
@@ -58,6 +66,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One provider-selected voice runtime behind shared `Transcriber` and `Synthesizer` interfaces so local and cloud voice backends do not leak into device or channel adapters.
 - One runtime-owned hook layer for memory and tool orchestration.
 - One provider-selected LLM runtime behind shared `ChatModel`, `StreamingChatModel`, and `TurnExecutor` interfaces so model providers do not leak into device or channel adapters.
+- One runtime-skill path for domain behavior so smart-home semantics can be injected as prompt fragments plus tools without turning `internal/agent` into a pile of hardcoded vertical rules.
 - One first in-process runtime backend set:
   - `InMemoryMemoryStore` for layered recent-message plus summary recall across `session`, `user`, `device`, `room`, and `household` scopes
   - `BuiltinToolBackend` for local runtime tools such as `time.now`, `session.describe`, and `memory.recall`
@@ -74,7 +83,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - The first real memory and tool backends stay in-process and ephemeral until shared persistence or remote tool execution is justified.
 - Optional cloud LLM providers may be added only under the shared agent-runtime interfaces; gateways and channel adapters must not branch on provider-specific APIs.
 - Provider-specific tool-call request or naming constraints must be handled inside `internal/agent`, not by changing transport contracts or runtime tool identities globally.
-- Deterministic home-control routing must stay inside `internal/agent`; gateways and voice responders must not start owning their own device-intent logic.
+- Domain-specific household-control behavior must be injected as runtime skills or tools; gateways, voice responders, and the core executor path must not start owning their own device-intent rule tables.
 - Voice provider logic must stay behind interfaces.
 - Optional cloud ASR/TTS providers may be added only under the shared voice runtime interfaces; gateways and channel adapters must not branch on provider-specific protocols.
 - Provider-specific ASR result payloads must be normalized inside `internal/voice` before any speech metadata reaches `internal/agent`.

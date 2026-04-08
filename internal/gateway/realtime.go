@@ -21,6 +21,7 @@ type RealtimeProfile struct {
 	WSPath           string
 	ProtocolVersion  string
 	Subprotocol      string
+	LLMProvider      string
 	VoiceProvider    string
 	TTSProvider      string
 	AuthMode         string
@@ -45,6 +46,7 @@ type realtimeInfo struct {
 	ProtocolVersion  string       `json:"protocol_version"`
 	WSPath           string       `json:"ws_path"`
 	Subprotocol      string       `json:"subprotocol"`
+	LLMProvider      string       `json:"llm_provider,omitempty"`
 	VoiceProvider    string       `json:"voice_provider,omitempty"`
 	TTSProvider      string       `json:"tts_provider,omitempty"`
 	AuthMode         string       `json:"auth_mode"`
@@ -77,6 +79,7 @@ func NewRealtimeHandler(profile RealtimeProfile) http.Handler {
 			ProtocolVersion: profile.ProtocolVersion,
 			WSPath:          profile.WSPath,
 			Subprotocol:     profile.Subprotocol,
+			LLMProvider:     profile.LLMProvider,
 			VoiceProvider:   profile.VoiceProvider,
 			TTSProvider:     profile.TTSProvider,
 			AuthMode:        profile.AuthMode,

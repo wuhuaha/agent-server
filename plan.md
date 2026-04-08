@@ -696,6 +696,120 @@ Observed implementation result:
   - `response_with_audio_ratio = 1.0`
   - audio present for `text`, `audio`, and `server-end` scenarios
 
+### 2026-04-07 Py-Xiaozhi-Inspired Frontend Interaction Refinement
+
+- Scope:
+  - reshape the debug pages around a clearer voice-session flow inspired by `py-xiaozhi`
+  - emphasize one primary interaction line: connect -> start session -> listen -> speak
+  - reduce the feeling of a control dump by promoting stage state, current session, and latest event into a top-level workbench card
+  - keep settings/debug split, but make the debug page feel like a voice console rather than a test form
+- Target files:
+  - `tools/web-client/index.html`
+  - `tools/web-client/styles.css`
+  - `tools/web-client/app.js`
+  - `internal/control/webh5_assets/index.html`
+  - `internal/control/webh5_assets/styles.css`
+  - `internal/control/webh5_assets/app.js`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - both browser debug pages present a primary state stage with obvious next action
+  - phase changes such as idle, connect, listen, and speak are visible without reading the raw event log
+  - transcript, TTS diagnostics, and protocol log remain available but no longer dominate first glance
+  - the built-in and standalone pages remain protocol-compatible with the existing realtime websocket path
+
+Validation recorded for this execution step:
+
+- frontend asset verification:
+  - `node --check tools/web-client/app.js`
+  - `node --check tools/web-client/settings.js`
+  - `node --check internal/control/webh5_assets/app.js`
+  - `node --check internal/control/webh5_assets/settings.js`
+- structure and initialization verification:
+  - DOM id parity check between each debug page and its script refs
+  - lightweight VM bootstrap check for both debug pages
+- live local validation after restarting `agentd` with `funasr_http + mimo_v2_tts`:
+  - `GET /debug/realtime-h5/`
+  - `GET /debug/realtime-h5/app.js`
+  - `GET /v1/realtime`
+
+Observed implementation result:
+
+- both debug pages now center the session state machine instead of starting with dense form controls
+- a new stage card now exposes:
+  - current phase badge
+  - flow rail for idle / connect / listen / speak
+  - current session snapshot
+  - latest event summary
+- transcript, mic turn, raw envelope debug, TTS playback, and protocol log remain available in the same page but are visually secondary to the live voice workflow
+- the built-in page still uses same-origin discovery, and the standalone page still uses the manually saved profile model
+
 ## Immediate Next Step
 
 Resume the remaining `P1-5` compatibility backlog from `docs/architecture/project-optimization-roadmap-zh-2026-04.md`: basic `mcp` capability negotiation, `iot` state uplink, and first auth/token checks on the `xiaozhi` compatibility path. Keep the new local loopback validation stack (`funasr_http + tts=none + bootstrap + tools/web-client`) as the first zero-external-dependency smoke path for future changes.
+
+### 2026-04-07 LLM Default Selection And TTS Source Correction
+
+- Scope:
+  - fix the current runtime pitfall where TTS can legitimately speak bootstrap echo text such as `agent-server received text input: ...`
+  - make the service prefer the configured DeepSeek runtime automatically when a DeepSeek API key is present and no explicit `AGENT_SERVER_AGENT_LLM_PROVIDER` override was given
+  - expose the effective `llm_provider` through realtime discovery so browser and RTOS bring-up can detect bootstrap fallback immediately
+  - surface a browser-side compatibility warning when discovery still reports `llm_provider=bootstrap`
+- Target files:
+  - `internal/app/config.go`
+  - `internal/app/app.go`
+  - `internal/control/info.go`
+  - `internal/gateway/realtime.go`
+  - `internal/app/app_test.go`
+  - `internal/gateway/realtime_test.go`
+  - `tools/web-client/settings.js`
+  - `internal/control/webh5_assets/settings.js`
+  - `.env.example`
+  - `README.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/protocols/web-h5-realtime-adaptation.md`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - an unset `AGENT_SERVER_AGENT_LLM_PROVIDER` no longer forces bootstrap when a DeepSeek key is present
+  - realtime discovery advertises the effective `llm_provider`
+  - browser settings pages warn when the current server is still on bootstrap and TTS will likely speak placeholder echo text
+  - focused tests cover the new config default and discovery field
+
+### 2026-04-08 Runtime Skill Boundary For Household Control
+
+- Scope:
+  - remove hardcoded household-control short-circuit logic from the core executor path
+  - keep TTS in the shared voice runtime output layer instead of letting any single channel own spoken rendering policy
+  - add a first runtime-skill injection path so domain behavior can enter as prompt fragments plus tools
+  - move the current household-control semantics behind a builtin runtime skill instead of executor-owned rule branches
+- Target files:
+  - `internal/agent/contracts.go`
+  - `internal/agent/llm_executor.go`
+  - `internal/agent/bootstrap_executor.go`
+  - `internal/agent/household_control.go`
+  - `internal/agent/runtime_backends.go`
+  - `internal/app/config.go`
+  - `internal/app/app.go`
+  - `internal/agent/*_test.go`
+  - `internal/app/app_test.go`
+  - `docs/architecture/overview.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/adr/0017-domain-behavior-enters-through-runtime-skills.md`
+  - `docs/adr/0014-first-household-routing-stays-bounded-and-runtime-owned.md`
+  - `.env.example`
+  - `README.md`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - household requests no longer bypass the shared model loop through a deterministic executor branch
+  - builtin domain behavior can be injected through a runtime skill that contributes prompt fragments and tools
+  - the first builtin skill is configurable through `AGENT_SERVER_AGENT_SKILLS`
+  - architecture docs explicitly state that TTS belongs to the shared voice runtime layer across RTOS, Web/H5, desktop, and future channels
+  - regression coverage proves the new runtime-skill tool loop and the removal of bootstrap household hard-routing

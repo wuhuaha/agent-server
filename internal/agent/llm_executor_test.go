@@ -91,6 +91,14 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	return f(request)
 }
 
+type staticPromptSectionProvider struct {
+	sections []PromptSection
+}
+
+func (p staticPromptSectionProvider) ListPromptSections(context.Context, PromptSectionRequest) ([]PromptSection, error) {
+	return append([]PromptSection(nil), p.sections...), nil
+}
+
 func TestLLMTurnExecutorUsesModelAndMemoryContext(t *testing.T) {
 	memoryStore := &recordingMemoryStore{}
 	model := &recordingChatModel{
@@ -424,6 +432,47 @@ func TestLLMTurnExecutorCustomPromptReplacesAssistantNamePlaceholderAndAppendsMo
 	}
 }
 
+func TestLLMTurnExecutorCanComposeCustomCorePromptSectionsWithSkillSections(t *testing.T) {
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "好的。"},
+	}
+	toolBackend := NewBuiltinToolBackend(NewNoopMemoryStore()).WithSkills([]string{"household_control"})
+	executor := NewLLMTurnExecutor(model).
+		WithPromptSectionProvider(staticPromptSectionProvider{
+			sections: []PromptSection{
+				{Name: "persona", Content: "你是星澜。"},
+				{Name: "policy", Content: "请保持冷静、简洁。"},
+			},
+		}).
+		WithToolRegistry(toolBackend).
+		WithToolInvoker(toolBackend)
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-sections",
+		DeviceID:   "panel-1",
+		ClientType: "web-h5",
+		UserText:   "把客厅灯打开",
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+	if len(model.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(model.requests))
+	}
+	prompt := model.requests[0].SystemPrompt
+	if !strings.Contains(prompt, "你是星澜。") {
+		t.Fatalf("expected custom persona section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "请保持冷静、简洁。") {
+		t.Fatalf("expected custom policy section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "已启用 runtime skill: household_control") {
+		t.Fatalf("expected runtime skill prompt section, got %q", prompt)
+	}
+	if strings.Contains(prompt, "当前执行模式：simulation") {
+		t.Fatalf("did not expect builtin execution policy when custom core sections are injected, got %q", prompt)
+	}
+}
+
 func TestLLMTurnExecutorPreservesBootstrapCommands(t *testing.T) {
 	memoryStore := &recordingMemoryStore{}
 	model := &recordingChatModel{
@@ -446,9 +495,9 @@ func TestLLMTurnExecutorPreservesBootstrapCommands(t *testing.T) {
 	}
 }
 
-func TestLLMTurnExecutorBypassesModelForDeterministicHouseholdControl(t *testing.T) {
+func TestLLMTurnExecutorDoesNotBypassModelForHouseholdControl(t *testing.T) {
 	model := &recordingChatModel{
-		response: ChatModelResponse{Text: "should not be used"},
+		response: ChatModelResponse{Text: "我已经理解你的需求。"},
 	}
 	executor := NewLLMTurnExecutor(model).
 		WithAssistantName("小欧管家").
@@ -463,34 +512,89 @@ func TestLLMTurnExecutorBypassesModelForDeterministicHouseholdControl(t *testing
 	if err != nil {
 		t.Fatalf("ExecuteTurn failed: %v", err)
 	}
-	if output.Text != "好的，已经把客厅灯打开了。" {
-		t.Fatalf("unexpected deterministic output %q", output.Text)
+	if output.Text != "我已经理解你的需求。" {
+		t.Fatalf("unexpected model output %q", output.Text)
 	}
-	if len(model.requests) != 0 {
-		t.Fatalf("expected deterministic household route to bypass model, got %d requests", len(model.requests))
+	if len(model.requests) != 1 {
+		t.Fatalf("expected household request to reach model, got %d requests", len(model.requests))
 	}
-	if len(output.Deltas) != 1 || output.Deltas[0].Text != output.Text {
-		t.Fatalf("expected one deterministic text delta, got %+v", output.Deltas)
+	if len(output.Deltas) != 1 || output.Deltas[0].Text != "我已经理解你的需求。" {
+		t.Fatalf("expected one model text delta, got %+v", output.Deltas)
 	}
 }
 
-func TestLLMTurnExecutorUsesConservativeReplyForSensitiveHouseholdIntent(t *testing.T) {
-	model := &recordingChatModel{
-		response: ChatModelResponse{Text: "should not be used"},
+func TestLLMTurnExecutorUsesHouseholdSkillThroughToolLoop(t *testing.T) {
+	memoryStore := &recordingMemoryStore{}
+	toolBackend := NewBuiltinToolBackend(memoryStore).WithSkills([]string{"household_control"})
+	model := &scriptedChatModel{
+		responses: []ChatModelResponse{
+			{
+				FinishReason: "tool_calls",
+				Message: ChatMessage{
+					Role: "assistant",
+					ToolCalls: []ChatToolCall{
+						{
+							ID:        "call_home_1",
+							Name:      "home_control_simulate",
+							Arguments: `{"room_name":"客厅","device_type":"light","action":"on","utterance_summary":"打开客厅灯"}`,
+						},
+					},
+				},
+			},
+			{
+				Text:         "好的，已经把客厅灯打开了。",
+				FinishReason: "stop",
+				Message: ChatMessage{
+					Role:    "assistant",
+					Content: "好的，已经把客厅灯打开了。",
+				},
+			},
+		},
 	}
-	executor := NewLLMTurnExecutor(model)
+	executor := NewLLMTurnExecutor(model).
+		WithMemoryStore(memoryStore).
+		WithToolRegistry(toolBackend).
+		WithToolInvoker(toolBackend).
+		WithAssistantName("小欧管家").
+		WithExecutionMode("simulation")
 
 	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
-		UserText: "把门锁打开",
+		SessionID:  "sess-home",
+		DeviceID:   "panel-1",
+		ClientType: "web-h5",
+		UserText:   "把灯打开",
+		Metadata: map[string]string{
+			"room_name": "客厅",
+		},
 	})
 	if err != nil {
 		t.Fatalf("ExecuteTurn failed: %v", err)
 	}
-	if !strings.Contains(output.Text, "门锁相关操作") {
-		t.Fatalf("expected conservative lock clarification, got %q", output.Text)
+	if output.Text != "好的，已经把客厅灯打开了。" {
+		t.Fatalf("unexpected final output %q", output.Text)
 	}
-	if len(model.requests) != 0 {
-		t.Fatalf("expected sensitive deterministic route to bypass model, got %d requests", len(model.requests))
+	if len(model.requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(model.requests))
+	}
+	if !strings.Contains(model.requests[0].SystemPrompt, "已启用 runtime skill: household_control") {
+		t.Fatalf("expected household skill prompt fragment, got %q", model.requests[0].SystemPrompt)
+	}
+	foundHouseholdTool := false
+	for _, tool := range model.requests[0].Tools {
+		if tool.Name == "home_control_simulate" {
+			foundHouseholdTool = true
+			break
+		}
+	}
+	if !foundHouseholdTool {
+		t.Fatalf("expected household skill tool in first request, got %+v", model.requests[0].Tools)
+	}
+	secondMessages := model.requests[1].Messages
+	if len(secondMessages) == 0 || secondMessages[len(secondMessages)-1].Role != "tool" {
+		t.Fatalf("expected tool reinjection before final answer, got %+v", secondMessages)
+	}
+	if !strings.Contains(secondMessages[len(secondMessages)-1].Content, `"device_type":"light"`) {
+		t.Fatalf("expected household tool output in reinjected tool message, got %+v", secondMessages[len(secondMessages)-1])
 	}
 }
 

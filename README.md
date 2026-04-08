@@ -139,7 +139,8 @@ Runtime backend config lives in `.env.example`:
 AGENT_SERVER_AGENT_MEMORY_PROVIDER=in_memory
 AGENT_SERVER_AGENT_MEMORY_MAX_TURNS=8
 AGENT_SERVER_AGENT_TOOL_PROVIDER=builtin
-AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap
+AGENT_SERVER_AGENT_SKILLS=household_control
+AGENT_SERVER_AGENT_LLM_PROVIDER=auto
 AGENT_SERVER_AGENT_PERSONA=household_control_screen
 AGENT_SERVER_AGENT_EXECUTION_MODE=simulation
 AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧管家
@@ -149,6 +150,8 @@ AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
 
 Optional LLM-backed runtime config also lives under `AGENT_SERVER_AGENT_*`:
 
+- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set layered over the shared core; current built-in option is `household_control`
+- `auto`: prefer `deepseek_chat` when a DeepSeek key is present, otherwise stay on `bootstrap`
 - `bootstrap`: keep the current echo or bring-up executor
 - `deepseek_chat`: call DeepSeek's OpenAI-compatible chat completions API from inside the shared runtime boundary
 

@@ -118,6 +118,14 @@ type ToolCatalogRequest struct {
 	ClientType string
 }
 
+type SkillPromptRequest struct {
+	SessionID  string
+	DeviceID   string
+	ClientType string
+	UserText   string
+	Metadata   map[string]string
+}
+
 type ToolDefinition struct {
 	Name        string
 	Description string
@@ -127,6 +135,10 @@ type ToolDefinition struct {
 
 type ToolRegistry interface {
 	ListTools(context.Context, ToolCatalogRequest) ([]ToolDefinition, error)
+}
+
+type SkillPromptProvider interface {
+	ListPromptFragments(context.Context, SkillPromptRequest) ([]string, error)
 }
 
 type ToolCall struct {

@@ -152,3 +152,49 @@ func TestBuiltinToolBackendListsAndInvokesTools(t *testing.T) {
 		t.Fatalf("expected session output to mention session id, got %q", sessionResult.ToolOutput)
 	}
 }
+
+func TestBuiltinToolBackendCanExposeHouseholdControlSkill(t *testing.T) {
+	backend := NewBuiltinToolBackend(NewNoopMemoryStore()).WithSkills([]string{"household_control"})
+
+	tools, err := backend.ListTools(context.Background(), ToolCatalogRequest{})
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+	foundTool := false
+	for _, tool := range tools {
+		if tool.Name == householdControlSimulationToolName {
+			foundTool = true
+			break
+		}
+	}
+	if !foundTool {
+		t.Fatalf("expected household control tool in %+v", tools)
+	}
+
+	fragments, err := backend.ListPromptFragments(context.Background(), SkillPromptRequest{})
+	if err != nil {
+		t.Fatalf("ListPromptFragments failed: %v", err)
+	}
+	if len(fragments) != 1 || !strings.Contains(fragments[0], householdControlSimulationToolName) {
+		t.Fatalf("expected household skill prompt fragment, got %+v", fragments)
+	}
+
+	result, err := backend.InvokeTool(context.Background(), ToolCall{
+		CallID:    "tool_home",
+		ToolName:  householdControlSimulationToolName,
+		ToolInput: `{"room_name":"客厅","device_type":"light","action":"on","utterance_summary":"打开客厅灯"}`,
+	})
+	if err != nil {
+		t.Fatalf("InvokeTool household control failed: %v", err)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(result.ToolOutput), &payload); err != nil {
+		t.Fatalf("household tool output should be valid json: %v", err)
+	}
+	if payload["device_type"] != "light" {
+		t.Fatalf("expected normalized device_type light, got %+v", payload)
+	}
+	if payload["goal"] != "打开客厅灯光" {
+		t.Fatalf("expected normalized goal, got %+v", payload)
+	}
+}

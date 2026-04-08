@@ -152,6 +152,7 @@ type memoryScopedRecords struct {
 type BuiltinToolBackend struct {
 	MemoryStore MemoryStore
 	Now         func() time.Time
+	Skills      map[string]struct{}
 }
 
 func NewBuiltinToolBackend(memoryStore MemoryStore) *BuiltinToolBackend {
@@ -164,8 +165,13 @@ func NewBuiltinToolBackend(memoryStore MemoryStore) *BuiltinToolBackend {
 	}
 }
 
+func (b *BuiltinToolBackend) WithSkills(skills []string) *BuiltinToolBackend {
+	b.Skills = normalizedBuiltinSkills(skills)
+	return b
+}
+
 func (b *BuiltinToolBackend) ListTools(context.Context, ToolCatalogRequest) ([]ToolDefinition, error) {
-	return []ToolDefinition{
+	tools := []ToolDefinition{
 		{
 			Name:        "time.now",
 			Description: "Return the server's current local and UTC time.",
@@ -198,7 +204,19 @@ func (b *BuiltinToolBackend) ListTools(context.Context, ToolCatalogRequest) ([]T
 				"additionalProperties": false,
 			},
 		},
-	}, nil
+	}
+	if b.hasSkill(builtinSkillHouseholdControl) {
+		tools = append(tools, householdControlToolDefinition())
+	}
+	return tools, nil
+}
+
+func (b *BuiltinToolBackend) ListPromptFragments(context.Context, SkillPromptRequest) ([]string, error) {
+	fragments := make([]string, 0, 1)
+	if b.hasSkill(builtinSkillHouseholdControl) {
+		fragments = append(fragments, householdControlSkillPrompt())
+	}
+	return fragments, nil
 }
 
 func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -209,6 +227,8 @@ func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (Too
 		return b.invokeSessionDescribe(call)
 	case "memory.recall":
 		return b.invokeMemoryRecall(ctx, call)
+	case householdControlSimulationToolName:
+		return b.invokeHouseholdControl(call)
 	default:
 		return ToolResult{
 			CallID:     call.CallID,
@@ -217,6 +237,14 @@ func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (Too
 			ToolOutput: encodeToolOutput(map[string]any{"error": fmt.Sprintf("tool %s is not available", call.ToolName)}),
 		}, nil
 	}
+}
+
+func (b *BuiltinToolBackend) hasSkill(name string) bool {
+	if len(b.Skills) == 0 {
+		return false
+	}
+	_, ok := b.Skills[canonicalBuiltinSkillName(name)]
+	return ok
 }
 
 func (b *BuiltinToolBackend) invokeTimeNow(call ToolCall) (ToolResult, error) {

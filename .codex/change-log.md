@@ -307,6 +307,45 @@
 
 ## 2026-04-07
 
+- Split runtime prompt composition into explicit core sections plus runtime-skill sections:
+  - added `PromptSectionProvider` as the runtime-owned composition boundary
+  - moved persona, output-contract, and execution-mode policy into `BuiltinPromptSectionProvider`
+  - kept runtime-skill prompt fragments layered on top instead of mixed into the core prompt builder
+- Added ADR `0018-runtime-prompt-composition-uses-core-sections-plus-skill-sections.md` to record the prompt-composition boundary.
+- Added regression coverage for:
+  - injecting custom core prompt sections
+  - keeping runtime-skill prompt fragments composable on top of custom core prompt sections
+
+- Reworked household-control behavior so it no longer short-circuits inside the core executor path:
+  - removed deterministic household routing from `BootstrapTurnExecutor` and `LLMTurnExecutor`
+  - added a runtime-skill prompt interface on top of the existing tool backend boundary
+  - moved the first household-control semantics behind a built-in runtime skill, `household_control`
+  - added built-in skill tool `home.control.simulate` so the model reaches smart-home control through the normal model-tool loop
+- Clarified the voice architecture so TTS remains a shared `internal/voice` output capability across RTOS, Web/H5, desktop, and future channels rather than a browser-specific behavior.
+- Added or updated regression coverage for:
+  - bootstrap no longer owning household-control reply rules
+  - LLM turns reaching the model for household requests instead of bypassing into a deterministic route
+  - the household runtime skill contributing prompt fragments and a tool surface
+  - the household runtime-skill tool loop reinjecting tool output before final model text
+- Added ADR `0017-domain-behavior-enters-through-runtime-skills.md` and marked ADR 0014 as superseded.
+
+- Corrected the default LLM selection path so `AGENT_SERVER_AGENT_LLM_PROVIDER=auto` now prefers `deepseek_chat` whenever a DeepSeek API key is present, instead of silently staying on bootstrap echo mode.
+- Exposed the effective `llm_provider` in `/v1/info` and `/v1/realtime` so browser, RTOS, and scripted bring-up can see immediately whether the runtime is really on DeepSeek or has fallen back to bootstrap.
+- Added regression coverage for:
+  - auto-selecting `deepseek_chat` when only the DeepSeek key is configured
+  - discovery reporting the effective bootstrap fallback when `deepseek_chat` was requested without credentials
+- Updated browser settings warnings so the Web/H5 bring-up pages now flag `llm_provider=bootstrap` as a likely cause when TTS is speaking placeholder echo text instead of model output.
+- Updated `.env.example`, `README.md`, `docs/architecture/runtime-configuration.md`, and `docs/protocols/web-h5-realtime-adaptation.md` to document the new `auto` default and the discovery-level LLM visibility.
+
+- Reworked both browser debug pages again with a clearer `py-xiaozhi`-inspired interaction model:
+  - promoted the live voice state into a primary stage card instead of leaving connect, mic, text, and logs as flat sibling panels
+  - added explicit `idle / connect / listen / speak` phase guidance and a latest-event summary
+  - simplified the layout so transcript, TTS diagnostics, and raw protocol debugging remain available but no longer dominate first glance
+- Restarted local `agentd` with the existing `funasr_http + mimo_v2_tts` stack after embedding the updated built-in assets.
+- Fixed the browser debug frontends so they do not ship parse-breaking syntax to older browsers or embedded WebViews:
+  - changed both built-in and standalone pages from `type="module"` to classic deferred scripts
+  - removed direct use of optional chaining, nullish coalescing, and `String.prototype.replaceAll` from the browser-side scripts
+  - restarted local `agentd` with the existing `funasr_http + mimo_v2_tts` bring-up stack so the embedded assets and TTS path were both restored
 - Curated the long-lived dirty worktree before commit:
   - reverted `.claude/` collaboration files that only carried CRLF line-ending drift
   - reverted `.codex/skills/*` and `.codex/mimo-*` files that had no semantic changes

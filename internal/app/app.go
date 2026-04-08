@@ -14,6 +14,7 @@ import (
 
 func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 	cfg = withRealtimeDefaults(cfg)
+	llmProvider := effectiveLLMProvider(cfg.Agent)
 	turnExecutor := buildTurnExecutor(cfg, logger)
 	synthesizer := buildSynthesizer(cfg, logger)
 	responder := buildResponder(cfg, logger, turnExecutor, synthesizer)
@@ -24,6 +25,7 @@ func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 		ProtocolVersion: cfg.Realtime.ProtocolVersion,
 		WSPath:          cfg.Realtime.WSPath,
 		Subprotocol:     cfg.Realtime.Subprotocol,
+		LLMProvider:     llmProvider,
 		AuthMode:        cfg.Realtime.AuthMode,
 		TurnMode:        cfg.Realtime.TurnMode,
 	}))
@@ -31,6 +33,7 @@ func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 		WSPath:           cfg.Realtime.WSPath,
 		ProtocolVersion:  cfg.Realtime.ProtocolVersion,
 		Subprotocol:      cfg.Realtime.Subprotocol,
+		LLMProvider:      llmProvider,
 		VoiceProvider:    cfg.Voice.Provider,
 		TTSProvider:      cfg.TTS.Provider,
 		AuthMode:         cfg.Realtime.AuthMode,
@@ -52,6 +55,7 @@ func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 		WSPath:           cfg.Realtime.WSPath,
 		ProtocolVersion:  cfg.Realtime.ProtocolVersion,
 		Subprotocol:      cfg.Realtime.Subprotocol,
+		LLMProvider:      llmProvider,
 		VoiceProvider:    cfg.Voice.Provider,
 		TTSProvider:      cfg.TTS.Provider,
 		AuthMode:         cfg.Realtime.AuthMode,
@@ -94,7 +98,14 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 		WithToolInvoker(toolInvoker)
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Agent.LLMProvider)) {
-	case "", "bootstrap":
+	case "", "auto":
+		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) != "" {
+			cfg.Agent.LLMProvider = "deepseek_chat"
+			return buildTurnExecutor(cfg, logger)
+		}
+		logger.Info("agent turn executor configured", "provider", "bootstrap", "requested", "auto")
+		return bootstrap
+	case "bootstrap":
 		logger.Info("agent turn executor configured", "provider", "bootstrap")
 		return bootstrap
 	case "deepseek", "deepseek_chat":
@@ -156,17 +167,30 @@ func buildMemoryStore(cfg AgentConfig, logger *slog.Logger) agent.MemoryStore {
 func buildToolBackend(cfg AgentConfig, memoryStore agent.MemoryStore, logger *slog.Logger) (agent.ToolRegistry, agent.ToolInvoker) {
 	switch strings.ToLower(strings.TrimSpace(cfg.ToolProvider)) {
 	case "", "builtin":
-		logger.Info("agent tool backend configured", "provider", "builtin")
-		backend := agent.NewBuiltinToolBackend(memoryStore)
+		skills := splitAgentSkills(cfg.Skills)
+		logger.Info("agent tool backend configured", "provider", "builtin", "skills", strings.Join(skills, ","))
+		backend := agent.NewBuiltinToolBackend(memoryStore).WithSkills(skills)
 		return backend, backend
 	case "noop":
 		logger.Info("agent tool backend configured", "provider", "noop")
 		return agent.NewNoopToolRegistry(), agent.NewNoopToolInvoker()
 	default:
-		logger.Warn("unknown agent tool provider, falling back to builtin", "provider", cfg.ToolProvider)
-		backend := agent.NewBuiltinToolBackend(memoryStore)
+		skills := splitAgentSkills(cfg.Skills)
+		logger.Warn("unknown agent tool provider, falling back to builtin", "provider", cfg.ToolProvider, "skills", strings.Join(skills, ","))
+		backend := agent.NewBuiltinToolBackend(memoryStore).WithSkills(skills)
 		return backend, backend
 	}
+}
+
+func splitAgentSkills(raw string) []string {
+	parts := strings.Split(raw, ",")
+	skills := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			skills = append(skills, trimmed)
+		}
+	}
+	return skills
 }
 
 func buildXiaozhiProfile(cfg Config) gateway.XiaozhiCompatProfile {

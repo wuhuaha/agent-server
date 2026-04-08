@@ -12,6 +12,7 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 		WSPath:           "/v1/realtime/ws",
 		ProtocolVersion:  "rtos-ws-v0",
 		Subprotocol:      "agent-server.realtime.v0",
+		LLMProvider:      "deepseek_chat",
 		AuthMode:         "disabled",
 		TurnMode:         "client_wakeup_client_commit",
 		IdleTimeoutMs:    15000,
@@ -46,6 +47,9 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 	}
 	if got := body["ws_path"]; got != "/v1/realtime/ws" {
 		t.Fatalf("expected ws_path /v1/realtime/ws, got %v", got)
+	}
+	if got := body["llm_provider"]; got != "deepseek_chat" {
+		t.Fatalf("expected llm_provider deepseek_chat, got %v", got)
 	}
 	if got := body["turn_mode"]; got != "client_wakeup_client_commit" {
 		t.Fatalf("expected turn_mode client_wakeup_client_commit, got %v", got)

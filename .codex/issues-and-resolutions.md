@@ -192,6 +192,36 @@
 
 ## 2026-04-07
 
+### Persona And Execution-Mode Policy Were Still Hidden Inside One Monolithic Prompt Builder
+
+- Problem: even after moving household control into runtime skills, the shared runtime still assembled persona, output contract, and execution-mode policy through one hardcoded prompt builder. That kept policy boundaries implicit and made it harder to reason about what belonged to the core runtime versus what should remain pluggable.
+- Resolution: introduced `PromptSectionProvider` and moved persona, output contract, and execution-mode policy into explicit runtime-owned prompt sections. Runtime skills still append their own prompt fragments afterward instead of replacing core policy.
+- Status: resolved.
+
+### Household-Control Product Rules Were Leaking Into The Core Executor Path
+
+- Problem: the repository had started to hardwire household-control behavior directly inside `BootstrapTurnExecutor`, `LLMTurnExecutor`, and the default assistant prompt. That made the core runtime less AI-native, bypassed the normal model-tool loop for smart-home requests, and mixed product-vertical rules into a boundary that should stay generic.
+- Resolution: removed the deterministic household short-circuit from the executor path, added a runtime-skill prompt contribution interface, and moved the current household semantics into a built-in runtime skill `household_control` with tool `home.control.simulate`.
+- Status: resolved.
+
+### TTS Spoke Bootstrap Echo Text Instead Of LLM Output
+
+- Problem: live turns could synthesize speech for `agent-server received text input: ...` because the runtime was still on the bootstrap executor whenever `AGENT_SERVER_AGENT_LLM_PROVIDER` was unset, even if a DeepSeek key had already been configured elsewhere in the environment. From the client side this looked like a TTS or prompt failure, but the actual text source was the bootstrap placeholder reply.
+- Resolution: changed the default LLM provider behavior to `auto`, which now prefers `deepseek_chat` when a DeepSeek key is present and otherwise stays on bootstrap. Discovery and info endpoints now also expose the effective `llm_provider`, and browser settings pages warn explicitly when they detect `bootstrap`.
+- Status: resolved.
+
+### Browser Debug Pages Still Felt Like Dense Test Forms Instead Of A Voice Console
+
+- Problem: even after splitting browser bring-up into separate settings and debug pages, the debug surface still presented connect buttons, text input, microphone controls, TTS playback, and protocol diagnostics as mostly flat neighboring blocks. That made the page feel more like a raw test harness than a voice console and did not reflect the clearer stage-driven interaction style seen in `py-xiaozhi`.
+- Resolution: reorganized both built-in and standalone debug pages around a primary stage card with a visible phase rail (`idle / connect / listen / speak`), a current-phase headline, and a latest-event summary. Transcript, playback diagnostics, and raw protocol tools remain present, but are visually secondary.
+- Status: resolved.
+
+### Browser Debug Pages Could Render But Stay Completely Non-Interactive On Older Browsers
+
+- Problem: the built-in `/debug/realtime-h5/` page and the standalone `tools/web-client` pages were served as raw browser scripts without any build step, but they still used `type="module"`, optional chaining, nullish coalescing, and `String.prototype.replaceAll`. On older browsers or embedded WebViews, the scripts could fail during parse or be skipped entirely, leaving a page that looked loaded but did not react to clicks.
+- Resolution: switched all browser pages to classic deferred scripts and removed those unsupported syntax features from the shipped frontend code while keeping the same runtime behavior.
+- Status: resolved.
+
 ### Historical Collaboration Noise Obscured The Real Repository State
 
 - Problem: the worktree had accumulated long-lived dirty changes from prior sessions, especially `.claude/` files, `.codex/skills/*`, and `.codex/mimo-*`. Those diffs were only CRLF line-ending drift or other no-op formatting changes, which made `git status` and review output much harder to trust.

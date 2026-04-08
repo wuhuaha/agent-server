@@ -97,6 +97,14 @@
   - built-in same-origin debug: `/debug/realtime-h5/`
   - standalone settings: `tools/web-client/settings.html`
   - standalone debug: `tools/web-client/index.html`
+- Browser debug pages are shipped directly, without a frontend build pipeline. Keep them on classic broadly supported web syntax: avoid requiring `type="module"`, optional chaining, nullish coalescing, or newer string helpers unless a transpile step is introduced first.
+- For browser-side bring-up UX, prefer the `py-xiaozhi` pattern of a clear live state machine over a wall of controls. The primary page should make `connect -> listen -> speak` obvious at a glance, while logs and raw protocol tools stay secondary.
+- The durable LLM startup default is now `auto`: when a DeepSeek key is present, the runtime should behave as `deepseek_chat`; otherwise it should fall back to `bootstrap`. Discovery must expose the effective `llm_provider` so clients can diagnose bootstrap echo behavior without reading server logs.
+- TTS belongs to the shared voice-runtime output layer under `internal/voice`; it must remain reusable across RTOS, Web/H5, desktop, and future channels rather than becoming a browser-specific feature.
+- Domain-specific product behavior such as smart-home control should not short-circuit inside the core executor path. It should enter through runtime skills that contribute prompt fragments and tools behind the shared `internal/agent` interfaces.
+- The first built-in runtime skill is `household_control`, enabled through `AGENT_SERVER_AGENT_SKILLS`, and its current tool surface is `home.control.simulate`.
+- Runtime prompt composition is now explicitly layered: core prompt sections provide persona, output contract, and execution-mode policy; runtime skills append their own prompt fragments afterward.
+- `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` overrides only the persona section. It does not disable runtime-owned output-contract or execution-mode sections.
 - Current local reference quality caveat: silence-only audio on the `funasr_http` reference path may still produce false-positive text such as `그.`, so silence rejection still needs follow-up tuning.
 - The reserved bootstrap commands `/tool <name> <json>` and `/memory` exist only to validate the shared runtime memory and tool paths during bring-up; they are not the long-term product surface.
 - Bootstrap control commands are not persisted into turn memory so local debug operations do not overwrite conversation recall.

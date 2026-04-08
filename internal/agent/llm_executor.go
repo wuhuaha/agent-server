@@ -9,22 +9,24 @@ import (
 const defaultToolLoopMaxSteps = 6
 
 type LLMTurnExecutor struct {
-	MemoryStore   MemoryStore
-	ToolRegistry  ToolRegistry
-	ToolInvoker   ToolInvoker
-	Model         ChatModel
-	SystemPrompt  string
-	AssistantName string
-	Persona       string
-	ExecutionMode string
+	MemoryStore    MemoryStore
+	ToolRegistry   ToolRegistry
+	ToolInvoker    ToolInvoker
+	PromptSections PromptSectionProvider
+	Model          ChatModel
+	SystemPrompt   string
+	AssistantName  string
+	Persona        string
+	ExecutionMode  string
 }
 
 func NewLLMTurnExecutor(model ChatModel) LLMTurnExecutor {
 	return LLMTurnExecutor{
-		MemoryStore:  NewNoopMemoryStore(),
-		ToolRegistry: NewNoopToolRegistry(),
-		ToolInvoker:  NewNoopToolInvoker(),
-		Model:        model,
+		MemoryStore:    NewNoopMemoryStore(),
+		ToolRegistry:   NewNoopToolRegistry(),
+		ToolInvoker:    NewNoopToolInvoker(),
+		PromptSections: NewBuiltinPromptSectionProvider(),
+		Model:          model,
 	}
 }
 
@@ -49,6 +51,14 @@ func (e LLMTurnExecutor) WithToolInvoker(invoker ToolInvoker) LLMTurnExecutor {
 		invoker = NewNoopToolInvoker()
 	}
 	e.ToolInvoker = invoker
+	return e
+}
+
+func (e LLMTurnExecutor) WithPromptSectionProvider(provider PromptSectionProvider) LLMTurnExecutor {
+	if provider == nil {
+		provider = NewBuiltinPromptSectionProvider()
+	}
+	e.PromptSections = provider
 	return e
 }
 
@@ -117,18 +127,10 @@ func (e LLMTurnExecutor) streamLLMOutput(
 	if _, ok := parseBootstrapToolCommand(trimmedText); ok {
 		return bootstrap.streamBootstrapOutput(ctx, input, trimmedText, memoryContext, memoryErr, sink)
 	}
-	if routed, ok := deterministicHouseholdTurn(input, e.ExecutionMode); ok {
-		if err := emitTurnDelta(ctx, sink, TurnDelta{
-			Kind: TurnDeltaKindText,
-			Text: routed.Text,
-		}); err != nil {
-			return TurnOutput{}, err
-		}
-		return turnOutputFromText(trimmedText, routed.Text), nil
-	}
 
+	systemPrompt := e.systemPrompt(ctx, input)
 	tools, aliases := e.listModelTools(ctx, input)
-	messages := initialChatMessages(e.systemPrompt(), memoryContext, trimmedText)
+	messages := initialChatMessages(systemPrompt, memoryContext, trimmedText)
 	var outputText strings.Builder
 
 	for step := 0; step < defaultToolLoopMaxSteps; step++ {
@@ -137,7 +139,7 @@ func (e LLMTurnExecutor) streamLLMOutput(
 			DeviceID:      input.DeviceID,
 			ClientType:    input.ClientType,
 			UserText:      trimmedText,
-			SystemPrompt:  e.systemPrompt(),
+			SystemPrompt:  systemPrompt,
 			MemoryContext: memoryContext,
 			Metadata:      metadata,
 			Images:        append([]ImageInput(nil), input.Images...),
@@ -336,8 +338,53 @@ func (e LLMTurnExecutor) bootstrapDelegate() BootstrapTurnExecutor {
 		WithToolInvoker(e.toolInvoker())
 }
 
-func (e LLMTurnExecutor) systemPrompt() string {
-	return renderAgentSystemPrompt(e.SystemPrompt, e.AssistantName, e.Persona, e.ExecutionMode)
+func (e LLMTurnExecutor) systemPrompt(ctx context.Context, input TurnInput) string {
+	baseSections, err := e.promptSections().ListPromptSections(ctx, PromptSectionRequest{
+		SessionID:     input.SessionID,
+		DeviceID:      input.DeviceID,
+		ClientType:    input.ClientType,
+		UserText:      input.UserText,
+		Metadata:      cloneMetadata(input.Metadata),
+		Template:      e.SystemPrompt,
+		AssistantName: e.AssistantName,
+		Persona:       e.Persona,
+		ExecutionMode: e.ExecutionMode,
+	})
+	if err != nil || len(baseSections) == 0 {
+		baseSections, _ = NewBuiltinPromptSectionProvider().ListPromptSections(ctx, PromptSectionRequest{
+			SessionID:     input.SessionID,
+			DeviceID:      input.DeviceID,
+			ClientType:    input.ClientType,
+			UserText:      input.UserText,
+			Metadata:      cloneMetadata(input.Metadata),
+			Template:      e.SystemPrompt,
+			AssistantName: e.AssistantName,
+			Persona:       e.Persona,
+			ExecutionMode: e.ExecutionMode,
+		})
+	}
+	base := composePromptSections(baseSections)
+	provider, ok := e.toolRegistry().(SkillPromptProvider)
+	if !ok {
+		return base
+	}
+	fragments, err := provider.ListPromptFragments(ctx, SkillPromptRequest{
+		SessionID:  input.SessionID,
+		DeviceID:   input.DeviceID,
+		ClientType: input.ClientType,
+		UserText:   input.UserText,
+		Metadata:   cloneMetadata(input.Metadata),
+	})
+	if err != nil || len(fragments) == 0 {
+		return base
+	}
+	rendered := []string{strings.TrimSpace(base)}
+	for _, fragment := range fragments {
+		if trimmed := strings.TrimSpace(fragment); trimmed != "" {
+			rendered = append(rendered, trimmed)
+		}
+	}
+	return strings.TrimSpace(strings.Join(rendered, "\n\n"))
 }
 
 func (e LLMTurnExecutor) memoryStore() MemoryStore {
@@ -365,11 +412,31 @@ func (e LLMTurnExecutor) model() ChatModel {
 	return e.Model
 }
 
+func (e LLMTurnExecutor) promptSections() PromptSectionProvider {
+	if e.PromptSections == nil {
+		return NewBuiltinPromptSectionProvider()
+	}
+	return e.PromptSections
+}
+
 func initialChatMessages(systemPrompt string, memoryContext MemoryContext, userText string) []ChatMessage {
 	messages := make([]ChatMessage, 0, 3)
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	if systemPrompt == "" {
-		systemPrompt = renderAgentSystemPrompt("", "", defaultAgentPersona, defaultAgentExecutionMode)
+		systemPrompt = composePromptSections([]PromptSection{
+			{
+				Name:    "persona",
+				Content: renderAgentPersonaPrompt("", "", defaultAgentPersona),
+			},
+			{
+				Name:    "runtime_output_contract",
+				Content: defaultAgentRuntimeOutputContract(),
+			},
+			{
+				Name:    "execution_mode_policy",
+				Content: defaultAgentExecutionModePolicy(defaultAgentExecutionMode),
+			},
+		})
 	}
 	messages = append(messages, ChatMessage{
 		Role:    "system",

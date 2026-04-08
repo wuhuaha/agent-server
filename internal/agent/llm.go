@@ -65,20 +65,68 @@ func (f ChatModelDeltaSinkFunc) EmitChatModelDelta(ctx context.Context, delta Ch
 	return f(ctx, delta)
 }
 
+type PromptSection struct {
+	Name    string
+	Content string
+}
+
+type PromptSectionRequest struct {
+	SessionID     string
+	DeviceID      string
+	ClientType    string
+	UserText      string
+	Metadata      map[string]string
+	Template      string
+	AssistantName string
+	Persona       string
+	ExecutionMode string
+}
+
+type PromptSectionProvider interface {
+	ListPromptSections(context.Context, PromptSectionRequest) ([]PromptSection, error)
+}
+
+type BuiltinPromptSectionProvider struct{}
+
+func NewBuiltinPromptSectionProvider() BuiltinPromptSectionProvider {
+	return BuiltinPromptSectionProvider{}
+}
+
+func (BuiltinPromptSectionProvider) ListPromptSections(_ context.Context, request PromptSectionRequest) ([]PromptSection, error) {
+	return []PromptSection{
+		{
+			Name:    "persona",
+			Content: renderAgentPersonaPrompt(request.Template, request.AssistantName, request.Persona),
+		},
+		{
+			Name:    "runtime_output_contract",
+			Content: defaultAgentRuntimeOutputContract(),
+		},
+		{
+			Name:    "execution_mode_policy",
+			Content: defaultAgentExecutionModePolicy(request.ExecutionMode),
+		},
+	}, nil
+}
+
 func defaultAgentSystemPrompt(assistantName string) string {
 	return renderAgentSystemPrompt("", assistantName, defaultAgentPersona, defaultAgentExecutionMode)
 }
 
 func renderAgentSystemPrompt(template, assistantName, persona, executionMode string) string {
-	sections := []string{
-		renderAgentPersonaPrompt(template, assistantName, persona),
-		defaultAgentRuntimeOutputContract(),
-		defaultAgentExecutionModePolicy(executionMode),
-	}
+	sections, _ := NewBuiltinPromptSectionProvider().ListPromptSections(context.Background(), PromptSectionRequest{
+		Template:      template,
+		AssistantName: assistantName,
+		Persona:       persona,
+		ExecutionMode: executionMode,
+	})
+	return composePromptSections(sections)
+}
 
+func composePromptSections(sections []PromptSection) string {
 	rendered := make([]string, 0, len(sections))
 	for _, section := range sections {
-		trimmed := strings.TrimSpace(section)
+		trimmed := strings.TrimSpace(section.Content)
 		if trimmed == "" {
 			continue
 		}
@@ -104,24 +152,23 @@ func defaultAgentPersonaPrompt(persona, assistantName string) string {
 你是一个名为{{assistant_name}}的高端家庭智能中控语音助手，运行在家庭中控屏上。
 
 你的核心目标：
-- 用自然、专业、可靠、克制、贴心的方式，帮助用户完成家庭设备控制、状态查询、场景联动、生活提醒与家居问答。
+- 用自然、专业、可靠、克制、贴心的方式，帮助用户完成家庭场景中的语音交互、信息说明、任务理解与结果反馈。
 
 角色要求：
 1. 智能
 - 优先理解用户真实生活意图，而不是做生硬的字面匹配。
 - 能处理口语、省略、模糊表达、上下文指代和家庭场景里的习惯说法。
-- 能把感受型表达转成合理的家居控制语义。
+- 当上下文不足时，先稳妥澄清，不要强行编造确定结论。
 
 2. 专业
-- 熟悉空调、地暖、新风、灯光、窗帘、电视、音响、风扇、加湿器、除湿机、空气净化器、门锁、安防、扫地机器人、热水器等常见家庭设备。
-- 熟悉温度、湿度、风速、亮度、色温、模式、开关、定时、场景联动等常见控制维度。
 - 回复用词准确、稳定、有质感，不夸张，不随意。
+- 回答应面向真实用户需求，而不是暴露系统内部结构。
 
 3. 可靠
 - 优先给出明确、稳定、可理解的反馈。
-- 对安全、门锁、燃气、安防等敏感设备更谨慎；存在明显歧义、风险或可能误操作时，先做简短澄清。
+- 对安全、高风险或依据不足的话题更谨慎；存在明显歧义、风险或可能误操作时，先做简短澄清。
 - 不编造危险状态，不制造恐慌。
-- 对实时状态查询，如果没有来自当前会话的明确依据，不要凭空捏造设备状态或告警结果，应以稳妥方式简短澄清、引导或转为可执行建议。
+- 对实时状态查询，如果没有来自当前会话的明确依据，不要凭空捏造结果，应以稳妥方式简短澄清、引导或转为建议。
 
 4. 贴心
 - 语气自然，有服务感，但不过度热情。
@@ -134,24 +181,6 @@ func defaultAgentPersonaPrompt(persona, assistantName string) string {
 - 第三优先：减少打扰，避免过度追问。
 - 第四优先：在存在歧义或风险时做必要澄清。
 - 第五优先：保持高端、稳定、可信的中控助手语气。
-
-控制类回复要求：
-- 回复中尽量准确体现设备、动作、参数、房间、模式、结果。
-- 优先使用类似：
-  - “好的，已经把客厅空调调到制冷 26 度。”
-  - “已为你打开餐厅灯，并把亮度调高了一些。”
-  - “客厅窗帘已经关闭。”
-  - “已为你切换到更柔和的观影氛围。”
-
-意图理解示例：
-- “太热了，26度” -> 优先理解为空调切到制冷 26 度。
-- “客厅有点暗” -> 优先理解为客厅灯光调亮。
-- “帮我有点氛围感” -> 优先理解为切到柔和、偏暖、较低亮度的氛围灯光。
-- “睡觉了” -> 优先理解为睡眠场景，如关闭主灯、保留夜灯、拉窗帘、空调进入更适合休息的模式。
-
-家居问答规则：
-- 对一般家居知识、使用建议、生活提醒类问题，直接给出自然、专业、简洁的回答。
-- 如果问题涉及安全风险、医疗风险、燃气、电器异常、门锁安防等高风险主题，优先给出稳妥建议，不做无依据的肯定判断。
 
 始终使用用户当前语言回复。`, "{{assistant_name}}", name))
 	default:

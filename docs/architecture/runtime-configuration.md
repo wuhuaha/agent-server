@@ -67,7 +67,9 @@ The first RTOS bring-up path should not depend on image input. Text input is opt
 - `AGENT_SERVER_AGENT_TOOL_PROVIDER`
   - `builtin`: default local runtime tool backend
   - `noop`: disable runtime tools
+- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set injected on top of the shared core; current built-in option is `household_control`
 - `AGENT_SERVER_AGENT_LLM_PROVIDER`
+  - `auto`: default behaviour; prefer `deepseek_chat` when a DeepSeek key is present, otherwise fall back to `bootstrap`
   - `bootstrap`: existing placeholder or bring-up executor
   - `deepseek_chat`: optional DeepSeek chat-completions-backed executor
 - `AGENT_SERVER_AGENT_LLM_TIMEOUT_MS`: timeout for one LLM request
@@ -84,10 +86,17 @@ The first RTOS bring-up path should not depend on image input. Text input is opt
 Current runtime note:
 
 - the DeepSeek integration stays inside `internal/agent`; device gateways, channel adapters, and the voice runtime still depend only on the shared `TurnExecutor`
-- when `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is empty, the runtime injects a built-in Chinese smart-home-control persona selected by `AGENT_SERVER_AGENT_PERSONA`
+- when `AGENT_SERVER_AGENT_LLM_PROVIDER` is unset or `auto`, the runtime chooses `deepseek_chat` if a DeepSeek key is present; otherwise it stays on `bootstrap`
+- when `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is empty, the runtime injects a built-in assistant persona selected by `AGENT_SERVER_AGENT_PERSONA`
+- prompt composition inside the shared runtime is now layered as:
+  - core persona section
+  - runtime output-contract section
+  - execution-mode policy section
+  - runtime-skill prompt sections
 - the runtime always appends an execution-mode policy selected by `AGENT_SERVER_AGENT_EXECUTION_MODE`
 - custom prompt overrides may include `{{assistant_name}}`, which is replaced at runtime from `AGENT_SERVER_AGENT_ASSISTANT_NAME`
-- custom prompt overrides replace the persona template, but do not disable the runtime-owned execution-mode policy
+- custom prompt overrides replace the persona section, but do not disable the runtime-owned output-contract or execution-mode policy sections
+- domain behavior such as household-control semantics should be added through runtime skills, which can contribute prompt fragments and tools without hardcoding domain branches into the core executor path
 - current mode semantics are:
   - `simulation`: debug-stage simulated success feedback for control requests, without exposing simulation details to end users
   - `dry_run`: natural-language description of understood target action and expected effect, without claiming real execution
@@ -177,6 +186,7 @@ Current cloud ASR note:
 
 Current implementation details:
 
+- TTS belongs to the shared voice runtime output layer, not to a specific browser, RTOS, or channel adapter.
 - the Go server now calls MiMo with streaming `pcm16` output for the realtime path
 - the SSE stream is decoded incrementally and the first device frames can be forwarded without waiting for a full synthesis result
 - the streamed PCM is emitted to the device in `20 ms` paced frames so barge-in can preempt the current response
