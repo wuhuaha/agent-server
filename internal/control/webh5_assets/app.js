@@ -38,6 +38,12 @@ const state = {
     resampler: null,
     meterAnimation: 0,
   },
+  ui: {
+    connectionState: "idle",
+    turnState: "ready",
+    ttsState: "idle",
+    lastEvent: "等待用户操作。",
+  },
 };
 
 const refs = {
@@ -83,6 +89,14 @@ const refs = {
   stopPlaybackBtn: document.getElementById("stop-playback-btn"),
   replayTTSBtn: document.getElementById("replay-tts-btn"),
   downloadTTSBtn: document.getElementById("download-tts-btn"),
+  phaseBadge: document.getElementById("phase-badge"),
+  phaseTitle: document.getElementById("phase-title"),
+  phaseCopy: document.getElementById("phase-copy"),
+  flowStepIdle: document.getElementById("flow-step-idle"),
+  flowStepConnect: document.getElementById("flow-step-connect"),
+  flowStepListen: document.getElementById("flow-step-listen"),
+  flowStepSpeak: document.getElementById("flow-step-speak"),
+  lastEventValue: document.getElementById("last-event-value"),
 };
 
 function initialHttpBase() {
@@ -121,7 +135,12 @@ function appendEvent(line) {
   if (state.eventLines.length > 240) {
     state.eventLines.splice(0, state.eventLines.length - 240);
   }
+  state.ui.lastEvent = line;
+  if (refs.lastEventValue) {
+    refs.lastEventValue.textContent = line;
+  }
   renderLog(refs.eventLog, state.eventLines);
+  renderPhaseOverview();
 }
 
 function appendAssistant(line) {
@@ -142,25 +161,127 @@ function clearLogs() {
   renderLog(refs.eventLog, state.eventLines);
 }
 
+function setFlowStepState(element, mode) {
+  if (!element) {
+    return;
+  }
+  element.className = "flow-step";
+  if (mode === "active") {
+    element.className += " is-active";
+  } else if (mode === "done") {
+    element.className += " is-done";
+  }
+}
+
+function renderPhaseOverview() {
+  if (!refs.phaseBadge || !refs.phaseTitle || !refs.phaseCopy) {
+    return;
+  }
+
+  let phase = "idle";
+  if (state.ui.connectionState === "error" || /error|failed/.test(state.ui.turnState)) {
+    phase = "error";
+  } else if (state.mic.active || state.ui.turnState === "capturing") {
+    phase = "listening";
+  } else if (
+    state.ui.turnState === "speaking" ||
+    state.ui.ttsState === "audio live" ||
+    state.ui.ttsState === "awaiting audio" ||
+    state.playback.sources.size > 0
+  ) {
+    phase = "speaking";
+  } else if (
+    state.ui.connectionState === "connecting" ||
+    state.ui.turnState === "bootstrapping" ||
+    state.ui.turnState === "thinking" ||
+    state.ui.turnState === "interrupt-sent"
+  ) {
+    phase = "connecting";
+  } else if (state.ui.connectionState === "connected" || state.sessionId) {
+    phase = "connected";
+  }
+
+  const configs = {
+    idle: {
+      badge: "IDLE",
+      title: "等待连接",
+      copy: "先抓取同源 discovery 并建立 websocket，然后再开始一轮真实联调。",
+    },
+    connected: {
+      badge: "READY",
+      title: "连接已就绪",
+      copy: "当前连接和 discovery 均已准备好，可以直接发文本、起会话或开始一轮浏览器收音。",
+    },
+    connecting: {
+      badge: "WORKING",
+      title: "正在建立或处理",
+      copy: "当前正在 discovery、起会话、处理中断，或等待服务端给出本轮回复。",
+    },
+    listening: {
+      badge: "LISTENING",
+      title: "正在聆听",
+      copy: "浏览器正在采集麦克风音频；说完后点击 Stop And Commit 提交当前轮。",
+    },
+    speaking: {
+      badge: "SPEAKING",
+      title: "正在回复",
+      copy: "服务端正在回传文本或音频；如需打断当前轮，可直接点击 Interrupt。",
+    },
+    error: {
+      badge: "ERROR",
+      title: "当前阶段出错",
+      copy: "先看右下日志定位问题，必要时重新连接或回到 Settings 再检查 discovery。",
+    },
+  };
+
+  const current = configs[phase];
+  document.body.setAttribute("data-phase", phase);
+  refs.phaseBadge.textContent = current.badge;
+  refs.phaseBadge.className = `phase-pill phase-${phase}`;
+  refs.phaseTitle.textContent = current.title;
+  refs.phaseCopy.textContent = current.copy;
+  if (refs.lastEventValue && !state.ui.lastEvent) {
+    refs.lastEventValue.textContent = current.copy;
+  }
+
+  setFlowStepState(refs.flowStepIdle, phase === "idle" || phase === "error" ? "active" : "done");
+  setFlowStepState(
+    refs.flowStepConnect,
+    phase === "connecting" ? "active" : (phase === "connected" || phase === "listening" || phase === "speaking" ? "done" : "idle"),
+  );
+  setFlowStepState(
+    refs.flowStepListen,
+    phase === "listening" ? "active" : (phase === "speaking" ? "done" : "idle"),
+  );
+  setFlowStepState(refs.flowStepSpeak, phase === "speaking" ? "active" : "idle");
+}
+
 function updateBadge(element, text, variant) {
   element.textContent = text;
   element.className = `badge ${variant}`;
 }
 
 function setTurnState(text, variant = "badge-neutral") {
+  state.ui.turnState = text;
   updateBadge(refs.turnState, text, variant);
+  renderPhaseOverview();
 }
 
 function setConnectionState(text, variant = "badge-idle") {
+  state.ui.connectionState = text;
   updateBadge(refs.connectionBadge, text, variant);
+  renderPhaseOverview();
 }
 
 function setTTSState(text, variant = "badge-idle") {
+  state.ui.ttsState = text;
   updateBadge(refs.ttsBadge, text, variant);
+  renderPhaseOverview();
 }
 
 function updateSessionValue() {
   refs.sessionValue.textContent = state.sessionId || "not started";
+  renderPhaseOverview();
 }
 
 function formatBytes(bytes) {
@@ -238,7 +359,7 @@ function buildPCM16Wav(arrayBuffer, sampleRate, channels) {
 
 function refreshAudioArtifact() {
   clearLastAudioArtifact();
-  if (state.tts.lastChunks.length === 0 || !state.discovery?.output_audio) {
+  if (state.tts.lastChunks.length === 0 || !state.discovery || !state.discovery.output_audio) {
     refs.lastAudioValue.textContent = "none";
     refs.replayTTSBtn.disabled = true;
     refs.downloadTTSBtn.disabled = true;
@@ -279,7 +400,7 @@ function finalizeTTSTurn(reason = "ready") {
   }
   if (state.tts.expected && state.tts.packetCount === 0) {
     setTTSState("no audio", "badge-warn");
-    refs.ttsNote.textContent = state.discovery?.tts_provider === "none"
+    refs.ttsNote.textContent = state.discovery && state.discovery.tts_provider === "none"
       ? "Response was text-only because the current server TTS provider is none."
       : "The server path expected or implied audio, but no binary TTS frames arrived.";
     refs.playbackStateValue.textContent = "missing audio";
@@ -303,7 +424,7 @@ function nextSeq() {
 
 function generateId(prefix) {
   const secureValue = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID().replaceAll("-", "")
+    ? crypto.randomUUID().split("-").join("")
     : `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
   return `${prefix}_${secureValue.slice(0, 20)}`;
 }
@@ -489,6 +610,7 @@ function stopPlayback(markStopped = true) {
     refs.ttsNote.textContent = "Audio playback was stopped locally.";
   }
   setPlaybackMeter(0);
+  renderPhaseOverview();
 }
 
 function applyPlaybackGain() {
@@ -718,6 +840,7 @@ async function stopMicCapture() {
   state.mic.processor = null;
   state.mic.sink = null;
   state.mic.resampler = null;
+  renderPhaseOverview();
 }
 
 async function startMicCapture() {
@@ -793,6 +916,7 @@ async function startMicCapture() {
   state.mic.sink = sink;
   state.mic.resampler = resampler;
   refs.micStatus.textContent = "recording";
+  renderPhaseOverview();
 }
 
 async function ensureSessionStarted(wakeReason = currentWakeReason()) {
@@ -821,7 +945,7 @@ async function ensureSessionStarted(wakeReason = currentWakeReason()) {
       server_can_end: true,
     },
     capabilities: {
-      text_input: Boolean(state.discovery.capabilities?.allow_text_input),
+      text_input: Boolean(state.discovery.capabilities && state.discovery.capabilities.allow_text_input),
       image_input: false,
       half_duplex: false,
       local_wake_word: false,
@@ -994,7 +1118,7 @@ async function sendTextTurn() {
   if (!text) {
     throw new Error("text turn is empty");
   }
-  if (!state.discovery?.capabilities?.allow_text_input) {
+  if (!state.discovery || !state.discovery.capabilities || !state.discovery.capabilities.allow_text_input) {
     throw new Error("server discovery says text input is disabled");
   }
   await ensureSessionStarted("manual_text_turn");
@@ -1050,6 +1174,7 @@ async function bindActions() {
   setTTSState("idle", "badge-idle");
   setPlaybackMeter(0);
   applyPlaybackGain();
+  renderPhaseOverview();
 
   refs.connectBtn.addEventListener("click", async () => {
     try {

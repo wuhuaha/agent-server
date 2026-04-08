@@ -68,6 +68,12 @@ const state = {
     sink: null,
     resampler: null,
   },
+  ui: {
+    connectionState: "idle",
+    turnState: "ready",
+    ttsState: "idle",
+    lastEvent: "等待用户操作。",
+  },
 };
 
 const refs = {
@@ -127,6 +133,14 @@ const refs = {
   micStopBtn: document.getElementById("mic-stop-btn"),
   sendRawBtn: document.getElementById("send-raw-btn"),
   clearLogBtn: document.getElementById("clear-log-btn"),
+  phaseBadge: document.getElementById("phase-badge"),
+  phaseTitle: document.getElementById("phase-title"),
+  phaseCopy: document.getElementById("phase-copy"),
+  flowStepIdle: document.getElementById("flow-step-idle"),
+  flowStepConnect: document.getElementById("flow-step-connect"),
+  flowStepListen: document.getElementById("flow-step-listen"),
+  flowStepSpeak: document.getElementById("flow-step-speak"),
+  lastEventValue: document.getElementById("last-event-value"),
 };
 
 function cloneProfile(profile) {
@@ -191,14 +205,26 @@ function mergeProfile(base, incoming) {
     merged.protocolVersion = incoming.protocolVersion;
   }
   if (incoming.inputAudio && typeof incoming.inputAudio === "object") {
-    merged.inputAudio.codec = incoming.inputAudio.codec ?? merged.inputAudio.codec;
-    merged.inputAudio.sampleRateHz = Number(incoming.inputAudio.sampleRateHz ?? merged.inputAudio.sampleRateHz);
-    merged.inputAudio.channels = Number(incoming.inputAudio.channels ?? merged.inputAudio.channels);
+    if (typeof incoming.inputAudio.codec !== "undefined" && incoming.inputAudio.codec !== null) {
+      merged.inputAudio.codec = incoming.inputAudio.codec;
+    }
+    if (typeof incoming.inputAudio.sampleRateHz !== "undefined" && incoming.inputAudio.sampleRateHz !== null) {
+      merged.inputAudio.sampleRateHz = Number(incoming.inputAudio.sampleRateHz);
+    }
+    if (typeof incoming.inputAudio.channels !== "undefined" && incoming.inputAudio.channels !== null) {
+      merged.inputAudio.channels = Number(incoming.inputAudio.channels);
+    }
   }
   if (incoming.outputAudio && typeof incoming.outputAudio === "object") {
-    merged.outputAudio.codec = incoming.outputAudio.codec ?? merged.outputAudio.codec;
-    merged.outputAudio.sampleRateHz = Number(incoming.outputAudio.sampleRateHz ?? merged.outputAudio.sampleRateHz);
-    merged.outputAudio.channels = Number(incoming.outputAudio.channels ?? merged.outputAudio.channels);
+    if (typeof incoming.outputAudio.codec !== "undefined" && incoming.outputAudio.codec !== null) {
+      merged.outputAudio.codec = incoming.outputAudio.codec;
+    }
+    if (typeof incoming.outputAudio.sampleRateHz !== "undefined" && incoming.outputAudio.sampleRateHz !== null) {
+      merged.outputAudio.sampleRateHz = Number(incoming.outputAudio.sampleRateHz);
+    }
+    if (typeof incoming.outputAudio.channels !== "undefined" && incoming.outputAudio.channels !== null) {
+      merged.outputAudio.channels = Number(incoming.outputAudio.channels);
+    }
   }
   if (typeof incoming.allowTextInput !== "undefined") {
     merged.allowTextInput = Boolean(incoming.allowTextInput);
@@ -217,7 +243,12 @@ function appendEvent(line) {
   if (state.eventLines.length > 280) {
     state.eventLines.splice(0, state.eventLines.length - 280);
   }
+  state.ui.lastEvent = line;
+  if (refs.lastEventValue) {
+    refs.lastEventValue.textContent = line;
+  }
   renderLog(refs.eventLog, state.eventLines);
+  renderPhaseOverview();
 }
 
 function appendAssistant(line) {
@@ -238,25 +269,127 @@ function clearLogs() {
   renderLog(refs.eventLog, state.eventLines);
 }
 
+function setFlowStepState(element, mode) {
+  if (!element) {
+    return;
+  }
+  element.className = "flow-step";
+  if (mode === "active") {
+    element.className += " is-active";
+  } else if (mode === "done") {
+    element.className += " is-done";
+  }
+}
+
+function renderPhaseOverview() {
+  if (!refs.phaseBadge || !refs.phaseTitle || !refs.phaseCopy) {
+    return;
+  }
+
+  let phase = "idle";
+  if (state.ui.connectionState === "error" || /error|failed/.test(state.ui.turnState)) {
+    phase = "error";
+  } else if (state.mic.active || state.ui.turnState === "capturing") {
+    phase = "listening";
+  } else if (
+    state.ui.turnState === "speaking" ||
+    state.ui.ttsState === "audio live" ||
+    state.ui.ttsState === "awaiting audio" ||
+    state.playback.sources.size > 0
+  ) {
+    phase = "speaking";
+  } else if (
+    state.ui.connectionState === "connecting" ||
+    state.ui.turnState === "bootstrapping" ||
+    state.ui.turnState === "thinking" ||
+    state.ui.turnState === "interrupt-sent"
+  ) {
+    phase = "connecting";
+  } else if (state.ui.connectionState === "connected" || state.sessionId) {
+    phase = "connected";
+  }
+
+  const configs = {
+    idle: {
+      badge: "IDLE",
+      title: "等待连接",
+      copy: "先建立 websocket 连接，再启动会话、发文本或开始一轮监听。",
+    },
+    connected: {
+      badge: "READY",
+      title: "连接已就绪",
+      copy: "连接与 profile 已准备好，可以直接开始会话、发文本或启动收音。",
+    },
+    connecting: {
+      badge: "WORKING",
+      title: "正在建立或处理",
+      copy: "当前正在 discovery、起会话、处理中断，或等待本轮回复返回。",
+    },
+    listening: {
+      badge: "LISTENING",
+      title: "正在聆听",
+      copy: "浏览器正在采集麦克风音频；说完后点击 Stop And Commit 提交本轮。",
+    },
+    speaking: {
+      badge: "SPEAKING",
+      title: "正在回复",
+      copy: "服务端正在下发文本或音频；如需打断当前轮，可直接点击 Interrupt。",
+    },
+    error: {
+      badge: "ERROR",
+      title: "当前阶段出错",
+      copy: "先看右侧日志定位问题，必要时重新连接或回到 Settings 调整配置。",
+    },
+  };
+
+  const current = configs[phase];
+  document.body.setAttribute("data-phase", phase);
+  refs.phaseBadge.textContent = current.badge;
+  refs.phaseBadge.className = `phase-pill phase-${phase}`;
+  refs.phaseTitle.textContent = current.title;
+  refs.phaseCopy.textContent = current.copy;
+  if (refs.lastEventValue && !state.ui.lastEvent) {
+    refs.lastEventValue.textContent = current.copy;
+  }
+
+  setFlowStepState(refs.flowStepIdle, phase === "idle" || phase === "error" ? "active" : "done");
+  setFlowStepState(
+    refs.flowStepConnect,
+    phase === "connecting" ? "active" : (phase === "connected" || phase === "listening" || phase === "speaking" ? "done" : "idle"),
+  );
+  setFlowStepState(
+    refs.flowStepListen,
+    phase === "listening" ? "active" : (phase === "speaking" ? "done" : "idle"),
+  );
+  setFlowStepState(refs.flowStepSpeak, phase === "speaking" ? "active" : "idle");
+}
+
 function updateBadge(element, text, variant) {
   element.textContent = text;
   element.className = `badge ${variant}`;
 }
 
 function setConnectionState(text, variant = "badge-idle") {
+  state.ui.connectionState = text;
   updateBadge(refs.connectionBadge, text, variant);
+  renderPhaseOverview();
 }
 
 function setTurnState(text, variant = "badge-neutral") {
+  state.ui.turnState = text;
   updateBadge(refs.turnState, text, variant);
+  renderPhaseOverview();
 }
 
 function setTTSState(text, variant = "badge-idle") {
+  state.ui.ttsState = text;
   updateBadge(refs.ttsBadge, text, variant);
+  renderPhaseOverview();
 }
 
 function updateSessionValue() {
   refs.sessionValue.textContent = state.sessionId || "not started";
+  renderPhaseOverview();
 }
 
 function formatBytes(bytes) {
@@ -497,7 +630,7 @@ function currentWakeReason() {
 
 function generateId(prefix) {
   const secureValue = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID().replaceAll("-", "")
+    ? crypto.randomUUID().split("-").join("")
     : `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
   return `${prefix}_${secureValue.slice(0, 20)}`;
 }
@@ -540,22 +673,26 @@ function applyDiscoveryJSON() {
     throw new Error(`invalid discovery JSON: ${error.message}`);
   }
 
+  const inputAudio = parsed.input_audio && typeof parsed.input_audio === "object" ? parsed.input_audio : {};
+  const outputAudio = parsed.output_audio && typeof parsed.output_audio === "object" ? parsed.output_audio : {};
+  const capabilities = parsed.capabilities && typeof parsed.capabilities === "object" ? parsed.capabilities : {};
+
   const nextProfile = mergeProfile(defaultProfile, {
     httpBase: refs.httpBase.value.trim() || state.profile.httpBase,
     wsPath: parsed.ws_path,
     subprotocol: parsed.subprotocol,
     protocolVersion: parsed.protocol_version,
     inputAudio: {
-      codec: parsed.input_audio?.codec,
-      sampleRateHz: parsed.input_audio?.sample_rate_hz,
-      channels: parsed.input_audio?.channels,
+      codec: inputAudio.codec,
+      sampleRateHz: inputAudio.sample_rate_hz,
+      channels: inputAudio.channels,
     },
     outputAudio: {
-      codec: parsed.output_audio?.codec,
-      sampleRateHz: parsed.output_audio?.sample_rate_hz,
-      channels: parsed.output_audio?.channels,
+      codec: outputAudio.codec,
+      sampleRateHz: outputAudio.sample_rate_hz,
+      channels: outputAudio.channels,
     },
-    allowTextInput: parsed.capabilities?.allow_text_input,
+    allowTextInput: capabilities.allow_text_input,
   });
 
   state.profile = nextProfile;
@@ -662,6 +799,7 @@ function stopPlayback(markStopped = true) {
     refs.ttsNote.textContent = "Audio playback was stopped locally.";
   }
   setPlaybackMeter(0);
+  renderPhaseOverview();
 }
 
 function applyPlaybackGain() {
@@ -881,6 +1019,7 @@ async function stopMicCapture() {
   state.mic.processor = null;
   state.mic.sink = null;
   state.mic.resampler = null;
+  renderPhaseOverview();
 }
 
 async function startMicCapture() {
@@ -956,6 +1095,7 @@ async function startMicCapture() {
   state.mic.sink = sink;
   state.mic.resampler = resampler;
   refs.micStatus.textContent = "recording";
+  renderPhaseOverview();
 }
 
 async function ensureSessionStarted(wakeReason = currentWakeReason()) {
@@ -1260,6 +1400,7 @@ function bindActions() {
   setPlaybackMeter(0);
   renderProfile(state.profile);
   applyPlaybackGain();
+  renderPhaseOverview();
 
   refs.connectBtn.addEventListener("click", async () => {
     try {

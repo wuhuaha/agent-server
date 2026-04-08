@@ -6,197 +6,182 @@
     <title>agent-server realtime voice workbench</title>
     <link rel="stylesheet" href="styles.css">
   </head>
-  <body>
-    <div class="page-shell">
-      <header class="hero-panel">
-        <nav class="page-nav" aria-label="Workbench pages">
-          <a class="page-link" href="settings.html">Settings</a>
-          <a class="page-link is-current" href="index.html">Debug</a>
-        </nav>
-
-        <div class="hero-copy-block">
-          <p class="eyebrow">Standalone Voice Console</p>
-          <h1>Realtime Debug Console</h1>
-          <p class="hero-copy">
-            这里只保留真正联调时需要盯的东西：连接、会话、文本与麦克风输入、TTS 播放与协议日志。endpoint、audio profile 和 discovery 同步已经挪到单独的 Settings 页。
-          </p>
-          <div class="hero-tags">
-            <span>Native websocket contract</span>
-            <span>Settings page for profile sync</span>
-            <span>Mic uplink + audio downlink</span>
-            <span>TTS replay and export</span>
+  <body data-phase="idle">
+    <div class="page-shell page-shell-app">
+      <header class="hero-panel hero-panel-app">
+        <div class="hero-topbar">
+          <div class="hero-copy-block">
+            <p class="eyebrow">Standalone Voice Console</p>
+            <h1>Realtime Workbench</h1>
+            <p class="hero-copy">
+              参考 py-xiaozhi 的主工作台，把操作路径压缩成一条直线：先连接、再起会话、随后开始监听或发文本，右侧始终保留音频状态和协议日志。底层协议仍然是原生 <code>/v1/realtime/ws</code>。
+            </p>
           </div>
+
+          <nav class="page-nav" aria-label="Workbench pages">
+            <a class="page-link" href="settings.html">Settings</a>
+            <a class="page-link is-current" href="index.html">Debug</a>
+          </nav>
         </div>
 
-        <div class="hero-summary-grid">
+        <div class="hero-summary-grid hero-summary-grid-app">
           <article class="summary-card">
             <span class="summary-label">Connection</span>
             <span id="connection-badge" class="badge badge-idle">idle</span>
-            <p>WebSocket transport, subprotocol, and local route readiness.</p>
+            <p>WebSocket 连接和 profile 可用性。</p>
           </article>
-
           <article class="summary-card">
             <span class="summary-label">Turn State</span>
             <span id="turn-state" class="badge badge-neutral">ready</span>
-            <p>Session state, turn phase, and server response lifecycle.</p>
+            <p>本轮是否在待机、收音、思考或回复。</p>
           </article>
-
           <article class="summary-card">
             <span class="summary-label">Audio State</span>
             <span id="tts-badge" class="badge badge-idle">idle</span>
-            <p>Whether TTS was expected, whether chunks arrived, and whether playback is active.</p>
+            <p>TTS 期望、下行音频块和播放状态。</p>
           </article>
         </div>
       </header>
 
-      <main class="console-grid">
-        <section class="stack stack-left">
-          <article class="panel">
-            <div class="panel-head">
-              <div>
-                <p class="panel-kicker">Session Control</p>
-                <h2>Connect And Run Turns</h2>
-              </div>
-              <a class="button-link button-subtle" href="settings.html">Open Settings</a>
+      <section class="panel stage-panel">
+        <div class="stage-layout">
+          <div class="stage-orb-column">
+            <div class="state-orb">
+              <span id="phase-badge" class="phase-pill phase-idle">IDLE</span>
             </div>
+            <div class="flow-track" aria-label="Session flow">
+              <span id="flow-step-idle" class="flow-step is-active">Idle</span>
+              <span id="flow-step-connect" class="flow-step">Connect</span>
+              <span id="flow-step-listen" class="flow-step">Listen</span>
+              <span id="flow-step-speak" class="flow-step">Speak</span>
+            </div>
+          </div>
 
-            <p class="note">
-              当前调试页默认读取 Settings 页已保存的 profile 与 session preset。这里不再堆大表单，只保留连线和会话动作。
+          <div class="stage-copy">
+            <p class="panel-kicker">Session Stage</p>
+            <h2 id="phase-title">等待连接</h2>
+            <p id="phase-copy" class="stage-note">
+              这页默认复用 Settings 保存的 profile。连接 websocket 后，就可以直接起会话、听写和核对 TTS。
             </p>
 
-            <div class="button-row">
+            <div class="button-row button-row-hero">
               <button id="connect-btn" type="button">Connect</button>
               <button id="disconnect-btn" type="button" class="button-subtle">Disconnect</button>
-            </div>
-
-            <div class="button-row">
               <button id="start-session-btn" type="button">Start Session</button>
               <button id="end-session-btn" type="button" class="button-subtle">End Session</button>
             </div>
 
-            <div class="stat-grid compact-grid">
-              <div class="stat-card">
-                <span class="stat-label">Profile</span>
-                <strong id="profile-summary">rtos-ws-v0 / agent-server.realtime.v0</strong>
-              </div>
-              <div class="stat-card">
-                <span class="stat-label">Session</span>
-                <strong id="session-value">not started</strong>
-              </div>
-              <div class="stat-card">
-                <span class="stat-label">Input</span>
-                <strong id="input-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
-              </div>
-              <div class="stat-card">
-                <span class="stat-label">Output</span>
-                <strong id="output-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
-              </div>
+            <div class="button-row button-row-hero">
+              <button id="mic-start-btn" type="button">Start Listening</button>
+              <button id="mic-stop-btn" type="button" class="button-subtle">Stop And Commit</button>
+              <button id="interrupt-btn" type="button" class="button-subtle">Interrupt</button>
+              <a class="button-link button-subtle" href="settings.html">Open Settings</a>
             </div>
+          </div>
 
-            <p id="requirement-note" class="note">
-              Profile 与 discovery 兼容性提示会继续显示在这里；如需修改 endpoint、音频合同或 device preset，请回到 Settings 页。
-            </p>
+          <div class="stage-side-grid">
+            <article class="info-card">
+              <span class="summary-label">Session</span>
+              <strong id="session-value">not started</strong>
+            </article>
+            <article class="info-card">
+              <span class="summary-label">Route</span>
+              <strong id="profile-summary">rtos-ws-v0 / agent-server.realtime.v0</strong>
+            </article>
+            <article class="info-card">
+              <span class="summary-label">Input Audio</span>
+              <strong id="input-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
+            </article>
+            <article class="info-card">
+              <span class="summary-label">Output Audio</span>
+              <strong id="output-audio-summary">pcm16le / 16000 Hz / 1 ch</strong>
+            </article>
+            <article class="info-card">
+              <span class="summary-label">Modalities</span>
+              <strong id="response-modalities-value">modalities: n/a</strong>
+            </article>
+            <article class="info-card info-card-wide">
+              <span class="summary-label">Last Event</span>
+              <strong id="last-event-value">等待用户操作。</strong>
+            </article>
+          </div>
+        </div>
+      </section>
 
-            <div class="hidden-fields" aria-hidden="true">
-              <input id="http-base" type="text" value="http://127.0.0.1:8080">
-              <input id="ws-path" type="text" value="/v1/realtime/ws">
-              <input id="subprotocol" type="text" value="agent-server.realtime.v0">
-              <input id="protocol-version" type="text" value="rtos-ws-v0">
-              <input id="device-id" type="text" value="">
-              <input id="wake-reason" type="text" value="manual_web_tool">
-              <input id="input-codec" type="text" value="pcm16le">
-              <input id="input-sample-rate" type="number" value="16000">
-              <input id="input-channels" type="number" value="1">
-              <input id="output-codec" type="text" value="pcm16le">
-              <input id="output-sample-rate" type="number" value="16000">
-              <input id="output-channels" type="number" value="1">
-              <input id="allow-text-input" type="checkbox" checked>
-            </div>
-          </article>
-        </section>
-
-        <section class="stack stack-center">
-          <article class="panel">
+      <main class="workspace-grid">
+        <section class="workspace-main">
+          <article class="panel panel-transcript">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Turn Deck</p>
-                <h2>Input, Interrupt, And Raw Control</h2>
-              </div>
-              <span id="response-modalities-value" class="panel-chip">modalities: n/a</span>
-            </div>
-
-            <div class="action-grid">
-              <article class="action-card">
-                <div class="action-head">
-                  <h3>Text Turn</h3>
-                  <span class="action-note">For direct reasoning and TTS verification.</span>
-                </div>
-                <label class="field">
-                  <span>Input text</span>
-                  <textarea id="text-input" rows="5" placeholder="Type a text turn and check whether text-only or spoken output comes back."></textarea>
-                </label>
-                <div class="button-row">
-                  <button id="send-text-btn" type="button">Send Text</button>
-                  <button id="interrupt-btn" type="button" class="button-subtle">Interrupt</button>
-                </div>
-              </article>
-
-              <article class="action-card">
-                <div class="action-head">
-                  <h3>Mic Turn</h3>
-                  <span class="action-note">PCM16 capture, commit, and barge-in flow.</span>
-                </div>
-                <div class="meter-block">
-                  <div class="meter-labels">
-                    <span>Mic level</span>
-                    <span id="mic-status">stopped</span>
-                  </div>
-                  <div class="meter-rail">
-                    <div id="mic-meter" class="meter-fill"></div>
-                  </div>
-                </div>
-                <div class="button-row">
-                  <button id="mic-start-btn" type="button">Start Mic Turn</button>
-                  <button id="mic-stop-btn" type="button" class="button-subtle">Stop And Commit</button>
-                </div>
-              </article>
-
-              <article class="action-card">
-                <div class="action-head">
-                  <h3>Raw JSON</h3>
-                  <span class="action-note">Use the native envelope for edge-case debugging.</span>
-                </div>
-                <label class="field">
-                  <span>JSON envelope or payload object</span>
-                  <textarea id="raw-json-input" rows="7" placeholder='{"type":"session.update","payload":{"interrupt":true}}'></textarea>
-                </label>
-                <div class="button-row">
-                  <button id="send-raw-btn" type="button">Send Raw JSON</button>
-                </div>
-              </article>
-            </div>
-          </article>
-
-          <article class="panel panel-tall">
-            <div class="panel-head">
-              <div>
-                <p class="panel-kicker">Runtime Stream</p>
-                <h2>Assistant Transcript</h2>
+                <p class="panel-kicker">Assistant Transcript</p>
+                <h2>Conversation Stream</h2>
               </div>
               <span class="panel-chip">ordered response.chunk text</span>
             </div>
             <pre id="assistant-output" class="stream-output transcript-output"></pre>
+
+            <div class="composer-grid">
+              <label class="field field-stretch">
+                <span>Quick text turn</span>
+                <textarea id="text-input" rows="5" placeholder="输入一句话，确认文本路径是否伴随 spoken reply。"></textarea>
+              </label>
+              <div class="button-row">
+                <button id="send-text-btn" type="button">Send Text</button>
+              </div>
+            </div>
           </article>
+
+          <div class="workspace-subgrid">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Listening</p>
+                  <h2>Mic Turn</h2>
+                </div>
+                <span id="mic-status" class="panel-chip">stopped</span>
+              </div>
+
+              <div class="meter-block">
+                <div class="meter-labels">
+                  <span>Mic level</span>
+                  <span>PCM16 capture / commit flow</span>
+                </div>
+                <div class="meter-rail">
+                  <div id="mic-meter" class="meter-fill"></div>
+                </div>
+              </div>
+
+              <p class="note">
+                Standalone 页按当前 profile 采集并上送 PCM16。修改 endpoint、音频合同或 discovery 对齐方式，请回到 Settings 页。
+              </p>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Raw Control</p>
+                  <h2>Envelope Debug</h2>
+                </div>
+              </div>
+
+              <label class="field">
+                <span>JSON envelope or payload object</span>
+                <textarea id="raw-json-input" rows="7" placeholder='{"type":"session.update","payload":{"interrupt":true}}'></textarea>
+              </label>
+              <div class="button-row">
+                <button id="send-raw-btn" type="button">Send Raw JSON</button>
+              </div>
+            </article>
+          </div>
         </section>
 
-        <aside class="stack stack-right">
+        <aside class="workspace-side">
           <article class="panel">
             <div class="panel-head">
               <div>
-                <p class="panel-kicker">Audio Diagnostics</p>
-                <h2>TTS Monitor</h2>
+                <p class="panel-kicker">Profile Snapshot</p>
+                <h2>Session And Providers</h2>
               </div>
-              <span id="playback-state-value" class="panel-chip">idle</span>
             </div>
 
             <div class="stat-grid">
@@ -208,6 +193,33 @@
                 <span class="stat-label">TTS Provider</span>
                 <strong id="tts-provider-value">unknown</strong>
               </div>
+            </div>
+
+            <p id="requirement-note" class="note">
+              Profile 与 discovery 兼容性提示会继续显示在这里；如需修改 endpoint、音频合同或 device preset，请回到 Settings 页。
+            </p>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Playback</p>
+                <h2>TTS Monitor</h2>
+              </div>
+              <span id="playback-state-value" class="panel-chip">idle</span>
+            </div>
+
+            <div class="meter-block meter-block-tts">
+              <div class="meter-labels">
+                <span>Playback energy</span>
+                <span id="tts-note">Waiting for a response.</span>
+              </div>
+              <div class="meter-rail meter-rail-tts">
+                <div id="tts-meter" class="meter-fill meter-fill-tts"></div>
+              </div>
+            </div>
+
+            <div class="stat-grid">
               <div class="stat-card">
                 <span class="stat-label">Audio Chunks</span>
                 <strong id="audio-chunks-value">0</strong>
@@ -226,26 +238,15 @@
               </div>
             </div>
 
-            <div class="meter-block meter-block-tts">
-              <div class="meter-labels">
-                <span>Playback energy</span>
-                <span id="tts-note">Waiting for a response.</span>
-              </div>
-              <div class="meter-rail meter-rail-tts">
-                <div id="tts-meter" class="meter-fill meter-fill-tts"></div>
-              </div>
-            </div>
-
-            <div class="field">
+            <label class="field">
               <span>Playback volume</span>
               <input id="playback-volume" type="range" min="0" max="100" value="100">
-            </div>
+            </label>
 
             <div class="button-row">
               <button id="mute-playback-btn" type="button" class="button-subtle">Mute</button>
               <button id="stop-playback-btn" type="button" class="button-subtle">Stop Audio</button>
             </div>
-
             <div class="button-row">
               <button id="replay-tts-btn" type="button" class="button-subtle">Replay Last TTS</button>
               <button id="download-tts-btn" type="button" class="button-subtle">Download WAV</button>
@@ -264,8 +265,24 @@
           </article>
         </aside>
       </main>
+
+      <div class="hidden-fields" aria-hidden="true">
+        <input id="http-base" type="text" value="http://127.0.0.1:8080">
+        <input id="ws-path" type="text" value="/v1/realtime/ws">
+        <input id="subprotocol" type="text" value="agent-server.realtime.v0">
+        <input id="protocol-version" type="text" value="rtos-ws-v0">
+        <input id="device-id" type="text" value="">
+        <input id="wake-reason" type="text" value="manual_web_tool">
+        <input id="input-codec" type="text" value="pcm16le">
+        <input id="input-sample-rate" type="number" value="16000">
+        <input id="input-channels" type="number" value="1">
+        <input id="output-codec" type="text" value="pcm16le">
+        <input id="output-sample-rate" type="number" value="16000">
+        <input id="output-channels" type="number" value="1">
+        <input id="allow-text-input" type="checkbox" checked>
+      </div>
     </div>
 
-    <script type="module" src="app.js"></script>
+    <script defer src="app.js"></script>
   </body>
 </html>

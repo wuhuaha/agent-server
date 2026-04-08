@@ -53,6 +53,7 @@ const refs = {
 };
 
 const serverMeta = {
+  llmProvider: "unknown",
   voiceProvider: "unknown",
   ttsProvider: "unknown",
 };
@@ -87,14 +88,26 @@ function mergeProfile(base, incoming) {
     merged.protocolVersion = incoming.protocolVersion;
   }
   if (incoming.inputAudio && typeof incoming.inputAudio === "object") {
-    merged.inputAudio.codec = incoming.inputAudio.codec ?? merged.inputAudio.codec;
-    merged.inputAudio.sampleRateHz = Number(incoming.inputAudio.sampleRateHz ?? merged.inputAudio.sampleRateHz);
-    merged.inputAudio.channels = Number(incoming.inputAudio.channels ?? merged.inputAudio.channels);
+    if (typeof incoming.inputAudio.codec !== "undefined" && incoming.inputAudio.codec !== null) {
+      merged.inputAudio.codec = incoming.inputAudio.codec;
+    }
+    if (typeof incoming.inputAudio.sampleRateHz !== "undefined" && incoming.inputAudio.sampleRateHz !== null) {
+      merged.inputAudio.sampleRateHz = Number(incoming.inputAudio.sampleRateHz);
+    }
+    if (typeof incoming.inputAudio.channels !== "undefined" && incoming.inputAudio.channels !== null) {
+      merged.inputAudio.channels = Number(incoming.inputAudio.channels);
+    }
   }
   if (incoming.outputAudio && typeof incoming.outputAudio === "object") {
-    merged.outputAudio.codec = incoming.outputAudio.codec ?? merged.outputAudio.codec;
-    merged.outputAudio.sampleRateHz = Number(incoming.outputAudio.sampleRateHz ?? merged.outputAudio.sampleRateHz);
-    merged.outputAudio.channels = Number(incoming.outputAudio.channels ?? merged.outputAudio.channels);
+    if (typeof incoming.outputAudio.codec !== "undefined" && incoming.outputAudio.codec !== null) {
+      merged.outputAudio.codec = incoming.outputAudio.codec;
+    }
+    if (typeof incoming.outputAudio.sampleRateHz !== "undefined" && incoming.outputAudio.sampleRateHz !== null) {
+      merged.outputAudio.sampleRateHz = Number(incoming.outputAudio.sampleRateHz);
+    }
+    if (typeof incoming.outputAudio.channels !== "undefined" && incoming.outputAudio.channels !== null) {
+      merged.outputAudio.channels = Number(incoming.outputAudio.channels);
+    }
   }
   if (typeof incoming.allowTextInput !== "undefined") {
     merged.allowTextInput = Boolean(incoming.allowTextInput);
@@ -219,30 +232,38 @@ function updateRequirementNote(profile) {
   if (serverMeta.ttsProvider === "none") {
     notes.push("当前服务端 discovery 显示 TTS provider 为 none，调试页文本回包正常但不会有音频。");
   }
+  if (serverMeta.llmProvider === "bootstrap") {
+    notes.push("当前服务端 discovery 显示 LLM provider 为 bootstrap，TTS 更可能播报占位回声文本而不是真正的模型回复。");
+  }
   refs.requirementNote.textContent = notes.length > 0
     ? notes.join(" ")
     : "当前 profile 看起来兼容浏览器直接调试路径。保存后进入 Debug 页即可直接做 connect、text turn、mic turn 和 TTS 验证。";
 }
 
 function applyDiscovery(payload) {
+  const inputAudio = payload.input_audio && typeof payload.input_audio === "object" ? payload.input_audio : {};
+  const outputAudio = payload.output_audio && typeof payload.output_audio === "object" ? payload.output_audio : {};
+  const capabilities = payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : {};
+
   const nextProfile = mergeProfile(defaultProfile, {
     httpBase: refs.httpBase.value.trim() || defaultProfile.httpBase,
     wsPath: payload.ws_path,
     subprotocol: payload.subprotocol,
     protocolVersion: payload.protocol_version,
     inputAudio: {
-      codec: payload.input_audio?.codec,
-      sampleRateHz: payload.input_audio?.sample_rate_hz,
-      channels: payload.input_audio?.channels,
+      codec: inputAudio.codec,
+      sampleRateHz: inputAudio.sample_rate_hz,
+      channels: inputAudio.channels,
     },
     outputAudio: {
-      codec: payload.output_audio?.codec,
-      sampleRateHz: payload.output_audio?.sample_rate_hz,
-      channels: payload.output_audio?.channels,
+      codec: outputAudio.codec,
+      sampleRateHz: outputAudio.sample_rate_hz,
+      channels: outputAudio.channels,
     },
-    allowTextInput: payload.capabilities?.allow_text_input,
+    allowTextInput: capabilities.allow_text_input,
   });
 
+  serverMeta.llmProvider = payload.llm_provider || "unknown";
   serverMeta.voiceProvider = payload.voice_provider || "unknown";
   serverMeta.ttsProvider = payload.tts_provider || "unknown";
   refs.discoveryJSON.value = JSON.stringify(payload, null, 2);

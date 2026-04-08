@@ -33,7 +33,7 @@ The built-in pages perform:
 - settings page:
   - browser preset save for `device_id` and `wake_reason`
   - same-origin discovery refresh
-  - current voice/TTS provider snapshot
+  - current LLM/voice/TTS provider snapshot
 - debug page:
   - realtime discovery during connect
   - websocket connect with the required subprotocol
@@ -97,6 +97,7 @@ The same browser rule applies to the standalone tool under `tools/web-client/`.
 
 For the current browser reference page, discovery should advertise:
 
+- `llm_provider` with the effective runtime selection so browser bring-up can detect bootstrap fallback quickly
 - `input_audio.codec = pcm16le`
 - `input_audio.channels = 1`
 - `output_audio.codec = pcm16le`

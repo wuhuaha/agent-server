@@ -83,10 +83,13 @@ async function refreshDiscovery() {
   refs.ttsProviderValue.textContent = payload.tts_provider || "unknown";
 
   const notes = [];
+  if (payload.llm_provider === "bootstrap") {
+    notes.push("当前服务端 discovery 显示 LLM provider 为 bootstrap，TTS 更可能播报占位回声文本而不是真正的模型回复。");
+  }
   if (payload.tts_provider === "none") {
     notes.push("当前服务端未启用 TTS，因此调试页的文本回包不会伴随二进制音频。");
   }
-  if (payload.output_audio?.codec !== "pcm16le" || payload.output_audio?.channels !== 1) {
+  if (!payload.output_audio || payload.output_audio.codec !== "pcm16le" || payload.output_audio.channels !== 1) {
     notes.push("当前浏览器调试页只直接支持 mono pcm16le 输出播放。");
   }
   if (!window.isSecureContext && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(initialHttpBase())) {
