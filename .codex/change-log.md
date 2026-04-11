@@ -376,3 +376,109 @@
 - Saved the latest live validation report at `/tmp/agent-server-web-tts-runner.json`, which now reports:
   - `response_with_audio_ratio = 1.0`
   - audio chunks arriving for `text`, `audio`, and `server-end`
+
+## 2026-04-08
+
+- Added `docs/architecture/modern-ai-agent-framework-review-zh-2026-04-08.md`, a detailed Chinese review that compares `agent-server` against current official AI-agent and voice-agent framework patterns and turns the findings into project-specific optimization guidance.
+- Added `docs/adr/0019-modern-voice-agent-optimization-builds-on-current-session-centric-architecture.md` to record the durable decision to keep the current session-centric architecture and optimize within it instead of replacing the core with an external framework.
+- Updated `docs/architecture/overview.md` to link the new review note from the main architecture index.
+- Updated `plan.md` and `.codex/project-memory.md` so the review outcome is captured in the active execution log and durable project memory.
+- Added `docs/architecture/agent-server-next-framework-zh-2026-04-08.md`, a detailed target-framework proposal for the next architecture stage, including the proposed `Voice Orchestration Core`, `Agent Workflow Core`, `Capability Fabric`, `Context & Memory Fabric`, `Policy & Safety Fabric`, and `Eval Plane`.
+- Added `docs/adr/0020-proposed-next-framework-keeps-session-core-and-adds-voice-workflow-capability-fabrics.md` with status `Proposed` so the target framework is recorded without being confused with the current implemented architecture.
+- Updated `docs/architecture/overview.md`, `plan.md`, and `.codex/project-memory.md` to index and contextualize the new target-framework proposal.
+- Added `docs/architecture/migration-plan-to-next-framework-zh-2026-04-08.md`, a staged migration plan from the current implementation to the proposed next framework, including `F0` through `F6`, frozen public contracts, exit gates, and migration risks.
+- Updated `docs/architecture/agent-server-next-framework-zh-2026-04-08.md` and `docs/architecture/overview.md` to link the new migration-plan note from the main architecture docs.
+- Updated `plan.md` and `.codex/project-memory.md` so the migration-plan proposal is captured as part of the current architecture planning record.
+- Started the actual migration with the first `F0` implementation slice:
+  - added shared gateway-generated `turn_id` and `trace_id`
+  - threaded those identifiers through `voice.TurnRequest` and `agent.TurnInput`
+  - exposed optional `turn_id` and `trace_id` on native realtime `response.start`
+  - exposed optional `turn_id` on server-emitted `session.update` turn-state events
+- Added or updated regression coverage for:
+  - native realtime responder requests receiving non-empty `turn_id` and `trace_id`
+  - `response.start` and turn-state `session.update` events carrying a consistent `turn_id`
+  - `xiaozhi` compatibility responder requests also receiving non-empty `turn_id` and `trace_id`
+- Extended the Python desktop runner report with earlier phase timings:
+  - `thinking_latency_ms`
+  - `speaking_latency_ms`
+  - `active_return_latency_ms`
+- Updated `docs/protocols/realtime-session-v0.md`, `schemas/realtime/session-envelope.schema.json`, and `clients/python-desktop-client/README.md` to document the first traceability slice.
+
+## 2026-04-09
+
+- Completed the next `F0` migration slice for structured turn traceability without changing the public websocket contracts:
+  - native realtime and `xiaozhi` gateway handlers now emit structured server logs for accepted, response-started, speaking, interrupted, completed, and terminal-error turn phases
+  - `turn_id` and `trace_id` now continue into shared ASR and TTS request objects
+  - app bootstrap now wraps the shared runtime and voice providers with `agent.LoggingTurnExecutor`, `voice.LoggingTranscriber`, and the upgraded `voice.LoggingSynthesizer`
+- Broadened the desktop runner output into a more compare-ready and replay-friendly baseline artifact:
+  - added `generated_at`, `run_id`, `artifact_dir`, and `llm_provider`
+  - added per-scenario `issues`, `artifacts`, and `playout_complete_latency_ms`
+  - extended `quality_summary` with issue counts and received-audio totals
+  - `--save-rx-dir` now archives per-scenario `events.json`, `response.txt`, `scenario.json`, and `received-audio.wav` when available
+- Updated `plan.md`, `docs/architecture/overview.md`, `docs/architecture/migration-plan-to-next-framework-zh-2026-04-08.md`, and `clients/python-desktop-client/README.md` to record the completed `F0-2` slice.
+- Completed `F0-3` for scripted regression-scenario expansion on the native realtime path:
+  - added runner scenarios `tool`, `barge-in`, `timeout`, and the broader `regression` suite
+  - extended per-scenario reports with `turn_ids`, `trace_ids`, `end_reason`, `response_start_count`, `tool_call_count`, and `tool_result_count`
+  - documented the difference between quick `full` smoke coverage and the broader `regression` baseline in the desktop client README
+- Completed `F0-4` for RTOS-mock artifact alignment:
+  - upgraded `RTOSMockClient` JSON output to include run metadata, discovery metadata, identifier capture, checks/issues, and artifact references in the same style as the desktop runner baseline reports
+  - added `--save-rx-dir` so RTOS-style bring-up can archive `events.json`, `response.txt`, `run.json`, and `received-audio.wav` under a run directory
+  - kept the existing `--save-rx` quick WAV export path for lightweight one-off validation
+- Restored the local native baseline stack for the first live archived `F0` validation:
+  - started the FunASR worker on `127.0.0.1:8091` from the `xiaozhi-esp32-server` conda env
+  - started `agentd` on `127.0.0.1:8080` with `bootstrap + funasr_http + tts=none`
+  - prewarmed `iic/SenseVoiceSmall` with a local WAV sample and normalized the validation sample to `16k/mono/pcm16le`
+- Ran the first live archived native baseline and saved its artifacts under `artifacts/live-baseline/20260409`:
+  - desktop runner `report.json` now records a successful live `regression` run with `ok=true` across `text`, `audio`, `server-end`, `tool`, `barge-in`, and `timeout`
+  - RTOS mock `report.json` now records a successful live interrupting-two-turn session against the same stack
+  - canonical live run directories are `run_f70f2b7bba3e` for desktop regression and `run_e4675e6b3cfb` for RTOS mock
+- Confirmed in live logs that the new observability path is actually wired end to end:
+  - the same `turn_id` and `trace_id` now appear across gateway accepted/completed phases, FunASR transcription logs, and shared runtime turn logs during the archived live runs
+
+## 2026-04-10
+
+- Added `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md`, a Chinese assessment note that:
+  - evaluates the current repository against the bar for smooth, natural, full-duplex voice interaction
+  - documents concrete local code and protocol evidence for why the current stack is still commit-driven and only quasi full-duplex
+  - compares the repository with modern official and open voice-agent references such as OpenAI Realtime, Gemini Live, LiveKit, Pipecat, and Moshi
+  - recommends upgrading `internal/voice` toward a shared `Voice Orchestration Core` instead of treating the gap as only an ASR/TTS model issue
+- Added `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md`, a Chinese executable task list for a local/open-source-first path to smoother full-duplex voice interaction, split into `L0` through `L5`.
+- Added `docs/adr/0021-local-open-source-first-full-duplex-roadmap-prioritizes-voice-orchestration.md` to record the durable decision that the next full-duplex voice stage should stay local/open-source-first and prioritize strengthening `internal/voice` over switching the primary architecture path to hosted realtime speech providers.
+- Updated `docs/architecture/overview.md`, `plan.md`, `.codex/project-memory.md`, and `.codex/issues-and-resolutions.md` so the new local/open-source-first roadmap is indexed, tracked, and reflected in durable project records.
+- Completed the first concrete `L0/L1` implementation slices for that roadmap:
+  - added shared `StreamingTranscriber` and `StreamingTranscriptionSession` contracts plus the `BufferedStreamingTranscriber` compatibility path in `internal/voice`
+  - updated `ASRResponder` to prefer streaming ASR automatically while still preserving batch compatibility and normalized speech metadata
+  - extended the desktop runner with early-partial, barge-in-cutoff, and response-text quality metrics for later full-duplex comparisons
+  - implemented the local FunASR worker stream lifecycle under `/v1/asr/stream/start|push|finish|close`
+  - upgraded `HTTPTranscriber` to consume that worker lifecycle as a real streaming session and switched `funasr_http` app wiring over to that path
+  - kept `iflytek_rtasr` on the buffered streaming compatibility adapter for now so the shared voice boundary stays consistent across providers
+- Added or updated regression coverage for:
+  - `internal/voice` streaming transcriber compatibility behavior
+  - local HTTP streaming transcriber lifecycle start, partial, finish, and close
+  - `ASRResponder` preferring the streaming path when available
+  - Python worker stream preview and finish lifecycle behavior
+
+## 2026-04-11
+
+- Completed the first minimal `L2` server-endpoint preview slice without changing the public websocket contracts:
+  - added shared `InputPreviewer`, `InputPreviewSession`, and `InputPreview` contracts in `internal/voice`
+  - added a default silence-based turn detector inside `internal/voice`
+  - updated `ASRResponder` so streaming-ASR providers can expose internal input-preview sessions through the shared voice-runtime boundary
+  - added hidden runtime switch `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED`
+  - native realtime and `xiaozhi` websocket handlers now keep an internal preview session, poll it on short read deadlines, and may auto-commit an audio turn after a local silence window
+- Kept the external contract stable:
+  - public discovery still reports `client_wakeup_client_commit`
+  - no realtime or compatibility event schema was widened for this slice
+- Added or updated regression coverage for:
+  - `ASRResponder` input preview suggesting commit after silence
+  - native realtime auto-commit without explicit `audio.in.commit`
+  - `xiaozhi` compatibility auto-commit without explicit `listen.stop`
+- Completed the next `L2` follow-up slice for configurability and bring-up validation:
+  - added `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS` and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`
+  - wired those thresholds through shared `ASRResponder` construction for both `funasr_http` and `iflytek_rtasr`
+  - added a focused desktop-runner `server-endpoint-preview` scenario that uploads audio without `audio.in.commit` and waits for hidden server-endpoint completion
+  - kept that runner scenario opt-in only, outside the default `full` and `regression` suites because the public discovery contract still advertises `client_wakeup_client_commit`
+- Added or updated regression coverage for:
+  - custom preview-threshold behavior inside `ASRResponder`
+  - app-level responder wiring preserving configured preview thresholds
+  - runner dispatch coverage for the new `server-endpoint-preview` scenario

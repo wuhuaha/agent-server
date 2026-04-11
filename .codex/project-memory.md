@@ -105,8 +105,43 @@
 - The first built-in runtime skill is `household_control`, enabled through `AGENT_SERVER_AGENT_SKILLS`, and its current tool surface is `home.control.simulate`.
 - Runtime prompt composition is now explicitly layered: core prompt sections provide persona, output contract, and execution-mode policy; runtime skills append their own prompt fragments afterward.
 - `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` overrides only the persona section. It does not disable runtime-owned output-contract or execution-mode sections.
+- The 2026-04-08 modern-framework review concluded that `agent-server` should keep its current session-centric architecture and optimize within it rather than replacing the core with an external agent framework.
+- The next architecture priorities after that review are: stronger voice-runtime orchestration, better observability and evals, a registry plus MCP-aligned skill/tool layer, durable household memory, and a lightweight workflow or handoff layer.
+- A next-stage target architecture proposal now exists at `docs/architecture/agent-server-next-framework-zh-2026-04-08.md`; it is intentionally a proposal, not a statement that the repository already implements that target shape.
+- That proposal keeps the current session-centric core and introduces six target fabrics or cores above it: `Voice Orchestration Core`, `Agent Workflow Core`, `Capability Fabric`, `Context & Memory Fabric`, `Policy & Safety Fabric`, and `Eval Plane`.
+- A matching staged migration proposal now exists at `docs/architecture/migration-plan-to-next-framework-zh-2026-04-08.md`; it maps the transition from the current implementation into `F0` through `F6` and treats public realtime and compatibility contracts as frozen by default during the migration.
+- The first actual migration slice is now underway under `F0`: native realtime turns get gateway-generated `turn_id` and `trace_id`, and server-emitted turn-state updates now include `turn_id` so client reports can correlate one response turn across phases without changing event names.
+- The shared turn path now threads `turn_id` and `trace_id` through `voice.TurnRequest` and `agent.TurnInput`, while the `xiaozhi` compatibility path also generates those identifiers for the shared responder request path even though the compat wire protocol does not yet expose them.
+- The Python desktop runner now records earlier turn-phase timings: `thinking_latency_ms`, `speaking_latency_ms`, and `active_return_latency_ms`, in addition to the existing response-start, first-text, first-audio, and response-complete timings.
+- The second `F0` traceability slice now keeps those identifiers visible in server-side observability too: gateway phase logs, runtime logs, ASR logs, TTS logs, and playback-complete logs all correlate on the same `turn_id` and `trace_id` without widening the public websocket contracts again.
+- The desktop runner baseline artifact now carries run-level metadata (`generated_at`, `run_id`, `artifact_dir`, `llm_provider`) plus per-scenario issue lists and replay-friendly saved artifacts, so migration slices can be compared from archived outputs instead of ad hoc console logs.
+- The native desktop runner now has two tiers of scripted coverage:
+  - `full` stays the quick smoke trio (`text`, `audio`, `server-end`)
+  - `regression` is the broader archived baseline (`text`, `audio`, `server-end`, `tool`, `barge-in`, `timeout`)
+- Multi-turn baseline scenarios now need list-valued identifiers in reports. The runner keeps `turn_ids` and `trace_ids` alongside the last-seen `turn_id` and `trace_id`, rather than forcing one session-level report to pretend it only exercised one turn.
+- `RTOSMockClient` now uses the same baseline-report vocabulary as the desktop runner for run metadata, discovery metadata, identifier capture, issue tracking, and artifact references. This keeps device-style bring-up artifacts comparable to the native scripted runner without changing the realtime protocol.
+- RTOS mock archival now has two modes:
+  - `--save-rx` for a quick explicit WAV path
+  - `--save-rx-dir` for replay-friendly archived artifacts under a run directory
+- The first archived live `F0` native baseline on this machine now lives under `artifacts/live-baseline/20260409`:
+  - desktop regression canonical run: `artifacts/live-baseline/20260409/desktop-regression/run_f70f2b7bba3e`
+  - RTOS mock canonical run: `artifacts/live-baseline/20260409/rtos-mock/run_e4675e6b3cfb`
+- The current canonical `F0` live comparison stack is intentionally `bootstrap + funasr_http + tts=none`. The archived scripted regression checks assert bootstrap echo and tool behavior, so non-bootstrap LLM or real TTS comparisons should run as separate eval baselines instead of replacing this transport-and-traceability baseline.
 - Current local reference quality caveat: silence-only audio on the `funasr_http` reference path may still produce false-positive text such as `그.`, so silence rejection still needs follow-up tuning.
 - The reserved bootstrap commands `/tool <name> <json>` and `/memory` exist only to validate the shared runtime memory and tool paths during bring-up; they are not the long-term product surface.
 - Bootstrap control commands are not persisted into turn memory so local debug operations do not overwrite conversation recall.
 - `internal/agent` now supports both `TurnExecutor` and sink-based `StreamingTurnExecutor`; compatibility wrappers remain, but the preferred runtime path is streaming-first.
 - `internal/voice` and the realtime gateway now adapt streamed runtime deltas directly into `response.chunk` events instead of waiting for a fully materialized delta list.
+- The next full-duplex voice optimization route is now explicitly `local / open-source first`: hosted realtime speech providers may remain optional eval baselines, but the primary implementation path should strengthen `internal/voice` through local streaming ASR, local endpointing, local incremental TTS, interruption arbitration, and heard-text reconciliation.
+- `internal/voice` now also has a shared streaming-ASR boundary: `StreamingTranscriber`, `StreamingTranscriptionSession`, and `TranscriptionDelta` are the preferred contracts, while `BufferedStreamingTranscriber` keeps batch-only providers compatible without leaking fallback logic into adapters.
+- The local `funasr_http` reference path now uses a real worker-backed streaming session (`/v1/asr/stream/start|push|finish|close`) instead of only the buffered compatibility adapter. The worker currently provides preview partials by rerunning FunASR on the buffered audio, which is a stepping stone toward fuller local voice orchestration rather than the final endpointing design.
+- `iflytek_rtasr` still stays behind the same shared streaming-ASR boundary by using the buffered compatibility adapter, so provider rollout can progress without splitting `internal/voice` into separate code paths for each backend.
+- The desktop runner quality baseline now includes first-partial latency, barge-in cutoff latency, response-text sizing, partial-response sizing, and heard-text sizing so later local full-duplex slices can be compared against archived artifacts instead of intuition.
+- The first `L2` endpointing slice now also stays behind the shared voice-runtime boundary: `InputPreviewer` and `InputPreviewSession` are the internal contracts for partial-ASR-backed turn preview, and websocket adapters only consume preview snapshots or commit suggestions.
+- The default first preview policy is a silence-based turn detector inside `internal/voice`. It currently suggests commit after a local silence window once enough audio and at least one partial hypothesis exist.
+- The hidden runtime switch `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED` enables this internal preview mode for native realtime and `xiaozhi` websocket adapters without changing the public discovery `turn_mode`.
+- The hidden preview mode is tuned through shared voice-runtime config, not adapter-local constants:
+  - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`
+  - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`
+- Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.
+- Duplicate late client commit after a server auto-commit now needs guarding at the adapter layer; native realtime rejects `audio.in.commit` unless the session is currently `active`, and `xiaozhi` ignores late `listen.stop` once the turn has already advanced.

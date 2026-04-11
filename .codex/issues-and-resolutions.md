@@ -245,3 +245,55 @@
 - Problem: live validation on 2026-04-07 showed `mimo_v2_tts` frequently returning a stream that completed successfully with `0` chunks and `0` bytes for normal text and audio turns. The websocket path therefore entered `speaking` and returned to `active` without ever delivering binary audio to browser or desktop debug clients.
 - Resolution: changed the shared synthesis path to prefetch the first non-empty streaming chunk before committing to stream mode, and to fall back immediately to buffered synthesis when the provider closes the stream without audio. After restarting `agentd`, the latest live runner report at `/tmp/agent-server-web-tts-runner.json` showed `response_with_audio_ratio = 1.0`.
 - Status: resolved.
+
+## 2026-04-08
+
+### Realtime Turns Had No Stable Cross-Layer Trace Identifiers
+
+- Problem: the shared turn path still lacked stable per-turn identifiers across gateway, voice responder, agent runtime input, and client-visible response events. That made the first migration stage harder to measure and made it difficult to correlate one user turn across logs, runner reports, and streamed response events.
+- Resolution: added gateway-generated `turn_id` and `trace_id` for each committed turn, threaded them through `voice.TurnRequest` and `agent.TurnInput`, exposed optional `turn_id` and `trace_id` on native realtime `response.start`, and exposed optional `turn_id` on server-emitted turn-state `session.update` events. The desktop runner now captures those IDs and records additional phase timings.
+- Status: resolved for the first `F0` traceability slice.
+
+### Turn Traces Still Stopped At Identifiers Instead Of Becoming Useful Observability
+
+- Problem: after the first `F0` slice, the repository had `turn_id` and `trace_id`, but server logs still could not explain where a turn spent time across gateway phases, runtime execution, ASR, TTS, and playback. The desktop runner also lacked run-level metadata and replay-friendly saved artifacts, so archived reports were still awkward to compare.
+- Resolution: added structured gateway turn-phase logs, wrapped the shared runtime and voice providers with correlated logging decorators, propagated `turn_id` and `trace_id` into ASR/TTS request objects, and upgraded the desktop runner report with `generated_at`, `run_id`, `llm_provider`, per-scenario `issues`, `artifact_dir`, and saved replay artifacts.
+- Status: resolved for the second `F0` traceability slice.
+
+### Live Regression Validation Depends On A Running Local Agentd
+
+- Problem: during the `F0-3` scripted-regression expansion, the local `http://127.0.0.1:8080/v1/realtime` endpoint was not available, so the new `regression` suite could not be exercised against a live server in the same turn.
+- Resolution: restored the local stack with the FunASR worker on `127.0.0.1:8091` plus `agentd` on `127.0.0.1:8080`, then ran the live desktop `regression` suite and the live RTOS mock session successfully. Canonical artifacts are now archived under `artifacts/live-baseline/20260409/desktop-regression` and `artifacts/live-baseline/20260409/rtos-mock`.
+- Status: resolved.
+
+### Live Service Probes Required The Same Escalated Network Context As The Listeners
+
+- Problem: after starting the local worker and `agentd` outside the default sandbox so they could bind `8091` and `8080`, sandboxed `curl` probes to `127.0.0.1` still failed because the listeners were not reachable from the default sandbox network context.
+- Resolution: ran the live bring-up and health probes in the same escalated context as the listeners. Repository code verification remains safe to run inside the default sandbox, but live network validation on this machine should assume the worker, server, and probes all need the same unrestricted context.
+- Status: resolved as a tooling caveat.
+
+### RTOS Mock Reports Were Not Comparable To Desktop Baseline Artifacts
+
+- Problem: the RTOS mock still emitted a minimal one-off JSON payload (`session_id`, `ok`, `interrupt_sent`, `close_reason`) and a single optional WAV file path, which made device-style bring-up artifacts hard to compare against the richer desktop runner baseline reports introduced in the `F0` migration slices.
+- Resolution: upgraded `RTOSMockClient` to emit run metadata, discovery metadata, identifier capture, checks/issues, and replay-friendly artifact references; added `--save-rx-dir` to archive events, response text, run summary, and received audio while preserving the existing `--save-rx` quick WAV path.
+- Status: resolved.
+
+## 2026-04-10
+
+### Local Full-Duplex Path Still Lacks A Shared Voice-Orchestration Layer
+
+- Problem: the repository can already stream text, stream audio, and interrupt speaking output, but it still does not have a complete shared local voice-orchestration layer for server-side endpointing, incremental TTS scheduling, interruption arbitration, and heard-text reconciliation. Before the first roadmap slice landed, the local reference ASR path was also still effectively batch-driven.
+- Resolution: documented the gap in `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md` and recorded the local/open-source-first execution path in `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md` plus `docs/adr/0021-local-open-source-first-full-duplex-roadmap-prioritizes-voice-orchestration.md`. Then implemented the first `L0/L1` slices: added a shared `StreamingTranscriber` boundary in `internal/voice`, kept non-streaming providers on a buffered compatibility adapter, added the local FunASR worker `/v1/asr/stream/*` lifecycle, upgraded `HTTPTranscriber` to use it as a real streaming session, switched `funasr_http` to that real path, and expanded runner metrics for partial-latency and barge-in quality measurement.
+- Status: partially resolved.
+
+### Server-Side Endpointing Needed To Arrive Without Breaking The Advertised Turn Contract
+
+- Problem: the roadmap called for `L2` server-side endpointing, but publicly advertised turn-taking still had to remain `client_wakeup_client_commit`. Implementing endpointing directly inside websocket adapters or immediately widening discovery would have broken the current architecture boundary and forced clients to reason about an unstable interim mode.
+- Resolution: added a shared internal input-preview boundary in `internal/voice` (`InputPreviewer`, `InputPreviewSession`, `InputPreview`) plus a default silence-based turn detector, then made `ASRResponder` expose preview sessions when streaming ASR is available. Native realtime and `xiaozhi` websocket handlers now consume that shared preview capability behind the hidden `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED` switch and can auto-commit a turn after local silence, while the public discovery mode and wire schemas remain unchanged.
+- Status: resolved for the first internal preview slice; broader endpoint policy and public rollout remain open.
+
+### Hidden Preview Mode Needed Explicit Tuning And A Safe Validation Entry Point
+
+- Problem: after the first internal `L2` slice landed, the hidden server-endpoint path still relied on implicit detector defaults and there was no dedicated scripted validation scenario for “send audio but do not send commit”. That made tuning harder and increased the chance that people would infer a public protocol change from ad hoc tests.
+- Resolution: exposed `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS` and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS` as shared voice-runtime config, wired them through both `funasr_http` and `iflytek_rtasr` responder bootstrap paths, and added an opt-in desktop runner scenario `server-endpoint-preview` for explicit hidden-mode validation. The default public discovery mode and default runner suites remain unchanged.
+- Status: resolved for the current hidden-preview stage.
