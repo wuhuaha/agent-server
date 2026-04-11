@@ -16,6 +16,8 @@ Provider choice for LLM inference remains a runtime concern inside `internal/age
 
 The runtime now also owns the iterative model-tool loop for cloud chat execution. Provider-streamed text deltas, assistant tool-call proposals, tool invocation, tool-result reinjection, and loop step budgets all stay inside `internal/agent` instead of leaking into transports or the voice layer.
 
+The first `F0` migration slices now also keep structured turn traceability inside this layer: `turn_id` and `trace_id` already enter `TurnInput`, and the runtime can emit correlated server logs through a wrapper without teaching transports or providers about logging policy.
+
 The same runtime layer now owns both assistant persona selection and execution-mode policy, but no longer as one opaque hardcoded string. Prompt composition is split into core prompt sections:
 
 - persona section
@@ -37,6 +39,14 @@ Provider choice remains a runtime concern inside `internal/voice`: local workers
 TTS is part of this shared voice-runtime output layer rather than a browser-only, RTOS-only, or channel-specific feature. Once the runtime has produced final user-facing text, the same synthesized audio path can be reused by native RTOS devices, browser debug pages, desktop clients, and future channel adapters that need spoken output.
 
 The voice runtime now also normalizes structured speech-understanding metadata before handing a turn to `internal/agent`. ASR providers may expose different fields, but the shared runtime path only sees normalized metadata keys such as language, emotion, speaker, endpoint reason, audio events, and partial hypotheses.
+
+The current baseline observability path also lives here: ASR and TTS requests now carry the same internal `turn_id` and `trace_id`, so transcriber logs, runtime logs, TTS setup logs, and playback-complete logs can all be correlated under one turn without widening the device-facing protocols.
+
+The local FunASR reference path now follows the same boundary: `internal/voice` owns a shared `StreamingTranscriber` contract, the local HTTP worker exposes `/v1/asr/stream/*` only behind that contract, and app bootstrap chooses whether a provider is true-streaming or wrapped by the buffered compatibility adapter.
+
+The next turn-detection slice also stays inside the same layer: `internal/voice` now owns an internal input-preview boundary for partial ASR plus silence-based turn suggestions, while websocket adapters only consume preview snapshots and optional commit suggestions. The adapters still do not call ASR providers directly, and the advertised public turn mode remains unchanged until the server-endpoint path is mature enough to publish.
+
+That hidden preview path is now explicitly runtime-configurable through shared voice-runtime thresholds instead of adapter-local constants, and bring-up validation is expected to happen through an explicit non-default runner scenario rather than by widening the public discovery contract early.
 
 ### 4. Device Adapters
 
@@ -64,8 +74,11 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One transport-neutral `TurnExecutor` boundary under `internal/agent`.
 - One sink-based streaming path from `StreamingTurnExecutor` through `internal/voice` into realtime `response.chunk` events.
 - One provider-selected voice runtime behind shared `Transcriber` and `Synthesizer` interfaces so local and cloud voice backends do not leak into device or channel adapters.
+- One provider-selected streaming ASR path behind shared `StreamingTranscriber` and `StreamingTranscriptionSession` interfaces so local preview workers and buffered compatibility adapters both terminate inside `internal/voice`.
+- One voice-runtime-owned input-preview path behind shared `InputPreviewer` and `InputPreviewSession` interfaces so server-side endpoint preview can evolve without pushing provider logic into websocket adapters.
 - One runtime-owned hook layer for memory and tool orchestration.
 - One provider-selected LLM runtime behind shared `ChatModel`, `StreamingChatModel`, and `TurnExecutor` interfaces so model providers do not leak into device or channel adapters.
+- One additive observability path that keeps `turn_id` and `trace_id` in gateway phase logs, runtime logs, voice-provider logs, and archived runner artifacts without changing the public websocket event shapes again.
 - One runtime-skill path for domain behavior so smart-home semantics can be injected as prompt fragments plus tools without turning `internal/agent` into a pile of hardcoded vertical rules.
 - One first in-process runtime backend set:
   - `InMemoryMemoryStore` for layered recent-message plus summary recall across `session`, `user`, `device`, `room`, and `household` scopes
@@ -92,5 +105,10 @@ The control plane can also host same-service debug surfaces such as the built-in
 ## Related Notes
 
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
+- [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
+- [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
+- [现代 AI Agent / 语音 Agent 框架复核与架构优化建议（2026-04-08）](modern-ai-agent-framework-review-zh-2026-04-08.md)
+- [`agent-server` 新一代项目框架设计提案（2026-04-08）](agent-server-next-framework-zh-2026-04-08.md)
+- [从当前实现迁移到新一代项目框架的分阶段实施方案（2026-04-08）](migration-plan-to-next-framework-zh-2026-04-08.md)
 - [语音 Agent 伙伴化研究（2026-04-04）](voice-agent-companion-research-zh-2026-04.md)
 - [Voice Agent Companion Research (2026-04-04)](voice-agent-companion-research-2026-04.md)
