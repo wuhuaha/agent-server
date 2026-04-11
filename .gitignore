@@ -2,6 +2,7 @@ bin/
 dist/
 .tmp/
 tmp/
+artifacts/
 .codex/artifacts/
 .codex/tmp-*
 **/.pytest_cache/
