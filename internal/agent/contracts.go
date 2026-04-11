@@ -27,6 +27,8 @@ type ImageInput struct {
 
 type TurnInput struct {
 	SessionID  string
+	TurnID     string
+	TraceID    string
 	DeviceID   string
 	ClientType string
 	UserText   string

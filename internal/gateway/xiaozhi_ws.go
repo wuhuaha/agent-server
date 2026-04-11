@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -123,6 +124,7 @@ type xiaozhiWSHandler struct {
 	responder voice.Responder
 	encoder   xiaozhiOutputEncoder
 	upgrader  websocket.Upgrader
+	logger    *slog.Logger
 }
 
 func NewXiaozhiWSHandler(profile XiaozhiCompatProfile, responder voice.Responder) http.Handler {
@@ -140,6 +142,7 @@ func newXiaozhiWSHandlerWithEncoder(profile XiaozhiCompatProfile, responder voic
 		profile:   profile,
 		responder: responder,
 		encoder:   encoder,
+		logger:    gatewayTraceLogger(profile.Logger, "xiaozhi"),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -183,14 +186,17 @@ func (h *xiaozhiWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	defer runtime.interruptOutput(50 * time.Millisecond)
 
-	if err := applyReadDeadline(runtime.conn, runtime.session.Snapshot(), h.runtimeProfile()); err != nil {
+	if err := applyReadDeadline(runtime, runtime.session.Snapshot(), h.runtimeProfile()); err != nil {
 		return
 	}
 
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
-			if handled, handleErr := h.handleReadError(runtime, peer, &state, err); handled {
+			if handled, handleErr := h.handleReadError(ctx, runtime, peer, &state, err); handled {
+				if errors.Is(handleErr, errContinueReadLoop) {
+					continue
+				}
 				if handleErr != nil {
 					return
 				}
@@ -216,14 +222,19 @@ func (h *xiaozhiWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *xiaozhiWSHandler) handleReadError(runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, err error) (bool, error) {
+func (h *xiaozhiWSHandler) handleReadError(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, err error) (bool, error) {
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		return false, nil
 	}
 
 	snapshot := runtime.session.Snapshot()
-	reason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), time.Now().UTC())
+	now := time.Now().UTC()
+	if handled, handleErr := h.maybeHandleServerEndpointTimeout(ctx, runtime, peer, state, snapshot, now); handled {
+		return true, handleErr
+	}
+
+	reason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), now)
 	if !shouldClose && snapshot.SessionID != "" {
 		reason = session.CloseReasonError
 	}
@@ -232,9 +243,63 @@ func (h *xiaozhiWSHandler) handleReadError(runtime *connectionRuntime, peer *xia
 	_ = peer.WriteJSON(xiaozhiTTSMessage{Type: "tts", State: "stop", SessionID: state.sessionID})
 	if snapshot.SessionID != "" {
 		_, _ = runtime.session.End(reason)
+		runtime.clearInputPreview()
 		runtime.session.Reset()
 	}
 	return true, runtime.conn.Close()
+}
+
+func (h *xiaozhiWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, snapshot session.Snapshot, now time.Time) (bool, error) {
+	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive || !state.audioTurnOpen {
+		return false, nil
+	}
+	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
+	if !active {
+		return false, nil
+	}
+	if partialChanged {
+		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
+			"partial_text", preview.PartialText,
+			"audio_bytes", preview.AudioBytes,
+		)
+	}
+	if commitSuggested && snapshot.AudioBytes > 0 {
+		state.audioTurnOpen = false
+		runtime.clearInputPreview()
+		turn, err := runtime.session.CommitTurn()
+		if err != nil {
+			return true, err
+		}
+		if err := applyReadDeadline(runtime, turn.Snapshot, h.runtimeProfile()); err != nil {
+			return true, err
+		}
+		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+			"input_type", "audio",
+			"audio_bytes", len(turn.AudioPCM),
+			"input_codec", turn.Snapshot.InputCodec,
+			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
+			"input_channels", turn.Snapshot.InputChannels,
+			"turn_index", turn.Snapshot.Turns,
+			"endpoint_reason", preview.EndpointReason,
+		)
+		if err := h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, ""); err != nil {
+			return true, err
+		}
+		return true, errContinueReadLoop
+	}
+	if deadlineReason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), now); shouldClose {
+		runtime.interruptOutput(100 * time.Millisecond)
+		_ = peer.WriteJSON(xiaozhiTTSMessage{Type: "tts", State: "stop", SessionID: state.sessionID})
+		_, _ = runtime.session.End(deadlineReason)
+		runtime.clearInputPreview()
+		runtime.session.Reset()
+		return true, runtime.conn.Close()
+	}
+	if err := applyReadDeadline(runtime, snapshot, h.runtimeProfile()); err != nil {
+		return true, err
+	}
+	return true, errContinueReadLoop
 }
 
 func (h *xiaozhiWSHandler) handleControl(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, raw []byte) error {
@@ -345,17 +410,27 @@ func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connection
 	case "stop":
 		state.audioTurnOpen = false
 		snapshot := runtime.session.Snapshot()
-		if snapshot.SessionID == "" || snapshot.AudioBytes == 0 {
+		if snapshot.SessionID == "" || snapshot.AudioBytes == 0 || snapshot.State != session.StateActive {
 			return nil
 		}
+		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
 			return h.emitServerError(peer, state.sessionID, "commit_failed", err.Error())
 		}
-		if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.runtimeProfile()); err != nil {
+		if err := applyReadDeadline(runtime, turn.Snapshot, h.runtimeProfile()); err != nil {
 			return err
 		}
-		return h.emitTurnResponse(ctx, runtime, peer, state, turn, "")
+		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "listen_stop")
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+			"input_type", "audio",
+			"audio_bytes", len(turn.AudioPCM),
+			"input_codec", turn.Snapshot.InputCodec,
+			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
+			"input_channels", turn.Snapshot.InputChannels,
+			"turn_index", turn.Snapshot.Turns,
+		)
+		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, "")
 	case "detect":
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
@@ -374,13 +449,20 @@ func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connection
 		if err != nil {
 			return h.emitServerError(peer, state.sessionID, "text_input_failed", err.Error())
 		}
-		if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.runtimeProfile()); err != nil {
+		runtime.clearInputPreview()
+		if err := applyReadDeadline(runtime, turn.Snapshot, h.runtimeProfile()); err != nil {
 			return err
 		}
 		if err := peer.WriteJSON(xiaozhiTextMessage{Type: "stt", SessionID: state.sessionID, Text: text}); err != nil {
 			return err
 		}
-		return h.emitTurnResponse(ctx, runtime, peer, state, turn, text)
+		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "detect_text")
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+			"input_type", "text",
+			"text_len", len(text),
+			"turn_index", turn.Snapshot.Turns,
+		)
+		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, text)
 	default:
 		return nil
 	}
@@ -434,7 +516,22 @@ func (h *xiaozhiWSHandler) handleBinary(runtime *connectionRuntime, peer *xiaozh
 	if err != nil {
 		return h.emitServerError(peer, state.sessionID, "audio_ingest_failed", err.Error())
 	}
-	return applyReadDeadline(runtime.conn, snapshot, h.runtimeProfile())
+	if h.profile.ServerEndpointEnabled && state.audioTurnOpen {
+		if err := runtime.ensureInputPreview(context.Background(), h.responder, snapshot, ""); err != nil {
+			h.logger.Warn("gateway input preview start failed", "session_id", snapshot.SessionID, "error", err)
+		} else {
+			preview, partialChanged, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalized)
+			if pushErr != nil {
+				h.logger.Warn("gateway input preview push failed", "session_id", snapshot.SessionID, "error", pushErr)
+			} else if partialChanged {
+				logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
+					"partial_text", preview.PartialText,
+					"audio_bytes", preview.AudioBytes,
+				)
+			}
+		}
+	}
+	return applyReadDeadline(runtime, snapshot, h.runtimeProfile())
 }
 
 func (h *xiaozhiWSHandler) ensureSessionStarted(runtime *connectionRuntime, state *xiaozhiCompatState) (session.Snapshot, error) {
@@ -456,14 +553,14 @@ func (h *xiaozhiWSHandler) ensureSessionStarted(runtime *connectionRuntime, stat
 	if err != nil {
 		return session.Snapshot{}, err
 	}
-	if err := applyReadDeadline(runtime.conn, started, h.runtimeProfile()); err != nil {
+	if err := applyReadDeadline(runtime, started, h.runtimeProfile()); err != nil {
 		return session.Snapshot{}, err
 	}
 	return started, nil
 }
 
-func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, turn session.CommittedTurn, text string) error {
-	request := buildTurnRequest(turn, runtime, text)
+func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, turn session.CommittedTurn, trace turnTrace, text string) error {
+	request := buildTurnRequest(turn, runtime, trace, text)
 	textParts := make([]string, 0, 4)
 	collectText := func(delta voice.ResponseDelta) {
 		if delta.Kind != voice.ResponseDeltaKindText || strings.TrimSpace(delta.Text) == "" {
@@ -488,19 +585,26 @@ func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connec
 		}
 	}
 	if err != nil {
+		logTurnTraceError(h.logger, "gateway turn terminated", state.sessionID, trace, err, "error_code", "response_generation_failed")
 		return h.emitServerError(peer, state.sessionID, "response_generation_failed", err.Error())
 	}
+	trace = runtime.turnTrace.MarkResponseStart()
+	logTurnTraceInfo(h.logger, "gateway turn response started", state.sessionID, trace,
+		"response_start_latency_ms", trace.ResponseStartLatencyMs(),
+		"has_audio", response.AudioStream != nil || len(response.AudioChunks) > 0,
+	)
 	if strings.TrimSpace(text) == "" && strings.TrimSpace(response.InputText) != "" {
 		if err := peer.WriteJSON(xiaozhiTextMessage{Type: "stt", SessionID: state.sessionID, Text: response.InputText}); err != nil {
 			return err
 		}
 	}
 
-	return h.finalizeTurnResponse(ctx, runtime, peer, state, response, strings.TrimSpace(strings.Join(textParts, "")))
+	return h.finalizeTurnResponse(ctx, runtime, peer, state, trace, response, strings.TrimSpace(strings.Join(textParts, "")))
 }
 
-func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, response voice.TurnResponse, aggregatedText string) error {
+func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, trace turnTrace, response voice.TurnResponse, aggregatedText string) error {
 	runtime.session.ClearTurn()
+	runtime.clearInputPreview()
 	if aggregatedText == "" {
 		aggregatedText = responseTextForXiaozhi(response)
 	}
@@ -512,13 +616,14 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 	if audioStream != nil {
 		encoded, err := h.encodeAudioStream(ctx, audioStream)
 		if err != nil {
+			logTurnTraceError(h.logger, "gateway turn terminated", state.sessionID, trace, err, "error_code", "tts_encode_failed")
 			if response.EndSession {
 				runtime.session.Reset()
 				return runtime.conn.Close()
 			}
 			active, setErr := runtime.session.SetState(session.StateActive)
 			if setErr == nil {
-				_ = applyReadDeadline(runtime.conn, active, h.runtimeProfile())
+				_ = applyReadDeadline(runtime, active, h.runtimeProfile())
 			}
 			return h.emitServerError(peer, state.sessionID, "tts_encode_failed", err.Error())
 		}
@@ -526,10 +631,14 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 		if err != nil {
 			return err
 		}
-		if err := applyReadDeadline(runtime.conn, speaking, h.runtimeProfile()); err != nil {
+		trace = runtime.turnTrace.MarkSpeaking()
+		logTurnTraceInfo(h.logger, "gateway turn speaking", state.sessionID, trace,
+			"speaking_latency_ms", trace.SpeakingLatencyMs(),
+		)
+		if err := applyReadDeadline(runtime, speaking, h.runtimeProfile()); err != nil {
 			return err
 		}
-		h.startAudioStream(ctx, runtime, peer, state, aggregatedText, encoded, response.EndSession, response.EndReason, response.EndMessage)
+		h.startAudioStream(ctx, runtime, peer, state, trace, aggregatedText, encoded, response.EndSession, response.EndReason, response.EndMessage)
 		return nil
 	}
 
@@ -539,6 +648,13 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 		}
 	}
 	if response.EndSession {
+		trace = runtime.turnTrace.MarkCompleted()
+		logTurnTraceInfo(h.logger, "gateway turn completed", state.sessionID, trace,
+			"completed_latency_ms", trace.CompletedLatencyMs(),
+			"end_session", true,
+			"end_reason", strings.TrimSpace(response.EndReason),
+		)
+		runtime.turnTrace.Clear()
 		runtime.session.Reset()
 		return runtime.conn.Close()
 	}
@@ -546,7 +662,15 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 	if err != nil {
 		return err
 	}
-	return applyReadDeadline(runtime.conn, active, h.runtimeProfile())
+	trace = runtime.turnTrace.MarkActive()
+	trace = runtime.turnTrace.MarkCompleted()
+	logTurnTraceInfo(h.logger, "gateway turn completed", state.sessionID, trace,
+		"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
+		"completed_latency_ms", trace.CompletedLatencyMs(),
+		"end_session", false,
+	)
+	runtime.turnTrace.Clear()
+	return applyReadDeadline(runtime, active, h.runtimeProfile())
 }
 
 func (h *xiaozhiWSHandler) encodeAudioStream(ctx context.Context, audioStream voice.AudioStream) (voice.AudioStream, error) {
@@ -569,6 +693,7 @@ func (h *xiaozhiWSHandler) startAudioStream(
 	runtime *connectionRuntime,
 	peer *xiaozhiJSONPeer,
 	state *xiaozhiCompatState,
+	trace turnTrace,
 	text string,
 	audioStream voice.AudioStream,
 	endSession bool,
@@ -605,6 +730,7 @@ func (h *xiaozhiWSHandler) startAudioStream(
 				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
 					break
 				}
+				logTurnTraceError(h.logger, "gateway turn audio stream failed", state.sessionID, runtime.turnTrace.Current(), err)
 				_ = h.emitServerError(peer, state.sessionID, "audio_stream_failed", err.Error())
 				return
 			}
@@ -627,6 +753,13 @@ func (h *xiaozhiWSHandler) startAudioStream(
 
 		_ = peer.WriteJSON(xiaozhiTTSMessage{Type: "tts", State: "stop", SessionID: state.sessionID})
 		if endSession {
+			trace = runtime.turnTrace.MarkCompleted()
+			logTurnTraceInfo(h.logger, "gateway turn completed", state.sessionID, trace,
+				"completed_latency_ms", trace.CompletedLatencyMs(),
+				"end_session", true,
+				"end_reason", strings.TrimSpace(endReason),
+			)
+			runtime.turnTrace.Clear()
 			runtime.session.Reset()
 			_ = runtime.conn.Close()
 			return
@@ -635,7 +768,15 @@ func (h *xiaozhiWSHandler) startAudioStream(
 		if err != nil {
 			return
 		}
-		_ = applyReadDeadline(runtime.conn, active, h.runtimeProfile())
+		trace = runtime.turnTrace.MarkActive()
+		trace = runtime.turnTrace.MarkCompleted()
+		logTurnTraceInfo(h.logger, "gateway turn completed", state.sessionID, trace,
+			"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
+			"completed_latency_ms", trace.CompletedLatencyMs(),
+			"end_session", false,
+		)
+		runtime.turnTrace.Clear()
+		_ = applyReadDeadline(runtime, active, h.runtimeProfile())
 	}()
 }
 
@@ -657,7 +798,13 @@ func (h *xiaozhiWSHandler) interruptSpeaking(runtime *connectionRuntime, peer *x
 	if err != nil {
 		return err
 	}
-	return applyReadDeadline(runtime.conn, active, h.runtimeProfile())
+	trace := runtime.turnTrace.MarkInterrupted()
+	trace = runtime.turnTrace.MarkActive()
+	logTurnTraceInfo(h.logger, "gateway turn interrupted", active.SessionID, trace,
+		"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
+	)
+	runtime.clearInputPreview()
+	return applyReadDeadline(runtime, active, h.runtimeProfile())
 }
 
 func (h *xiaozhiWSHandler) emitServerError(peer *xiaozhiJSONPeer, sessionID, code, message string) error {

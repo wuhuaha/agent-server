@@ -4,20 +4,61 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-server/internal/agent"
 )
 
+const defaultASRStreamingChunkMs = 40
+
 type ASRResponder struct {
-	Transcriber            Transcriber
-	Executor               agent.TurnExecutor
-	Synthesizer            Synthesizer
-	Language               string
-	OutputCodec            string
-	OutputSampleRate       int
-	OutputChannels         int
-	EmitPlaceholderAudio   bool
-	TextInputResponseStyle string
+	Transcriber             Transcriber
+	Executor                agent.TurnExecutor
+	Synthesizer             Synthesizer
+	Language                string
+	TurnDetectionSilenceMs  int
+	TurnDetectionMinAudioMs int
+	OutputCodec             string
+	OutputSampleRate        int
+	OutputChannels          int
+	EmitPlaceholderAudio    bool
+	TextInputResponseStyle  string
+}
+
+func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewRequest) (InputPreviewSession, error) {
+	if r.Transcriber == nil {
+		return nil, fmt.Errorf("asr transcriber is not configured")
+	}
+	streaming, ok := r.Transcriber.(StreamingTranscriber)
+	if !ok {
+		return nil, fmt.Errorf("asr transcriber does not support streaming preview")
+	}
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs: r.TurnDetectionMinAudioMs,
+			SilenceMs:  r.TurnDetectionSilenceMs,
+		},
+		req.SampleRateHz,
+		req.Channels,
+	)
+	stream, err := streaming.StartStream(ctx, TranscriptionRequest{
+		SessionID:    req.SessionID,
+		DeviceID:     req.DeviceID,
+		Codec:        req.Codec,
+		SampleRateHz: req.SampleRateHz,
+		Channels:     req.Channels,
+		Language:     firstNonEmpty(req.Language, r.Language),
+	}, TranscriptionDeltaSinkFunc(func(_ context.Context, delta TranscriptionDelta) error {
+		detector.ObserveTranscriptionDelta(time.Now(), delta)
+		return nil
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &asrInputPreviewSession{
+		stream:   stream,
+		detector: &detector,
+	}, nil
 }
 
 func NewASRResponder(
@@ -69,15 +110,7 @@ func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink R
 		return TurnResponse{}, fmt.Errorf("asr transcriber is not configured")
 	}
 
-	result, err := r.Transcriber.Transcribe(ctx, TranscriptionRequest{
-		SessionID:    req.SessionID,
-		DeviceID:     req.DeviceID,
-		AudioPCM:     req.AudioPCM,
-		Codec:        req.InputCodec,
-		SampleRateHz: req.InputSampleRate,
-		Channels:     req.InputChannels,
-		Language:     r.Language,
-	})
+	result, err := r.transcribeAudio(ctx, req)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -137,6 +170,69 @@ func (r ASRResponder) WithSynthesizer(s Synthesizer) ASRResponder {
 	return r
 }
 
+func (r ASRResponder) WithTurnDetection(minAudioMs, silenceMs int) ASRResponder {
+	r.TurnDetectionMinAudioMs = minAudioMs
+	r.TurnDetectionSilenceMs = silenceMs
+	return r
+}
+
+func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {
+	transcriptionReq := TranscriptionRequest{
+		SessionID:    req.SessionID,
+		TurnID:       req.TurnID,
+		TraceID:      req.TraceID,
+		DeviceID:     req.DeviceID,
+		AudioPCM:     req.AudioPCM,
+		Codec:        req.InputCodec,
+		SampleRateHz: req.InputSampleRate,
+		Channels:     req.InputChannels,
+		Language:     r.Language,
+	}
+	if streaming, ok := r.Transcriber.(StreamingTranscriber); ok {
+		stream, err := streaming.StartStream(ctx, transcriptionReq, nil)
+		if err == nil && stream != nil {
+			defer func() { _ = stream.Close() }()
+			for _, chunk := range splitPCMForStreaming(req.AudioPCM, req.InputSampleRate, req.InputChannels, defaultASRStreamingChunkMs) {
+				if err := stream.PushAudio(ctx, chunk); err != nil {
+					return TranscriptionResult{}, err
+				}
+			}
+			return stream.Finish(ctx)
+		}
+	}
+	return r.Transcriber.Transcribe(ctx, transcriptionReq)
+}
+
+func splitPCMForStreaming(audioPCM []byte, sampleRateHz, channels, frameMs int) [][]byte {
+	if len(audioPCM) == 0 {
+		return nil
+	}
+	frameBytes := pcmFrameBytes(sampleRateHz, channels, frameMs)
+	if frameBytes <= 0 || len(audioPCM) <= frameBytes {
+		return [][]byte{append([]byte(nil), audioPCM...)}
+	}
+	chunks := make([][]byte, 0, (len(audioPCM)+frameBytes-1)/frameBytes)
+	for start := 0; start < len(audioPCM); start += frameBytes {
+		end := start + frameBytes
+		if end > len(audioPCM) {
+			end = len(audioPCM)
+		}
+		chunks = append(chunks, append([]byte(nil), audioPCM[start:end]...))
+	}
+	return chunks
+}
+
+func pcmFrameBytes(sampleRateHz, channels, frameMs int) int {
+	if sampleRateHz <= 0 || channels <= 0 || frameMs <= 0 {
+		return defaultBufferedStreamingChunkBytes
+	}
+	samplesPerChannel := (sampleRateHz * frameMs) / 1000
+	if samplesPerChannel <= 0 {
+		return defaultBufferedStreamingChunkBytes
+	}
+	return samplesPerChannel * channels * 2
+}
+
 func (r ASRResponder) audioOutput(ctx context.Context, req TurnRequest, userText, responseText string) ([][]byte, AudioStream) {
 	if audioChunks, audioStream := synthesizedAudio(ctx, r.Synthesizer, req, userText, responseText); audioChunks != nil || audioStream != nil {
 		return audioChunks, audioStream
@@ -145,4 +241,36 @@ func (r ASRResponder) audioOutput(ctx context.Context, req TurnRequest, userText
 		return nil, nil
 	}
 	return bootstrapAudio(r.OutputCodec, r.OutputSampleRate, r.OutputChannels), nil
+}
+
+type asrInputPreviewSession struct {
+	stream   StreamingTranscriptionSession
+	detector *SilenceTurnDetector
+}
+
+func (s *asrInputPreviewSession) PushAudio(ctx context.Context, chunk []byte) (InputPreview, error) {
+	if s.detector != nil {
+		s.detector.ObserveAudio(time.Now(), len(chunk))
+	}
+	if err := s.stream.PushAudio(ctx, chunk); err != nil {
+		return InputPreview{}, err
+	}
+	if s.detector == nil {
+		return InputPreview{}, nil
+	}
+	return s.detector.Snapshot(time.Now()), nil
+}
+
+func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
+	if s.detector == nil {
+		return InputPreview{}
+	}
+	return s.detector.Snapshot(now)
+}
+
+func (s *asrInputPreviewSession) Close() error {
+	if s.stream == nil {
+		return nil
+	}
+	return s.stream.Close()
 }

@@ -8,6 +8,7 @@ This package hosts Python-side workers for `agent-server`.
   - local HTTP ASR worker
   - designed for the existing `xiaozhi-esp32-server` conda environment
   - accepts normalized PCM16LE audio from the Go server and returns text transcription
+  - supports both batch `/v1/asr/transcribe` and the local streaming preview lifecycle under `/v1/asr/stream/*`
 
 ## Start From Existing Conda Env
 
@@ -38,7 +39,20 @@ conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service 
 
 For GPU validation on this machine, switch the device argument to `cuda:0`.
 
+## Stream Preview Tuning
+
+The worker can emit local preview partials by repeatedly re-running FunASR on the buffered audio during an active stream.
+
+- `AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_AUDIO_MS`
+  - minimum buffered audio before the worker attempts the first preview
+  - default: `320`
+- `AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_INTERVAL_MS`
+  - minimum interval between preview attempts on the same stream
+  - default: `240`
+
 ## Health Check
 
 - `GET http://127.0.0.1:8091/healthz`
 - `GET http://127.0.0.1:8091/v1/asr/info`
+
+`/v1/asr/info` now advertises the currently enabled batch and streaming routes.

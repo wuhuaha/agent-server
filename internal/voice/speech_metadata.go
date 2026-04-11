@@ -36,14 +36,19 @@ func buildTranscriptionMetadata(result TranscriptionResult) map[string]string {
 	put("speech.endpoint_reason", result.EndpointReason)
 	put("speech.model", result.Model)
 	put("speech.device", result.Device)
+	put("speech.transcriber_mode", result.Mode)
 	if result.DurationMs > 0 {
 		metadata["speech.duration_ms"] = strconv.Itoa(result.DurationMs)
+	}
+	if result.ElapsedMs > 0 {
+		metadata["speech.elapsed_ms"] = strconv.Itoa(result.ElapsedMs)
 	}
 	if encoded := encodeSpeechStringList(result.AudioEvents); encoded != "" {
 		metadata["speech.audio_events"] = encoded
 	}
 	if encoded := encodeSpeechStringList(result.Partials); encoded != "" {
 		metadata["speech.partials"] = encoded
+		metadata["speech.partial_count"] = strconv.Itoa(len(result.Partials))
 	}
 	if encoded := encodeSpeechStringList(result.Segments); encoded != "" {
 		metadata["speech.segments"] = encoded

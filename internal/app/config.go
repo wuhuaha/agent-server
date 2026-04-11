@@ -42,12 +42,15 @@ type AgentConfig struct {
 }
 
 type VoiceConfig struct {
-	Provider             string
-	ASRURL               string
-	ASRTimeoutMs         int
-	ASRLanguage          string
-	EmitPlaceholderAudio bool
-	IflytekRTASR         IflytekRTASRProviderConfig
+	Provider                 string
+	ASRURL                   string
+	ASRTimeoutMs             int
+	ASRLanguage              string
+	ServerEndpointEnabled    bool
+	ServerEndpointMinAudioMs int
+	ServerEndpointSilenceMs  int
+	EmitPlaceholderAudio     bool
+	IflytekRTASR             IflytekRTASRProviderConfig
 }
 
 type TTSConfig struct {
@@ -210,11 +213,14 @@ func LoadConfig() Config {
 			},
 		},
 		Voice: VoiceConfig{
-			Provider:             getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
-			ASRURL:               getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
-			ASRTimeoutMs:         getenvInt("AGENT_SERVER_VOICE_ASR_TIMEOUT_MS", 30000),
-			ASRLanguage:          getenv("AGENT_SERVER_VOICE_ASR_LANGUAGE", "auto"),
-			EmitPlaceholderAudio: getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
+			Provider:                 getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
+			ASRURL:                   getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
+			ASRTimeoutMs:             getenvInt("AGENT_SERVER_VOICE_ASR_TIMEOUT_MS", 30000),
+			ASRLanguage:              getenv("AGENT_SERVER_VOICE_ASR_LANGUAGE", "auto"),
+			ServerEndpointEnabled:    getenvBool("AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED", false),
+			ServerEndpointMinAudioMs: getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS", 320),
+			ServerEndpointSilenceMs:  getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS", 480),
+			EmitPlaceholderAudio:     getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID", ""),
 				AccessKeyID:     getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID", ""),

@@ -109,9 +109,13 @@ func TestBuildTurnExecutorUsesRealRuntimeBackendsByDefault(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	executor := buildTurnExecutor(withRealtimeDefaults(Config{}), logger)
 
-	bootstrap, ok := executor.(agent.BootstrapTurnExecutor)
+	logged, ok := executor.(agent.LoggingTurnExecutor)
 	if !ok {
-		t.Fatalf("expected bootstrap executor, got %T", executor)
+		t.Fatalf("expected LoggingTurnExecutor, got %T", executor)
+	}
+	bootstrap, ok := logged.Inner.(agent.BootstrapTurnExecutor)
+	if !ok {
+		t.Fatalf("expected bootstrap executor, got %T", logged.Inner)
 	}
 	if _, ok := bootstrap.MemoryStore.(*agent.InMemoryMemoryStore); !ok {
 		t.Fatalf("expected in-memory memory store, got %T", bootstrap.MemoryStore)
@@ -135,9 +139,13 @@ func TestBuildTurnExecutorSupportsDeepSeekChat(t *testing.T) {
 		},
 	}), logger)
 
-	llm, ok := executor.(agent.LLMTurnExecutor)
+	logged, ok := executor.(agent.LoggingTurnExecutor)
 	if !ok {
-		t.Fatalf("expected LLMTurnExecutor, got %T", executor)
+		t.Fatalf("expected LoggingTurnExecutor, got %T", executor)
+	}
+	llm, ok := logged.Inner.(agent.LLMTurnExecutor)
+	if !ok {
+		t.Fatalf("expected LLMTurnExecutor, got %T", logged.Inner)
 	}
 	if _, ok := llm.Model.(agent.DeepSeekChatModel); !ok {
 		t.Fatalf("expected DeepSeekChatModel, got %T", llm.Model)
@@ -166,8 +174,12 @@ func TestBuildTurnExecutorAutoSelectsDeepSeekChatWhenAPIKeyPresent(t *testing.T)
 		},
 	}), logger)
 
-	if _, ok := executor.(agent.LLMTurnExecutor); !ok {
-		t.Fatalf("expected LLMTurnExecutor, got %T", executor)
+	logged, ok := executor.(agent.LoggingTurnExecutor)
+	if !ok {
+		t.Fatalf("expected LoggingTurnExecutor, got %T", executor)
+	}
+	if _, ok := logged.Inner.(agent.LLMTurnExecutor); !ok {
+		t.Fatalf("expected LLMTurnExecutor, got %T", logged.Inner)
 	}
 }
 
@@ -202,6 +214,9 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	cfg := withRealtimeDefaults(Config{})
 	if cfg.Realtime.TurnMode != "client_wakeup_client_commit" {
 		t.Fatalf("expected client_wakeup_client_commit, got %q", cfg.Realtime.TurnMode)
+	}
+	if cfg.Voice.ServerEndpointEnabled {
+		t.Fatal("expected server endpoint preview to stay disabled by default")
 	}
 	if cfg.Agent.Persona != "household_control_screen" {
 		t.Fatalf("expected household_control_screen persona default, got %q", cfg.Agent.Persona)

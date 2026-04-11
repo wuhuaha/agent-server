@@ -30,54 +30,58 @@ func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 		TurnMode:        cfg.Realtime.TurnMode,
 	}))
 	mux.Handle("/v1/realtime", gateway.NewRealtimeHandler(gateway.RealtimeProfile{
-		WSPath:           cfg.Realtime.WSPath,
-		ProtocolVersion:  cfg.Realtime.ProtocolVersion,
-		Subprotocol:      cfg.Realtime.Subprotocol,
-		LLMProvider:      llmProvider,
-		VoiceProvider:    cfg.Voice.Provider,
-		TTSProvider:      cfg.TTS.Provider,
-		AuthMode:         cfg.Realtime.AuthMode,
-		TurnMode:         cfg.Realtime.TurnMode,
-		IdleTimeoutMs:    cfg.Realtime.IdleTimeoutMs,
-		MaxSessionMs:     cfg.Realtime.MaxSessionMs,
-		MaxFrameBytes:    cfg.Realtime.MaxFrameBytes,
-		InputCodec:       cfg.Realtime.InputCodec,
-		InputSampleRate:  cfg.Realtime.InputSampleRate,
-		InputChannels:    cfg.Realtime.InputChannels,
-		OutputCodec:      cfg.Realtime.OutputCodec,
-		OutputSampleRate: cfg.Realtime.OutputSampleRate,
-		OutputChannels:   cfg.Realtime.OutputChannels,
-		AllowOpus:        cfg.Realtime.AllowOpus,
-		AllowTextInput:   cfg.Realtime.AllowTextInput,
-		AllowImageInput:  cfg.Realtime.AllowImageInput,
+		Logger:                logger,
+		WSPath:                cfg.Realtime.WSPath,
+		ProtocolVersion:       cfg.Realtime.ProtocolVersion,
+		Subprotocol:           cfg.Realtime.Subprotocol,
+		LLMProvider:           llmProvider,
+		VoiceProvider:         cfg.Voice.Provider,
+		TTSProvider:           cfg.TTS.Provider,
+		ServerEndpointEnabled: cfg.Voice.ServerEndpointEnabled,
+		AuthMode:              cfg.Realtime.AuthMode,
+		TurnMode:              cfg.Realtime.TurnMode,
+		IdleTimeoutMs:         cfg.Realtime.IdleTimeoutMs,
+		MaxSessionMs:          cfg.Realtime.MaxSessionMs,
+		MaxFrameBytes:         cfg.Realtime.MaxFrameBytes,
+		InputCodec:            cfg.Realtime.InputCodec,
+		InputSampleRate:       cfg.Realtime.InputSampleRate,
+		InputChannels:         cfg.Realtime.InputChannels,
+		OutputCodec:           cfg.Realtime.OutputCodec,
+		OutputSampleRate:      cfg.Realtime.OutputSampleRate,
+		OutputChannels:        cfg.Realtime.OutputChannels,
+		AllowOpus:             cfg.Realtime.AllowOpus,
+		AllowTextInput:        cfg.Realtime.AllowTextInput,
+		AllowImageInput:       cfg.Realtime.AllowImageInput,
 	}))
 	mux.Handle(cfg.Realtime.WSPath, gateway.NewRealtimeWSHandler(gateway.RealtimeProfile{
-		WSPath:           cfg.Realtime.WSPath,
-		ProtocolVersion:  cfg.Realtime.ProtocolVersion,
-		Subprotocol:      cfg.Realtime.Subprotocol,
-		LLMProvider:      llmProvider,
-		VoiceProvider:    cfg.Voice.Provider,
-		TTSProvider:      cfg.TTS.Provider,
-		AuthMode:         cfg.Realtime.AuthMode,
-		TurnMode:         cfg.Realtime.TurnMode,
-		IdleTimeoutMs:    cfg.Realtime.IdleTimeoutMs,
-		MaxSessionMs:     cfg.Realtime.MaxSessionMs,
-		MaxFrameBytes:    cfg.Realtime.MaxFrameBytes,
-		InputCodec:       cfg.Realtime.InputCodec,
-		InputSampleRate:  cfg.Realtime.InputSampleRate,
-		InputChannels:    cfg.Realtime.InputChannels,
-		OutputCodec:      cfg.Realtime.OutputCodec,
-		OutputSampleRate: cfg.Realtime.OutputSampleRate,
-		OutputChannels:   cfg.Realtime.OutputChannels,
-		AllowOpus:        cfg.Realtime.AllowOpus,
-		AllowTextInput:   cfg.Realtime.AllowTextInput,
-		AllowImageInput:  cfg.Realtime.AllowImageInput,
+		Logger:                logger,
+		WSPath:                cfg.Realtime.WSPath,
+		ProtocolVersion:       cfg.Realtime.ProtocolVersion,
+		Subprotocol:           cfg.Realtime.Subprotocol,
+		LLMProvider:           llmProvider,
+		VoiceProvider:         cfg.Voice.Provider,
+		TTSProvider:           cfg.TTS.Provider,
+		ServerEndpointEnabled: cfg.Voice.ServerEndpointEnabled,
+		AuthMode:              cfg.Realtime.AuthMode,
+		TurnMode:              cfg.Realtime.TurnMode,
+		IdleTimeoutMs:         cfg.Realtime.IdleTimeoutMs,
+		MaxSessionMs:          cfg.Realtime.MaxSessionMs,
+		MaxFrameBytes:         cfg.Realtime.MaxFrameBytes,
+		InputCodec:            cfg.Realtime.InputCodec,
+		InputSampleRate:       cfg.Realtime.InputSampleRate,
+		InputChannels:         cfg.Realtime.InputChannels,
+		OutputCodec:           cfg.Realtime.OutputCodec,
+		OutputSampleRate:      cfg.Realtime.OutputSampleRate,
+		OutputChannels:        cfg.Realtime.OutputChannels,
+		AllowOpus:             cfg.Realtime.AllowOpus,
+		AllowTextInput:        cfg.Realtime.AllowTextInput,
+		AllowImageInput:       cfg.Realtime.AllowImageInput,
 	}, responder))
 	mux.Handle("/debug/realtime-h5", http.RedirectHandler("/debug/realtime-h5/", http.StatusTemporaryRedirect))
 	mux.Handle("/debug/realtime-h5/", http.StripPrefix("/debug/realtime-h5/", control.NewWebH5Handler()))
 
 	if cfg.Xiaozhi.Enabled {
-		xiaozhiProfile := buildXiaozhiProfile(cfg)
+		xiaozhiProfile := buildXiaozhiProfile(cfg, logger)
 		mux.Handle(xiaozhiProfile.OTAPath, gateway.NewXiaozhiOTAHandler(xiaozhiProfile))
 		mux.Handle(xiaozhiProfile.WSPath, gateway.NewXiaozhiWSHandler(xiaozhiProfile, responder))
 	}
@@ -97,6 +101,7 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 		WithToolRegistry(toolRegistry).
 		WithToolInvoker(toolInvoker)
 
+	var executor agent.TurnExecutor
 	switch strings.ToLower(strings.TrimSpace(cfg.Agent.LLMProvider)) {
 	case "", "auto":
 		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) != "" {
@@ -104,14 +109,15 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 			return buildTurnExecutor(cfg, logger)
 		}
 		logger.Info("agent turn executor configured", "provider", "bootstrap", "requested", "auto")
-		return bootstrap
+		executor = bootstrap
 	case "bootstrap":
 		logger.Info("agent turn executor configured", "provider", "bootstrap")
-		return bootstrap
+		executor = bootstrap
 	case "deepseek", "deepseek_chat":
 		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) == "" {
 			logger.Warn("deepseek chat provider requested but api key is empty; falling back to bootstrap executor")
-			return bootstrap
+			executor = bootstrap
+			break
 		}
 		logger.Info(
 			"agent turn executor configured",
@@ -121,7 +127,7 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 			"persona", cfg.Agent.Persona,
 			"execution_mode", cfg.Agent.ExecutionMode,
 		)
-		return agent.NewLLMTurnExecutor(agent.NewDeepSeekChatModel(agent.DeepSeekChatModelConfig{
+		executor = agent.NewLLMTurnExecutor(agent.NewDeepSeekChatModel(agent.DeepSeekChatModelConfig{
 			BaseURL:     cfg.Agent.DeepSeek.BaseURL,
 			APIKey:      cfg.Agent.DeepSeek.APIKey,
 			Model:       cfg.Agent.DeepSeek.Model,
@@ -138,7 +144,11 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 			WithSystemPrompt(cfg.Agent.LLMSystemPrompt)
 	default:
 		logger.Warn("unknown agent llm provider, falling back to bootstrap executor", "provider", cfg.Agent.LLMProvider)
-		return bootstrap
+		executor = bootstrap
+	}
+	return agent.LoggingTurnExecutor{
+		Inner:  executor,
+		Logger: logger,
 	}
 }
 
@@ -193,8 +203,9 @@ func splitAgentSkills(raw string) []string {
 	return skills
 }
 
-func buildXiaozhiProfile(cfg Config) gateway.XiaozhiCompatProfile {
+func buildXiaozhiProfile(cfg Config, logger *slog.Logger) gateway.XiaozhiCompatProfile {
 	return gateway.XiaozhiCompatProfile{
+		Logger:                logger,
 		Enabled:               cfg.Xiaozhi.Enabled,
 		WSPath:                cfg.Xiaozhi.WSPath,
 		OTAPath:               cfg.Xiaozhi.OTAPath,
@@ -207,6 +218,7 @@ func buildXiaozhiProfile(cfg Config) gateway.XiaozhiCompatProfile {
 		MaxFrameBytes:         cfg.Xiaozhi.MaxFrameBytes,
 		IdleTimeoutMs:         cfg.Xiaozhi.IdleTimeoutMs,
 		MaxSessionMs:          cfg.Xiaozhi.MaxSessionMs,
+		ServerEndpointEnabled: cfg.Voice.ServerEndpointEnabled,
 		SourceOutputCodec:     cfg.Realtime.OutputCodec,
 		SourceOutputRate:      cfg.Realtime.OutputSampleRate,
 		SourceOutputChannels:  cfg.Realtime.OutputChannels,
@@ -228,11 +240,14 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 	case "", "bootstrap":
 		return bootstrap
 	case "funasr_http":
-		transcriber := voice.NewHTTPTranscriber(
-			cfg.Voice.ASRURL,
-			time.Duration(cfg.Voice.ASRTimeoutMs)*time.Millisecond,
-			cfg.Voice.ASRLanguage,
-		)
+		transcriber := voice.LoggingTranscriber{
+			Inner: voice.NewHTTPTranscriber(
+				cfg.Voice.ASRURL,
+				time.Duration(cfg.Voice.ASRTimeoutMs)*time.Millisecond,
+				cfg.Voice.ASRLanguage,
+			),
+			Logger: logger,
+		}
 		logger.Info("voice responder configured", "provider", "funasr_http", "asr_url", cfg.Voice.ASRURL)
 		return voice.NewASRResponder(
 			transcriber,
@@ -241,7 +256,10 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Realtime.OutputSampleRate,
 			cfg.Realtime.OutputChannels,
 			cfg.Voice.EmitPlaceholderAudio,
-		).WithTurnExecutor(turnExecutor).WithSynthesizer(synthesizer)
+		).
+			WithTurnDetection(cfg.Voice.ServerEndpointMinAudioMs, cfg.Voice.ServerEndpointSilenceMs).
+			WithTurnExecutor(turnExecutor).
+			WithSynthesizer(synthesizer)
 	case "iflytek_rtasr":
 		if strings.TrimSpace(cfg.Voice.IflytekRTASR.AppID) == "" ||
 			strings.TrimSpace(cfg.Voice.IflytekRTASR.AccessKeyID) == "" ||
@@ -249,21 +267,26 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			logger.Warn("iflytek rtasr provider requested but credentials are incomplete; falling back to bootstrap responder")
 			return bootstrap
 		}
-		transcriber := voice.NewIflytekRTASRTranscriber(voice.IflytekRTASRConfig{
-			AppID:           cfg.Voice.IflytekRTASR.AppID,
-			AccessKeyID:     cfg.Voice.IflytekRTASR.AccessKeyID,
-			AccessKeySecret: cfg.Voice.IflytekRTASR.AccessKeySecret,
-			Scheme:          cfg.Voice.IflytekRTASR.Scheme,
-			Host:            cfg.Voice.IflytekRTASR.Host,
-			Port:            cfg.Voice.IflytekRTASR.Port,
-			Path:            cfg.Voice.IflytekRTASR.Path,
-			AudioEncode:     cfg.Voice.IflytekRTASR.AudioEncode,
-			Language:        cfg.Voice.IflytekRTASR.Language,
-			SampleRateHz:    cfg.Voice.IflytekRTASR.SampleRateHz,
-			Timeout:         time.Duration(cfg.Voice.ASRTimeoutMs) * time.Millisecond,
-			FrameBytes:      cfg.Voice.IflytekRTASR.FrameBytes,
-			FrameInterval:   time.Duration(cfg.Voice.IflytekRTASR.FrameIntervalMs) * time.Millisecond,
-		})
+		transcriber := voice.LoggingTranscriber{
+			Inner: voice.NewBufferedStreamingTranscriber(
+				voice.NewIflytekRTASRTranscriber(voice.IflytekRTASRConfig{
+					AppID:           cfg.Voice.IflytekRTASR.AppID,
+					AccessKeyID:     cfg.Voice.IflytekRTASR.AccessKeyID,
+					AccessKeySecret: cfg.Voice.IflytekRTASR.AccessKeySecret,
+					Scheme:          cfg.Voice.IflytekRTASR.Scheme,
+					Host:            cfg.Voice.IflytekRTASR.Host,
+					Port:            cfg.Voice.IflytekRTASR.Port,
+					Path:            cfg.Voice.IflytekRTASR.Path,
+					AudioEncode:     cfg.Voice.IflytekRTASR.AudioEncode,
+					Language:        cfg.Voice.IflytekRTASR.Language,
+					SampleRateHz:    cfg.Voice.IflytekRTASR.SampleRateHz,
+					Timeout:         time.Duration(cfg.Voice.ASRTimeoutMs) * time.Millisecond,
+					FrameBytes:      cfg.Voice.IflytekRTASR.FrameBytes,
+					FrameInterval:   time.Duration(cfg.Voice.IflytekRTASR.FrameIntervalMs) * time.Millisecond,
+				}),
+			),
+			Logger: logger,
+		}
 		logger.Info("voice responder configured", "provider", "iflytek_rtasr", "host", cfg.Voice.IflytekRTASR.Host, "scheme", cfg.Voice.IflytekRTASR.Scheme)
 		return voice.NewASRResponder(
 			transcriber,
@@ -272,7 +295,10 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Realtime.OutputSampleRate,
 			cfg.Realtime.OutputChannels,
 			cfg.Voice.EmitPlaceholderAudio,
-		).WithTurnExecutor(turnExecutor).WithSynthesizer(synthesizer)
+		).
+			WithTurnDetection(cfg.Voice.ServerEndpointMinAudioMs, cfg.Voice.ServerEndpointSilenceMs).
+			WithTurnExecutor(turnExecutor).
+			WithSynthesizer(synthesizer)
 	default:
 		logger.Warn("unknown voice provider, falling back to bootstrap responder", "provider", cfg.Voice.Provider)
 		return bootstrap

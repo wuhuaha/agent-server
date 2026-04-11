@@ -38,6 +38,8 @@ func executeTurnStream(ctx context.Context, executor agent.TurnExecutor, req Tur
 func turnInputFromRequest(req TurnRequest, userText string) agent.TurnInput {
 	return agent.TurnInput{
 		SessionID:  req.SessionID,
+		TurnID:     req.TurnID,
+		TraceID:    req.TraceID,
 		DeviceID:   req.DeviceID,
 		ClientType: req.ClientType,
 		UserText:   userText,

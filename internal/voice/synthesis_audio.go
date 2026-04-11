@@ -13,6 +13,8 @@ func synthesizedAudio(ctx context.Context, synthesizer Synthesizer, req TurnRequ
 
 	synthesisReq := SynthesisRequest{
 		SessionID: req.SessionID,
+		TurnID:    req.TurnID,
+		TraceID:   req.TraceID,
 		DeviceID:  req.DeviceID,
 		UserText:  userText,
 		Text:      responseText,

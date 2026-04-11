@@ -156,6 +156,12 @@ func TestXiaozhiWSProtocolV3BinaryFramesAreUnwrappedAndWrapped(t *testing.T) {
 	if captured.InputCodec != "pcm16le" {
 		t.Fatalf("expected captured input codec pcm16le, got %q", captured.InputCodec)
 	}
+	if captured.TurnID == "" {
+		t.Fatal("expected turn_id on xiaozhi responder request")
+	}
+	if captured.TraceID == "" {
+		t.Fatal("expected trace_id on xiaozhi responder request")
+	}
 }
 
 func TestXiaozhiWSIdleTimeoutClosesWithoutServerPanic(t *testing.T) {
@@ -188,6 +194,75 @@ func TestXiaozhiWSIdleTimeoutClosesWithoutServerPanic(t *testing.T) {
 
 	waitForConnectionClose(t, conn, 2*time.Second)
 	assertNoServerPanic(t, serverLog)
+}
+
+func TestXiaozhiWSServerEndpointPreviewAutoCommitsWithoutListenStop(t *testing.T) {
+	profile := testXiaozhiProfile()
+	profile.InputCodec = "pcm16le"
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 1500
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			return voice.TurnResponse{InputText: "自动提交", Text: "compat auto endpoint"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &timedInputPreviewSession{threshold: 60 * time.Millisecond}, nil
+		},
+	}
+
+	conn := openXiaozhiWS(t, profile, responder, nil)
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type":      "hello",
+		"version":   1,
+		"transport": "websocket",
+		"audio_params": map[string]any{
+			"format":      "pcm16le",
+			"sample_rate": 16000,
+			"channels":    1,
+		},
+	}); err != nil {
+		t.Fatalf("write hello failed: %v", err)
+	}
+	var hello xiaozhiHelloTestResponse
+	readXiaozhiJSON(t, conn, 2*time.Second, &hello)
+
+	if err := conn.WriteJSON(map[string]any{"type": "listen", "session_id": hello.SessionID, "state": "start", "mode": "manual"}); err != nil {
+		t.Fatalf("write listen.start failed: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0x01, 0x02, 0x03}); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	sawSTT := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		var msg xiaozhiTextTestMessage
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			t.Fatalf("decode xiaozhi json failed: %v", err)
+		}
+		if msg.Type == "stt" && msg.Text == "自动提交" {
+			sawSTT = true
+			continue
+		}
+		if msg.Type == "llm" {
+			if !sawSTT {
+				t.Fatal("expected stt echo before llm reply")
+			}
+			if msg.Text != "compat auto endpoint" {
+				t.Fatalf("unexpected llm text %q", msg.Text)
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected compat auto-committed response without listen.stop")
 }
 
 func TestXiaozhiOTAHandlerReturnsCompatWebsocketURL(t *testing.T) {

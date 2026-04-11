@@ -93,6 +93,14 @@ Current turn-taking mode advertised by discovery is `client_wakeup_client_commit
 
 `response.start` must still precede the first `response.chunk`, but clients should treat `payload.modalities` as an early hint during runtime streaming rather than as an exhaustive declaration of every later output piece.
 
+Current optional tracing fields:
+
+- `response.start.payload.turn_id`: server-assigned identifier for the current response turn
+- `response.start.payload.trace_id`: server-assigned identifier for correlating logs and metrics for that turn
+- `session.update.payload.turn_id`: may appear on server-emitted turn-state updates such as `thinking`, `speaking`, or the return to `active`
+
+Clients should treat these fields as optional and ignore them if absent.
+
 ## `response.chunk` Delta Payload
 
 The first protocol version keeps one `response.chunk` event name and uses payload fields to describe the streamed delta kind.

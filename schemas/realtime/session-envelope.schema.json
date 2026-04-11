@@ -57,6 +57,46 @@
       "if": {
         "properties": {
           "type": {
+            "const": "response.start"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "modalities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "trace_id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
             "const": "session.update"
           }
         },

@@ -17,6 +17,8 @@ func (s LoggingSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest
 		if s.Logger != nil {
 			s.Logger.Error("tts synthesis failed",
 				"session_id", req.SessionID,
+				"turn_id", req.TurnID,
+				"trace_id", req.TraceID,
 				"device_id", req.DeviceID,
 				"user_text_len", len(req.UserText),
 				"text_len", len(req.Text),
@@ -28,6 +30,8 @@ func (s LoggingSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest
 	if s.Logger != nil {
 		s.Logger.Info("tts synthesis completed",
 			"session_id", req.SessionID,
+			"turn_id", req.TurnID,
+			"trace_id", req.TraceID,
 			"device_id", req.DeviceID,
 			"bytes", len(result.AudioPCM),
 			"sample_rate_hz", result.SampleRateHz,
@@ -51,6 +55,8 @@ func (s LoggingSynthesizer) StreamSynthesize(ctx context.Context, req SynthesisR
 		if s.Logger != nil {
 			s.Logger.Error("tts stream setup failed",
 				"session_id", req.SessionID,
+				"turn_id", req.TurnID,
+				"trace_id", req.TraceID,
 				"device_id", req.DeviceID,
 				"user_text_len", len(req.UserText),
 				"text_len", len(req.Text),
@@ -62,6 +68,8 @@ func (s LoggingSynthesizer) StreamSynthesize(ctx context.Context, req SynthesisR
 	if s.Logger != nil {
 		s.Logger.Info("tts stream started",
 			"session_id", req.SessionID,
+			"turn_id", req.TurnID,
+			"trace_id", req.TraceID,
 			"device_id", req.DeviceID,
 			"user_text_len", len(req.UserText),
 			"text_len", len(req.Text),
@@ -71,6 +79,8 @@ func (s LoggingSynthesizer) StreamSynthesize(ctx context.Context, req SynthesisR
 		inner:     stream,
 		logger:    s.Logger,
 		sessionID: req.SessionID,
+		turnID:    req.TurnID,
+		traceID:   req.TraceID,
 		deviceID:  req.DeviceID,
 	}, nil
 }
@@ -79,6 +89,8 @@ type loggingAudioStream struct {
 	inner        AudioStream
 	logger       *slog.Logger
 	sessionID    string
+	turnID       string
+	traceID      string
 	deviceID     string
 	chunkCount   int
 	totalBytes   int
@@ -112,6 +124,8 @@ func (s *loggingAudioStream) logClosed(err error) {
 	if err != nil {
 		s.logger.Error("tts stream closed with error",
 			"session_id", s.sessionID,
+			"turn_id", s.turnID,
+			"trace_id", s.traceID,
 			"device_id", s.deviceID,
 			"chunks", s.chunkCount,
 			"bytes", s.totalBytes,
@@ -121,6 +135,8 @@ func (s *loggingAudioStream) logClosed(err error) {
 	}
 	s.logger.Info("tts stream completed",
 		"session_id", s.sessionID,
+		"turn_id", s.turnID,
+		"trace_id", s.traceID,
 		"device_id", s.deviceID,
 		"chunks", s.chunkCount,
 		"bytes", s.totalBytes,

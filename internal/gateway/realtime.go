@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 )
 
@@ -18,26 +19,28 @@ type capabilities struct {
 }
 
 type RealtimeProfile struct {
-	WSPath           string
-	ProtocolVersion  string
-	Subprotocol      string
-	LLMProvider      string
-	VoiceProvider    string
-	TTSProvider      string
-	AuthMode         string
-	TurnMode         string
-	IdleTimeoutMs    int
-	MaxSessionMs     int
-	MaxFrameBytes    int
-	InputCodec       string
-	InputSampleRate  int
-	InputChannels    int
-	OutputCodec      string
-	OutputSampleRate int
-	OutputChannels   int
-	AllowOpus        bool
-	AllowTextInput   bool
-	AllowImageInput  bool
+	Logger                *slog.Logger
+	WSPath                string
+	ProtocolVersion       string
+	Subprotocol           string
+	LLMProvider           string
+	VoiceProvider         string
+	TTSProvider           string
+	ServerEndpointEnabled bool
+	AuthMode              string
+	TurnMode              string
+	IdleTimeoutMs         int
+	MaxSessionMs          int
+	MaxFrameBytes         int
+	InputCodec            string
+	InputSampleRate       int
+	InputChannels         int
+	OutputCodec           string
+	OutputSampleRate      int
+	OutputChannels        int
+	AllowOpus             bool
+	AllowTextInput        bool
+	AllowImageInput       bool
 }
 
 type realtimeInfo struct {

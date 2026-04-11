@@ -37,6 +37,53 @@ func (f streamingResponderFunc) RespondStream(ctx context.Context, req voice.Tur
 	return f(ctx, req, sink)
 }
 
+type previewResponder struct {
+	respond      func(context.Context, voice.TurnRequest) (voice.TurnResponse, error)
+	startPreview func(context.Context, voice.InputPreviewRequest) (voice.InputPreviewSession, error)
+}
+
+func (r previewResponder) Respond(ctx context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+	return r.respond(ctx, req)
+}
+
+func (r previewResponder) StartInputPreview(ctx context.Context, req voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+	return r.startPreview(ctx, req)
+}
+
+type timedInputPreviewSession struct {
+	threshold   time.Duration
+	lastAudioAt time.Time
+	audioBytes  int
+}
+
+func (s *timedInputPreviewSession) PushAudio(_ context.Context, chunk []byte) (voice.InputPreview, error) {
+	s.lastAudioAt = time.Now()
+	s.audioBytes += len(chunk)
+	return voice.InputPreview{
+		PartialText:    "preview partial",
+		AudioBytes:     s.audioBytes,
+		SpeechStarted:  true,
+		EndpointReason: "",
+	}, nil
+}
+
+func (s *timedInputPreviewSession) Poll(now time.Time) voice.InputPreview {
+	preview := voice.InputPreview{
+		PartialText:   "preview partial",
+		AudioBytes:    s.audioBytes,
+		SpeechStarted: s.audioBytes > 0,
+	}
+	if s.audioBytes > 0 && now.Sub(s.lastAudioAt) >= s.threshold {
+		preview.CommitSuggested = true
+		preview.EndpointReason = "server_silence_timeout"
+	}
+	return preview
+}
+
+func (s *timedInputPreviewSession) Close() error {
+	return nil
+}
+
 type testInboundEvent struct {
 	Type      string         `json:"type"`
 	SessionID string         `json:"session_id"`
@@ -275,6 +322,88 @@ func TestRealtimeWSStreamingResponderFlushesDeltasBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestRealtimeWSTurnTraceMetadataFlowsThroughResponseStartAndResponder(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	var captured voice.TurnRequest
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		captured = req
+		return voice.TurnResponse{Text: "ok", AudioChunks: repeatAudioChunks(make([]byte, 640), 2)}, nil
+	})
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "hello"})
+
+	var thinkingTurnID string
+	var speakingTurnID string
+	var activeTurnID string
+	var responseTurnID string
+	var responseTraceID string
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "session.update":
+			state := stringValue(event.Payload["state"])
+			turnID := stringValue(event.Payload["turn_id"])
+			switch state {
+			case "thinking":
+				thinkingTurnID = turnID
+			case "speaking":
+				speakingTurnID = turnID
+			case "active":
+				if thinkingTurnID != "" {
+					activeTurnID = turnID
+				}
+			}
+		case "response.start":
+			responseTurnID = stringValue(event.Payload["turn_id"])
+			responseTraceID = stringValue(event.Payload["trace_id"])
+		}
+		if activeTurnID != "" && responseTurnID != "" && responseTraceID != "" {
+			break
+		}
+	}
+
+	if captured.TurnID == "" {
+		t.Fatal("expected responder request turn_id to be set")
+	}
+	if captured.TraceID == "" {
+		t.Fatal("expected responder request trace_id to be set")
+	}
+	if responseTurnID == "" {
+		t.Fatal("expected response.start turn_id to be set")
+	}
+	if responseTraceID == "" {
+		t.Fatal("expected response.start trace_id to be set")
+	}
+	if thinkingTurnID != responseTurnID {
+		t.Fatalf("expected thinking turn_id %q to match response.start turn_id %q", thinkingTurnID, responseTurnID)
+	}
+	if speakingTurnID != responseTurnID {
+		t.Fatalf("expected speaking turn_id %q to match response.start turn_id %q", speakingTurnID, responseTurnID)
+	}
+	if activeTurnID != responseTurnID {
+		t.Fatalf("expected active turn_id %q to match response.start turn_id %q", activeTurnID, responseTurnID)
+	}
+	if captured.TurnID != responseTurnID {
+		t.Fatalf("expected responder turn_id %q to match response.start turn_id %q", captured.TurnID, responseTurnID)
+	}
+	if captured.TraceID != responseTraceID {
+		t.Fatalf("expected responder trace_id %q to match response.start trace_id %q", captured.TraceID, responseTraceID)
+	}
+}
+
 func TestRealtimeWSResponderEndDirectiveClosesAfterAudio(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.IdleTimeoutMs = 5000
@@ -391,6 +520,62 @@ func TestRealtimeWSBargeInInterruptsSpeaking(t *testing.T) {
 	if firstResponseAudioChunks >= 20 {
 		t.Fatalf("expected barge-in to stop the first audio stream early, got %d chunks", firstResponseAudioChunks)
 	}
+}
+
+func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 1500
+	profile.MaxSessionMs = 5000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			if req.InputFrames == 0 {
+				return voice.TurnResponse{Text: "unexpected"}, nil
+			}
+			return voice.TurnResponse{InputText: "自动提交", Text: "auto endpoint response"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &timedInputPreviewSession{threshold: 60 * time.Millisecond}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	sawThinking := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "session.update":
+			if event.SessionID != sessionID {
+				t.Fatalf("unexpected session id %q", event.SessionID)
+			}
+			if stringValue(event.Payload["state"]) == "thinking" {
+				sawThinking = true
+			}
+		case "response.chunk":
+			if !sawThinking {
+				t.Fatal("expected server endpoint auto-commit to enter thinking before response")
+			}
+			if got := stringValue(event.Payload["text"]); got != "auto endpoint response" {
+				t.Fatalf("unexpected response text %q", got)
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected auto-committed response without explicit audio.in.commit")
 }
 
 func testRealtimeProfile() RealtimeProfile {
@@ -603,6 +788,12 @@ func TestRealtimeWSOpusInputIsNormalizedToPCM16(t *testing.T) {
 	}
 	if len(captured.AudioPCM) == 0 {
 		t.Fatal("expected decoded PCM audio on the responder request")
+	}
+	if captured.TurnID == "" {
+		t.Fatal("expected turn_id on normalized responder request")
+	}
+	if captured.TraceID == "" {
+		t.Fatal("expected trace_id on normalized responder request")
 	}
 }
 

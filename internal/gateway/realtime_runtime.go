@@ -23,9 +23,13 @@ type connectionRuntime struct {
 	peer            *wsPeer
 	session         *session.RealtimeSession
 	inputNormalizer voice.InputNormalizer
+	turnTrace       turnTraceState
 
 	outputMu sync.Mutex
 	output   *outputStream
+
+	previewMu sync.Mutex
+	preview   *inputTurnPreview
 }
 
 func newConnectionRuntime(conn *websocket.Conn, peer *wsPeer, rtSession *session.RealtimeSession) *connectionRuntime {
@@ -76,9 +80,13 @@ func (r *connectionRuntime) interruptOutput(wait time.Duration) bool {
 	return true
 }
 
-func applyReadDeadline(conn *websocket.Conn, snapshot session.Snapshot, profile RealtimeProfile) error {
+func applyReadDeadline(runtime *connectionRuntime, snapshot session.Snapshot, profile RealtimeProfile) error {
 	deadline := readDeadlineForSnapshot(snapshot, profile)
-	return conn.SetReadDeadline(deadline)
+	previewDeadline := runtime.previewReadDeadline(time.Now().UTC())
+	if !previewDeadline.IsZero() && (deadline.IsZero() || previewDeadline.Before(deadline)) {
+		deadline = previewDeadline
+	}
+	return runtime.conn.SetReadDeadline(deadline)
 }
 
 func readDeadlineForSnapshot(snapshot session.Snapshot, profile RealtimeProfile) time.Time {

@@ -8,6 +8,23 @@ from agent_server_workers.funasr_service import FunASREngine, WorkerConfig, _env
 
 
 class FunASRServiceTests(unittest.TestCase):
+    def make_config(self, **overrides: object) -> WorkerConfig:
+        values = {
+            "host": "127.0.0.1",
+            "port": 8091,
+            "model": "iic/SenseVoiceSmall",
+            "device": "cpu",
+            "language": "auto",
+            "trust_remote_code": False,
+            "disable_update": True,
+            "batch_size_s": 60,
+            "use_itn": True,
+            "stream_preview_min_audio_ms": 20,
+            "stream_preview_min_interval_ms": 0,
+        }
+        values.update(overrides)
+        return WorkerConfig(**values)
+
     def test_env_bool(self) -> None:
         os.environ["AGENT_SERVER_FUNASR_TEST_BOOL"] = "true"
         try:
@@ -16,19 +33,7 @@ class FunASRServiceTests(unittest.TestCase):
             os.environ.pop("AGENT_SERVER_FUNASR_TEST_BOOL", None)
 
     def test_extract_raw_text(self) -> None:
-        engine = FunASREngine(
-            WorkerConfig(
-                host="127.0.0.1",
-                port=8091,
-                model="iic/SenseVoiceSmall",
-                device="cpu",
-                language="auto",
-                trust_remote_code=False,
-                disable_update=True,
-                batch_size_s=60,
-                use_itn=True,
-            )
-        )
+        engine = FunASREngine(self.make_config())
         self.assertEqual(engine._extract_raw_text([{"text": "hello"}]), "hello")
         self.assertEqual(engine._extract_raw_text({"text": "world"}), "world")
 
@@ -37,6 +42,71 @@ class FunASRServiceTests(unittest.TestCase):
             with patch("sys.argv", ["funasr_service.py"]):
                 config = build_config()
         self.assertFalse(config.trust_remote_code)
+        self.assertEqual(config.stream_preview_min_audio_ms, 320)
+        self.assertEqual(config.stream_preview_min_interval_ms, 240)
+
+    def test_stream_lifecycle_tracks_preview_and_final_without_duplicate_partials(self) -> None:
+        engine = FunASREngine(self.make_config(language="zh"))
+        preview_audio = bytes(640)
+        final_audio = bytes(640)
+        with patch.object(
+            engine,
+            "transcribe_pcm",
+            side_effect=[
+                {"text": "打开", "elapsed_ms": 10, "language": "zh", "mode": "batch"},
+                {"text": "打开", "elapsed_ms": 11, "language": "zh", "mode": "batch"},
+                {"text": "打开客厅灯", "elapsed_ms": 15, "language": "zh", "mode": "batch"},
+            ],
+        ) as transcribe:
+            started = engine.start_stream(
+                session_id="sess-1",
+                turn_id="turn-1",
+                trace_id="trace-1",
+                device_id="device-1",
+                codec="pcm16le",
+                sample_rate_hz=16000,
+                channels=1,
+                language="zh",
+            )
+            stream_id = started["stream_id"]
+            self.assertEqual(started["mode"], "stream_preview_batch")
+
+            pushed_once = engine.push_stream_audio(stream_id, preview_audio)
+            self.assertEqual(pushed_once["preview_text"], "打开")
+            self.assertTrue(pushed_once["preview_changed"])
+            self.assertEqual(pushed_once["latest_partial"], "打开")
+            self.assertEqual(pushed_once["partials"], ["打开"])
+            self.assertEqual(pushed_once["language"], "zh")
+
+            pushed_twice = engine.push_stream_audio(stream_id, final_audio)
+            self.assertEqual(pushed_twice["preview_text"], "打开")
+            self.assertFalse(pushed_twice["preview_changed"])
+            self.assertEqual(pushed_twice["partials"], ["打开"])
+
+            finished = engine.finish_stream(stream_id)
+            self.assertEqual(finished["text"], "打开客厅灯")
+            self.assertEqual(finished["latest_partial"], "打开客厅灯")
+            self.assertEqual(finished["partials"], ["打开", "打开客厅灯"])
+            self.assertEqual(finished["endpoint_reason"], "stream_finish")
+            self.assertEqual(finished["mode"], "stream_preview_batch")
+            self.assertEqual(transcribe.call_count, 3)
+
+    def test_close_stream_removes_state(self) -> None:
+        engine = FunASREngine(self.make_config())
+        started = engine.start_stream(
+            session_id="sess-2",
+            turn_id="turn-2",
+            trace_id="trace-2",
+            device_id="device-2",
+            codec="pcm16le",
+            sample_rate_hz=16000,
+            channels=1,
+            language="auto",
+        )
+        closed = engine.close_stream(started["stream_id"])
+        self.assertEqual(closed["status"], "closed")
+        with self.assertRaisesRegex(ValueError, "not found"):
+            engine.close_stream(started["stream_id"])
 
 
 if __name__ == "__main__":

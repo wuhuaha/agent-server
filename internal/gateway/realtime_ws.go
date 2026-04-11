@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -77,6 +78,7 @@ type sessionEndPayload struct {
 type sessionUpdatePayload struct {
 	State          session.State `json:"state"`
 	BargeInEnabled bool          `json:"barge_in_enabled,omitempty"`
+	TurnID         string        `json:"turn_id,omitempty"`
 }
 
 type clientSessionUpdatePayload struct {
@@ -86,6 +88,8 @@ type clientSessionUpdatePayload struct {
 type responseStartPayload struct {
 	ResponseID string   `json:"response_id"`
 	Modalities []string `json:"modalities"`
+	TurnID     string   `json:"turn_id,omitempty"`
+	TraceID    string   `json:"trace_id,omitempty"`
 }
 
 type responseChunkPayload struct {
@@ -111,6 +115,8 @@ type wsPeer struct {
 	writeMu   sync.Mutex
 }
 
+var errContinueReadLoop = errors.New("continue websocket read loop")
+
 func (p *wsPeer) WriteEvent(eventType events.Type, sessionID string, payload any) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
@@ -131,6 +137,7 @@ type realtimeWSHandler struct {
 	profile   RealtimeProfile
 	upgrader  websocket.Upgrader
 	responder voice.Responder
+	logger    *slog.Logger
 }
 
 func NewRealtimeWSHandler(profile RealtimeProfile, responder voice.Responder) http.Handler {
@@ -146,6 +153,7 @@ func NewRealtimeWSHandler(profile RealtimeProfile, responder voice.Responder) ht
 			},
 		},
 		responder: responder,
+		logger:    gatewayTraceLogger(profile.Logger, "realtime"),
 	}
 }
 
@@ -178,14 +186,17 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	defer runtime.interruptOutput(50 * time.Millisecond)
 
-	if err := applyReadDeadline(conn, runtime.session.Snapshot(), h.profile); err != nil {
+	if err := applyReadDeadline(runtime, runtime.session.Snapshot(), h.profile); err != nil {
 		return
 	}
 
 	for {
 		messageType, payload, err := conn.ReadMessage()
 		if err != nil {
-			if handled, handleErr := h.handleReadError(runtime, err); handled {
+			if handled, handleErr := h.handleReadError(ctx, runtime, err); handled {
+				if errors.Is(handleErr, errContinueReadLoop) {
+					continue
+				}
 				if handleErr != nil {
 					return
 				}
@@ -218,14 +229,19 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *realtimeWSHandler) handleReadError(runtime *connectionRuntime, err error) (bool, error) {
+func (h *realtimeWSHandler) handleReadError(ctx context.Context, runtime *connectionRuntime, err error) (bool, error) {
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		return false, nil
 	}
 
 	snapshot := runtime.session.Snapshot()
-	reason, shouldClose := deadlineCloseReason(snapshot, h.profile, time.Now().UTC())
+	now := time.Now().UTC()
+	if handled, handleErr := h.maybeHandleServerEndpointTimeout(ctx, runtime, snapshot, now); handled {
+		return true, handleErr
+	}
+
+	reason, shouldClose := deadlineCloseReason(snapshot, h.profile, now)
 	if !shouldClose {
 		if snapshot.SessionID == "" {
 			return true, nil
@@ -237,6 +253,61 @@ func (h *realtimeWSHandler) handleReadError(runtime *connectionRuntime, err erro
 
 	runtime.interruptOutput(100 * time.Millisecond)
 	return true, h.endSession(runtime, reason, closeMessageForReason(reason))
+}
+
+func (h *realtimeWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, now time.Time) (bool, error) {
+	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive {
+		return false, nil
+	}
+	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
+	if !active {
+		return false, nil
+	}
+	if partialChanged {
+		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
+			"partial_text", preview.PartialText,
+			"audio_bytes", preview.AudioBytes,
+		)
+	}
+	if commitSuggested && snapshot.AudioBytes > 0 {
+		runtime.clearInputPreview()
+		turn, err := runtime.session.CommitTurn()
+		if err != nil {
+			return true, err
+		}
+		if err := applyReadDeadline(runtime, turn.Snapshot, h.profile); err != nil {
+			return true, err
+		}
+		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+			"input_type", "audio",
+			"audio_bytes", len(turn.AudioPCM),
+			"input_codec", turn.Snapshot.InputCodec,
+			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
+			"input_channels", turn.Snapshot.InputChannels,
+			"turn_index", turn.Snapshot.Turns,
+			"endpoint_reason", preview.EndpointReason,
+		)
+		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{
+			State:          session.StateThinking,
+			BargeInEnabled: true,
+			TurnID:         trace.TurnID,
+		}); err != nil {
+			return true, err
+		}
+		if err := h.emitTurnResponse(ctx, runtime, turn, trace, ""); err != nil {
+			return true, err
+		}
+		return true, errContinueReadLoop
+	}
+	if deadlineReason, shouldClose := deadlineCloseReason(snapshot, h.profile, now); shouldClose {
+		runtime.interruptOutput(100 * time.Millisecond)
+		return true, h.endSession(runtime, deadlineReason, closeMessageForReason(deadlineReason))
+	}
+	if err := applyReadDeadline(runtime, snapshot, h.profile); err != nil {
+		return true, err
+	}
+	return true, errContinueReadLoop
 }
 
 func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []byte) error {
@@ -270,7 +341,23 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 		return err
 	}
 
-	if err := applyReadDeadline(runtime.conn, current, h.profile); err != nil {
+	if h.profile.ServerEndpointEnabled && (previous.State == session.StateActive || previous.State == session.StateSpeaking) {
+		if err := runtime.ensureInputPreview(context.Background(), h.responder, current, ""); err != nil {
+			h.logger.Warn("gateway input preview start failed", "session_id", current.SessionID, "error", err)
+		} else {
+			preview, partialChanged, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalizedPayload)
+			if pushErr != nil {
+				h.logger.Warn("gateway input preview push failed", "session_id", current.SessionID, "error", pushErr)
+			} else if partialChanged {
+				logTurnTraceInfo(h.logger, "gateway input preview updated", current.SessionID, runtime.turnTrace.Current(),
+					"partial_text", preview.PartialText,
+					"audio_bytes", preview.AudioBytes,
+				)
+			}
+		}
+	}
+
+	if err := applyReadDeadline(runtime, current, h.profile); err != nil {
 		return err
 	}
 
@@ -362,7 +449,7 @@ func (h *realtimeWSHandler) handleSessionStart(runtime *connectionRuntime, envel
 	}
 	runtime.inputNormalizer = inputNormalizer
 
-	if err := applyReadDeadline(runtime.conn, snapshot, h.profile); err != nil {
+	if err := applyReadDeadline(runtime, snapshot, h.profile); err != nil {
 		return err
 	}
 
@@ -382,6 +469,15 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		})
 	}
 
+	snapshot := runtime.session.Snapshot()
+	if snapshot.State != session.StateActive {
+		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
+			Code:        "turn_not_ready",
+			Message:     "audio.in.commit is accepted only while the session is active",
+			Recoverable: true,
+		})
+	}
+	runtime.clearInputPreview()
 	turn, err := runtime.session.CommitTurn()
 	if err != nil {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
@@ -391,15 +487,24 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		})
 	}
 
-	if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.profile); err != nil {
+	if err := applyReadDeadline(runtime, turn.Snapshot, h.profile); err != nil {
 		return err
 	}
 
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
+	turnMeta := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "audio_commit")
+	logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, turnMeta,
+		"input_type", "audio",
+		"audio_bytes", len(turn.AudioPCM),
+		"input_codec", turn.Snapshot.InputCodec,
+		"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
+		"input_channels", turn.Snapshot.InputChannels,
+		"turn_index", turn.Snapshot.Turns,
+	)
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking, TurnID: turnMeta.TurnID}); err != nil {
 		return err
 	}
 
-	return h.emitTurnResponse(ctx, runtime, turn, "")
+	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, "")
 }
 
 func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -432,6 +537,7 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		})
 	}
 
+	runtime.clearInputPreview()
 	turn, err := runtime.session.CommitTurn()
 	if err != nil {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
@@ -441,15 +547,21 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		})
 	}
 
-	if err := applyReadDeadline(runtime.conn, turn.Snapshot, h.profile); err != nil {
+	if err := applyReadDeadline(runtime, turn.Snapshot, h.profile); err != nil {
 		return err
 	}
 
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking}); err != nil {
+	turnMeta := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "text_input")
+	logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, turnMeta,
+		"input_type", "text",
+		"text_len", len(strings.TrimSpace(payload.Text)),
+		"turn_index", turn.Snapshot.Turns,
+	)
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking, TurnID: turnMeta.TurnID}); err != nil {
 		return err
 	}
 
-	return h.emitTurnResponse(ctx, runtime, turn, payload.Text)
+	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, payload.Text)
 }
 
 func (h *realtimeWSHandler) handleClientEnd(runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -500,16 +612,23 @@ func (h *realtimeWSHandler) handleSessionUpdate(runtime *connectionRuntime, enve
 
 	if payload.Interrupt && snapshot.State == session.StateSpeaking {
 		runtime.interruptOutput(100 * time.Millisecond)
+		turnMeta := runtime.turnTrace.MarkInterrupted()
 		updated, err := runtime.session.SetState(session.StateActive)
 		if err != nil {
 			return err
 		}
-		if err := applyReadDeadline(runtime.conn, updated, h.profile); err != nil {
+		turnMeta = runtime.turnTrace.MarkActive()
+		logTurnTraceInfo(h.logger, "gateway turn interrupted", updated.SessionID, turnMeta,
+			"active_return_latency_ms", turnMeta.ActiveReturnLatencyMs(),
+		)
+		runtime.clearInputPreview()
+		if err := applyReadDeadline(runtime, updated, h.profile); err != nil {
 			return err
 		}
 		return runtime.peer.WriteEvent(events.TypeSessionUpdate, updated.SessionID, sessionUpdatePayload{
 			State:          updated.State,
 			BargeInEnabled: true,
+			TurnID:         turnMeta.TurnID,
 		})
 	}
 
@@ -519,12 +638,12 @@ func (h *realtimeWSHandler) handleSessionUpdate(runtime *connectionRuntime, enve
 	})
 }
 
-func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, text string) error {
-	request := buildTurnRequest(turn, runtime, text)
+func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string) error {
+	request := buildTurnRequest(turn, runtime, trace, text)
 	responseID := fmt.Sprintf("resp_%d", time.Now().UTC().UnixNano())
 
 	if streamingResponder, ok := h.responder.(voice.StreamingResponder); ok {
-		return h.emitStreamingTurnResponse(ctx, runtime, turn.Snapshot, responseID, request, streamingResponder)
+		return h.emitStreamingTurnResponse(ctx, runtime, turn.Snapshot, responseID, trace, request, streamingResponder)
 	}
 
 	response, err := h.responder.Respond(ctx, request)
@@ -533,9 +652,17 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 	}
 
 	responseDeltas := responseDeltasForEmission(response, true)
+	trace = runtime.turnTrace.MarkResponseStart()
+	logTurnTraceInfo(h.logger, "gateway turn response started", turn.Snapshot.SessionID, trace,
+		"response_id", responseID,
+		"response_start_latency_ms", trace.ResponseStartLatencyMs(),
+		"modalities", strings.Join(responseModalities(responseDeltas, response), ","),
+	)
 	if err := runtime.peer.WriteEvent(events.TypeResponseStart, turn.Snapshot.SessionID, responseStartPayload{
 		ResponseID: responseID,
 		Modalities: responseModalities(responseDeltas, response),
+		TurnID:     trace.TurnID,
+		TraceID:    trace.TraceID,
 	}); err != nil {
 		return err
 	}
@@ -544,7 +671,7 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 		return err
 	}
 
-	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, response)
+	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, trace, response)
 }
 
 func (h *realtimeWSHandler) emitStreamingTurnResponse(
@@ -552,6 +679,7 @@ func (h *realtimeWSHandler) emitStreamingTurnResponse(
 	runtime *connectionRuntime,
 	snapshot session.Snapshot,
 	responseID string,
+	trace turnTrace,
 	request voice.TurnRequest,
 	streamingResponder voice.StreamingResponder,
 ) error {
@@ -594,7 +722,18 @@ func (h *realtimeWSHandler) emitStreamingTurnResponse(
 			}
 			sawStreamedDelta = true
 			if !sentResponseStart {
-				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{ResponseID: responseID, Modalities: []string{"text"}}); err != nil {
+				trace = runtime.turnTrace.MarkResponseStart()
+				logTurnTraceInfo(h.logger, "gateway turn response started", snapshot.SessionID, trace,
+					"response_id", responseID,
+					"response_start_latency_ms", trace.ResponseStartLatencyMs(),
+					"modalities", "text",
+				)
+				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{
+					ResponseID: responseID,
+					Modalities: []string{"text"},
+					TurnID:     trace.TurnID,
+					TraceID:    trace.TraceID,
+				}); err != nil {
 					cancel()
 					return err
 				}
@@ -614,7 +753,18 @@ func (h *realtimeWSHandler) emitStreamingTurnResponse(
 			responseReady = true
 			if !sentResponseStart {
 				responseDeltas := responseDeltasForEmission(response, true)
-				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{ResponseID: responseID, Modalities: responseModalities(responseDeltas, response)}); err != nil {
+				trace = runtime.turnTrace.MarkResponseStart()
+				logTurnTraceInfo(h.logger, "gateway turn response started", snapshot.SessionID, trace,
+					"response_id", responseID,
+					"response_start_latency_ms", trace.ResponseStartLatencyMs(),
+					"modalities", strings.Join(responseModalities(responseDeltas, response), ","),
+				)
+				if err := runtime.peer.WriteEvent(events.TypeResponseStart, snapshot.SessionID, responseStartPayload{
+					ResponseID: responseID,
+					Modalities: responseModalities(responseDeltas, response),
+					TurnID:     trace.TurnID,
+					TraceID:    trace.TraceID,
+				}); err != nil {
 					cancel()
 					return err
 				}
@@ -633,10 +783,10 @@ func (h *realtimeWSHandler) emitStreamingTurnResponse(
 		}
 	}
 
-	return h.finalizeTurnResponse(ctx, runtime, snapshot, response)
+	return h.finalizeTurnResponse(ctx, runtime, snapshot, trace, response)
 }
 
-func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, text string) voice.TurnRequest {
+func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, trace turnTrace, text string) voice.TurnRequest {
 	inputCodec := turn.Snapshot.InputCodec
 	inputSampleRate := turn.Snapshot.InputSampleRate
 	inputChannels := turn.Snapshot.InputChannels
@@ -648,6 +798,8 @@ func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, te
 
 	return voice.TurnRequest{
 		SessionID:       turn.Snapshot.SessionID,
+		TurnID:          trace.TurnID,
+		TraceID:         trace.TraceID,
 		DeviceID:        turn.Snapshot.DeviceID,
 		ClientType:      turn.Snapshot.ClientType,
 		Text:            text,
@@ -684,7 +836,7 @@ func responseModalities(deltas []voice.ResponseDelta, response voice.TurnRespons
 	return modalities
 }
 
-func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, response voice.TurnResponse) error {
+func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, trace turnTrace, response voice.TurnResponse) error {
 	runtime.session.ClearTurn()
 
 	audioStream := response.AudioStream
@@ -697,18 +849,28 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 		if err != nil {
 			return err
 		}
-		if err := applyReadDeadline(runtime.conn, speaking, h.profile); err != nil {
+		trace = runtime.turnTrace.MarkSpeaking()
+		logTurnTraceInfo(h.logger, "gateway turn speaking", snapshot.SessionID, trace,
+			"speaking_latency_ms", trace.SpeakingLatencyMs(),
+		)
+		if err := applyReadDeadline(runtime, speaking, h.profile); err != nil {
 			return err
 		}
-		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: session.StateSpeaking}); err != nil {
+		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: session.StateSpeaking, TurnID: trace.TurnID}); err != nil {
 			return err
 		}
-		h.startAudioStream(ctx, runtime, snapshot.SessionID, audioStream, response.EndSession, response.EndReason, response.EndMessage)
+		h.startAudioStream(ctx, runtime, snapshot.SessionID, trace, audioStream, response.EndSession, response.EndReason, response.EndMessage)
 		return nil
 	}
 
 	if response.EndSession {
 		reason, message := responseCloseDirective(response)
+		trace = runtime.turnTrace.MarkCompleted()
+		logTurnTraceInfo(h.logger, "gateway turn completed", snapshot.SessionID, trace,
+			"completed_latency_ms", trace.CompletedLatencyMs(),
+			"end_session", true,
+			"end_reason", string(reason),
+		)
 		return h.endSession(runtime, reason, message)
 	}
 
@@ -716,17 +878,25 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 	if err != nil {
 		return err
 	}
-	if err := applyReadDeadline(runtime.conn, active, h.profile); err != nil {
+	if err := applyReadDeadline(runtime, active, h.profile); err != nil {
 		return err
 	}
-
-	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true})
+	trace = runtime.turnTrace.MarkActive()
+	trace = runtime.turnTrace.MarkCompleted()
+	logTurnTraceInfo(h.logger, "gateway turn completed", snapshot.SessionID, trace,
+		"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
+		"completed_latency_ms", trace.CompletedLatencyMs(),
+		"end_session", false,
+	)
+	runtime.turnTrace.Clear()
+	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true, TurnID: trace.TurnID})
 }
 
 func (h *realtimeWSHandler) startAudioStream(
 	ctx context.Context,
 	runtime *connectionRuntime,
 	sessionID string,
+	trace turnTrace,
 	audioStream voice.AudioStream,
 	endSession bool,
 	endReason string,
@@ -758,6 +928,7 @@ func (h *realtimeWSHandler) startAudioStream(
 				}
 				current := runtime.session.Snapshot()
 				if current.SessionID == sessionID && current.State == session.StateSpeaking {
+					logTurnTraceError(h.logger, "gateway turn audio stream failed", sessionID, runtime.turnTrace.Current(), err)
 					_ = runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{Code: "audio_stream_failed", Message: err.Error(), Recoverable: false})
 					_ = h.endSession(runtime, session.CloseReasonError, err.Error())
 				}
@@ -791,6 +962,13 @@ func (h *realtimeWSHandler) startAudioStream(
 			if message == "" {
 				message = closeMessageForReason(reason)
 			}
+			trace = runtime.turnTrace.MarkCompleted()
+			logTurnTraceInfo(h.logger, "gateway turn completed", sessionID, trace,
+				"completed_latency_ms", trace.CompletedLatencyMs(),
+				"end_session", true,
+				"end_reason", string(reason),
+			)
+			runtime.turnTrace.Clear()
 			_ = h.endSession(runtime, reason, message)
 			return
 		}
@@ -799,10 +977,18 @@ func (h *realtimeWSHandler) startAudioStream(
 		if err != nil {
 			return
 		}
-		if err := applyReadDeadline(runtime.conn, active, h.profile); err != nil {
+		if err := applyReadDeadline(runtime, active, h.profile); err != nil {
 			return
 		}
-		_ = runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true})
+		trace = runtime.turnTrace.MarkActive()
+		trace = runtime.turnTrace.MarkCompleted()
+		logTurnTraceInfo(h.logger, "gateway turn completed", active.SessionID, trace,
+			"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
+			"completed_latency_ms", trace.CompletedLatencyMs(),
+			"end_session", false,
+		)
+		runtime.turnTrace.Clear()
+		_ = runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{State: active.State, BargeInEnabled: true, TurnID: trace.TurnID})
 	}()
 }
 
@@ -846,18 +1032,22 @@ func (h *realtimeWSHandler) endSession(runtime *connectionRuntime, reason sessio
 
 	runtime.session.Reset()
 	runtime.inputNormalizer = nil
-	return applyReadDeadline(runtime.conn, runtime.session.Snapshot(), h.profile)
+	runtime.clearInputPreview()
+	runtime.turnTrace.Clear()
+	return applyReadDeadline(runtime, runtime.session.Snapshot(), h.profile)
 }
 
 func (h *realtimeWSHandler) terminateWithError(runtime *connectionRuntime, code, message string) error {
 	snapshot := runtime.session.Snapshot()
 	sessionID := snapshot.SessionID
+	trace := runtime.turnTrace.Current()
 
 	if err := runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{Code: code, Message: message, Recoverable: false}); err != nil {
 		return err
 	}
 
 	if sessionID != "" {
+		logTurnTraceError(h.logger, "gateway turn terminated", sessionID, trace, errors.New(message), "error_code", code)
 		runtime.interruptOutput(100 * time.Millisecond)
 		return h.endSession(runtime, session.CloseReasonError, message)
 	}

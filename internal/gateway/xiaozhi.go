@@ -1,6 +1,9 @@
 package gateway
 
+import "log/slog"
+
 type XiaozhiCompatProfile struct {
+	Logger                *slog.Logger
 	Enabled               bool
 	WSPath                string
 	OTAPath               string
@@ -13,6 +16,7 @@ type XiaozhiCompatProfile struct {
 	MaxFrameBytes         int
 	IdleTimeoutMs         int
 	MaxSessionMs          int
+	ServerEndpointEnabled bool
 	SourceOutputCodec     string
 	SourceOutputRate      int
 	SourceOutputChannels  int

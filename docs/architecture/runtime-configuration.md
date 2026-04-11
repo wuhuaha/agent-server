@@ -112,6 +112,9 @@ Current runtime note:
 - `AGENT_SERVER_VOICE_ASR_URL`: FunASR worker transcription endpoint
 - `AGENT_SERVER_VOICE_ASR_TIMEOUT_MS`: timeout for one ASR request
 - `AGENT_SERVER_VOICE_ASR_LANGUAGE`: language hint, default `auto`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED`: internal server-endpoint preview switch, default `false`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`: minimum accumulated audio before the hidden preview path may suggest auto-commit, default `320`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`: trailing local silence window before the hidden preview path may suggest auto-commit, default `480`
 - `AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO`: whether to keep emitting silent audio chunks until real TTS is added
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID`
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID`
@@ -133,6 +136,14 @@ Current directly usable local setup:
 3. connect with the Python desktop client or the scripted runner
 
 For `opus` device uplink, the current server path supports mono speech-oriented `SILK-only` packets and normalizes them in Go before calling the worker. The Python worker still receives `pcm16le` JSON payloads.
+
+Current internal endpoint-preview note:
+
+- when `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true`, websocket adapters may start an internal input-preview session behind the shared `internal/voice` boundary and auto-commit an audio turn after a local silence window
+- the first hidden endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS` and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, and those thresholds are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
+- this path currently stays intentionally undisclosed at the public discovery layer, so `turn_mode` still advertises `client_wakeup_client_commit`
+- the first implementation slice uses a silence-based detector on top of streaming ASR partials; it is a stepping stone toward fuller server-side endpointing, not the final policy
+- the Python desktop runner now exposes a non-default `server-endpoint-preview` scenario for this hidden mode; it intentionally stays out of `full` and `regression`, and it should be used together with `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` plus a speech-like `--wav` sample
 
 Current note on this machine:
 
