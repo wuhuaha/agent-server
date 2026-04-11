@@ -52,7 +52,7 @@ agent-server-desktop-runner --scenario full --http-base http://127.0.0.1:8080
 
 Useful options:
 
-- `--scenario text|audio|server-end|full`
+- `--scenario text|audio|server-end|server-endpoint-preview|tool|barge-in|timeout|full|regression`
 - `--text "hello from scripted desktop client"`
 - `--silence-ms 1000`
 - `--frame-ms 20`
@@ -62,15 +62,40 @@ Useful options:
 
 The JSON report now includes:
 
-- discovery metadata such as `turn_mode`, `voice_provider`, and `tts_provider`
-- per-scenario latency metrics such as `response_start_latency_ms`, `first_text_latency_ms`, `first_audio_latency_ms`, and `response_complete_latency_ms`
-- top-level `quality_summary` aggregates for quick cross-run comparison
+- run metadata such as `generated_at`, `run_id`, and optional `artifact_dir`
+- discovery metadata such as `turn_mode`, `llm_provider`, `voice_provider`, and `tts_provider`
+- per-scenario identifiers and diagnostics such as `turn_id`, `trace_id`, `issues`, and `artifacts`
+- per-scenario phase and latency metrics such as `thinking_latency_ms`, `speaking_latency_ms`, `active_return_latency_ms`, `response_start_latency_ms`, `first_partial_latency_ms`, `first_text_latency_ms`, `first_audio_latency_ms`, `barge_in_cutoff_latency_ms`, `response_complete_latency_ms`, and `playout_complete_latency_ms`
+- top-level `quality_summary` aggregates for quick cross-run comparison, including audio-byte totals, text-volume totals, partial-response ratio, heard-text totals, and issue counts
 
-The `full` scenario runs:
+When `--save-rx-dir` is set, the runner now creates one run directory under that path and saves replay-friendly artifacts per scenario:
+
+- `events.json`
+- `response.txt`
+- `scenario.json`
+- `received-audio.wav` when binary audio arrived
+
+The `full` scenario runs the fast smoke trio:
 
 1. a text turn and client-side close
 2. an audio turn and client-side close
 3. a `/end` text turn that expects the server to close the session
+
+The `regression` scenario runs the broader migration baseline:
+
+1. `text`
+2. `audio`
+3. `server-end`
+4. `tool`
+5. `barge-in`
+6. `timeout`
+
+Current intent of the additional scenarios:
+
+- `server-endpoint-preview`: uploads audio without sending `audio.in.commit` and expects hidden server endpointing to auto-close the turn; this requires `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` and a speech-like `--wav` input
+- `tool`: exercises the shared tool-call and tool-result delta path with `/tool time.now {}`
+- `barge-in`: verifies that one spoken response starts, receives audio, gets interrupted, and a second turn completes afterward
+- `timeout`: verifies server-driven `idle_timeout` session closure using the discovery-advertised idle timeout
 
 ## RTOS Mock Client
 
@@ -87,6 +112,22 @@ Useful options:
 - `--no-interrupt-update`
 - `--no-auto-end`
 - `--output .\rtos-mock-report.json`
+- `--save-rx .\rtos-rx.wav`
+- `--save-rx-dir .\rtos-artifacts`
+
+The RTOS mock JSON report now uses the same baseline vocabulary as the desktop runner for:
+
+- run metadata such as `generated_at`, `run_id`, and `artifact_dir`
+- discovery metadata such as `turn_mode`, `llm_provider`, `voice_provider`, and `tts_provider`
+- identifier capture such as `turn_id`, `trace_id`, `turn_ids`, and `trace_ids`
+- replay-friendly artifact references under `artifacts`
+
+When `--save-rx-dir` is set, the RTOS mock archives:
+
+- `events.json`
+- `response.txt`
+- `run.json`
+- `received-audio.wav` when audio arrived
 
 Typical barge-in validation:
 
@@ -95,6 +136,6 @@ agent-server-rtos-mock `
   --http-base http://127.0.0.1:8080 `
   --wav .\sample.wav `
   --interrupt-wav .\interrupt.wav `
-  --save-rx .\rtos-rx.wav `
+  --save-rx-dir .\rtos-artifacts `
   --output .\rtos-mock-report.json
 ```

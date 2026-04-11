@@ -84,6 +84,7 @@ class DiscoveryInfo:
     subprotocol: str
     auth_mode: str
     turn_mode: str
+    llm_provider: str
     voice_provider: str
     tts_provider: str
     input_codec: str
@@ -113,6 +114,7 @@ class DiscoveryInfo:
             subprotocol=str(payload.get("subprotocol", "agent-server.realtime.v0")),
             auth_mode=str(payload.get("auth_mode", "disabled")),
             turn_mode=str(payload.get("turn_mode", "client_wakeup_client_commit")),
+            llm_provider=str(payload.get("llm_provider", "")),
             voice_provider=str(payload.get("voice_provider", "")),
             tts_provider=str(payload.get("tts_provider", "")),
             input_codec=str(input_audio.get("codec", "pcm16le")),

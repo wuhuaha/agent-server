@@ -13,6 +13,12 @@ class RTOSMockTests(unittest.TestCase):
         self.assertEqual(args.device_id, "rtos-mock-001")
         self.assertFalse(args.no_auto_end)
         self.assertFalse(args.no_interrupt_update)
+        self.assertIsNone(args.save_rx_dir)
+
+    def test_parser_accepts_save_rx_dir(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["--save-rx-dir", "./artifacts"])
+        self.assertEqual(args.save_rx_dir, "./artifacts")
 
 
 if __name__ == "__main__":
