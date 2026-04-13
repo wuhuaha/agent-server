@@ -161,6 +161,13 @@
 - Docker deployment must preserve the runtime boundary between `agentd` and the local ASR worker. Do not collapse them into one convenience container for the baseline path.
 - Inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use service-name networking (`http://funasr-worker:8091/v1/asr/transcribe`) rather than `127.0.0.1`.
 - The baseline Docker slice is CPU-first. GPU worker containerization is a separate follow-up so CUDA runtime and driver assumptions can be validated independently.
+- The durable `agentd` Docker runtime base is now `scratch` with a copied CA bundle and explicit non-root user `65532:65532`, not `gcr.io/distroless`. This keeps the runtime image minimal while avoiding an extra registry dependency that proved fragile in real validation.
+- Docker builds for `agentd` now default `GOPROXY` to `https://goproxy.cn,direct` and `GOSUMDB` to `sum.golang.google.cn`, matching the machine-level Go proxy path already validated for this repository.
+- The CPU FunASR worker image currently does not install extra apt system packages. The current worker implementation uses the standard-library `wave` path and declared Python wheels only, so the noisy `libsndfile1` layer was removed from the baseline image.
+- Compose build definitions now pass through standard proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, plus lowercase variants), and the worker Dockerfile explicitly exposes those values during large Python wheel downloads.
+- Real Docker validation on this machine now has one confirmed split outcome:
+  - `agentd` image build succeeds
+  - CPU `funasr-worker` image gets through base-image and bootstrap-pip setup but still depends on a stable external path to `download-r2.pytorch.org` for the large `torch` CPU wheel
 - The default hidden endpoint policy is now: base silence window for lexically complete partials, plus an extra hold window for obviously unfinished partials.
 - When a lexically complete partial also carries a provider endpoint hint, the shared turn detector may use a shorter endpoint window; incomplete partials still stay on the conservative hold path.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.

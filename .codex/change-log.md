@@ -539,3 +539,14 @@
   - parsed all compose YAML files successfully with `python3` + `yaml.safe_load`
   - checked all Dockerfiles for expected top-level image and entrypoint directives
   - recorded the missing local `docker` CLI as an environment caveat for later real compose validation
+- Completed the next Docker validation follow-up on the current WSL2 machine:
+  - installed `docker.io` and `docker-compose-v2`
+  - configured the local Docker daemon to reuse the machine's working proxy path for registry access
+  - validated `docker compose config` for both `agentd` only and layered `agentd + local-asr`
+  - completed a real `docker compose build agentd`
+- Hardened the Docker assets based on real build failures:
+  - switched `agentd` runtime images from `gcr.io/distroless` to `scratch` with copied CA certificates and non-root execution
+  - added Docker build defaults for `GOPROXY=https://goproxy.cn,direct` and `GOSUMDB=sum.golang.google.cn`
+  - removed the unused apt system-package layer from the CPU FunASR worker image
+  - added proxy build-arg passthrough for compose and the worker Dockerfile, plus a higher default `pip` timeout for large wheel downloads
+- Updated Docker-facing documentation with the new build-network behavior and the remaining worker-image network caveat.

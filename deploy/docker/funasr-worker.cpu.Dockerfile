@@ -3,6 +3,7 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
     MODELSCOPE_CACHE=/models/modelscope \
     HF_HOME=/models/hf \
     TORCH_HOME=/models/torch \
@@ -18,9 +19,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    no_proxy=${no_proxy}
 
 RUN python -m pip install --upgrade \
     pip \
@@ -45,4 +55,3 @@ VOLUME ["/models/modelscope", "/models/hf", "/models/torch"]
 EXPOSE 8091
 
 CMD ["python", "-m", "agent_server_workers.funasr_service", "--host", "0.0.0.0", "--port", "8091", "--device", "cpu"]
-

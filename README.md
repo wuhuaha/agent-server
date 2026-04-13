@@ -150,6 +150,12 @@ Important container-networking note:
 - do not use `127.0.0.1` for the ASR worker URL inside compose unless the worker runs in the same container
 - the local worker image stores model caches in named volumes under `/models/modelscope`, `/models/hf`, and `/models/torch`
 
+Build-network note:
+
+- if your machine needs an outbound proxy, export standard shell env vars such as `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` before running `docker compose build`; the compose files now pass those into the image build steps
+- the `agentd` Dockerfiles default `GOPROXY` to `https://goproxy.cn,direct` and `GOSUMDB` to `sum.golang.google.cn`, but both can still be overridden by build args or shell env
+- the CPU FunASR worker image downloads large `torch` and `torchaudio` wheels from `download.pytorch.org`, so that image build still needs a reasonably stable external network path
+
 For repeatable scripted validation of discovery, text, audio, and server-initiated close:
 
 ```bash

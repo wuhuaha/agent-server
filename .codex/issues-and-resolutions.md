@@ -333,3 +333,33 @@
 - Problem: the current machine context for `/root/agent-server` does not have a `docker` executable, so this turn could not run `docker compose config`, image builds, or live container smoke validation for the new Docker deployment slice.
 - Resolution: completed static validation instead by parsing the compose YAML files with `python3` + `yaml.safe_load`, checking the Dockerfiles for expected image and entrypoint directives, and documenting the runtime assumptions in `README.md` plus `docs/architecture/runtime-configuration.md`.
 - Status: open environment caveat. Real compose validation should run after Docker is installed on the target machine.
+
+### Docker Daemon Could Not Reach Registries Reliably On This WSL2 Machine
+
+- Problem: after Docker was installed on the current WSL2 Ubuntu machine, the daemon still timed out or returned `EOF` while resolving `docker.io`, `gcr.io`, and `auth.docker.io` directly during image builds.
+- Resolution: confirmed that the existing local proxy path (`127.0.0.1:7890`) could reach those registry endpoints, configured a systemd drop-in so the Docker daemon uses that proxy on this machine, and retried validation from the same unrestricted context.
+- Status: resolved on this machine as an environment fix.
+
+### `gcr.io/distroless` Was A Fragile Runtime Base For `agentd` In Real Docker Validation
+
+- Problem: the first formal `agentd` image used `gcr.io/distroless/static-debian12:nonroot`, but real image resolution repeatedly failed through the current machine's constrained network path even after the Docker daemon proxy was configured.
+- Resolution: changed both `deploy/docker/Dockerfile` and `deploy/docker/agentd.Dockerfile` to use `scratch`, copy the CA bundle from the Go build stage, and run as non-root `65532:65532`. That kept the image minimal while removing the unstable `gcr.io` dependency.
+- Status: resolved.
+
+### Docker Build Reintroduced The Historical Go Proxy Failure
+
+- Problem: once `agentd` image resolution was fixed, the Docker build still failed at `go mod download` because the container defaulted back to `https://proxy.golang.org`, which had already been proven unreliable on this machine.
+- Resolution: added Docker build defaults for `GOPROXY=https://goproxy.cn,direct` and `GOSUMDB=sum.golang.google.cn`, while still allowing overrides through build args.
+- Status: resolved.
+
+### CPU FunASR Worker Image Carried An Unneeded Apt Layer
+
+- Problem: the CPU worker image installed `ca-certificates` and `libsndfile1` through `apt-get`, but the current worker implementation only uses the standard-library `wave` path and declared Python wheels. In practice that apt step became one of the noisiest failure points in real Docker validation.
+- Resolution: removed the apt layer from `deploy/docker/funasr-worker.cpu.Dockerfile` and kept the image on `python:3.11-slim-bookworm`, which already provides the needed base runtime for the current worker code path.
+- Status: resolved for the current worker implementation.
+
+### CPU FunASR Worker Build Still Depends On A Stable PyTorch CDN Path
+
+- Problem: after base-image and apt issues were resolved, the CPU worker image still failed intermittently while downloading the large `torch 2.11.0+cpu` wheel from `download-r2.pytorch.org`, ending with `incomplete-download` after repeated resume attempts.
+- Resolution: added proxy-environment passthrough to the worker Dockerfile and compose build args, plus a higher `pip` default timeout. That improved the build path and got validation through bootstrap pip setup plus into the PyTorch stage, but the final wheel download still depends on external network quality on this machine.
+- Status: open environment caveat.

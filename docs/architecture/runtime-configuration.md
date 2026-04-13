@@ -233,6 +233,8 @@ Container-networking rules for this slice:
 - when `agentd` talks to the local ASR worker inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use the compose service DNS name `http://funasr-worker:8091/v1/asr/transcribe`
 - do not use `127.0.0.1` for that worker URL unless the worker actually runs in the same container
 - the worker image mounts named volumes for `MODELSCOPE_CACHE`, `HF_HOME`, and `TORCH_HOME` under `/models/...` so model downloads survive container replacement
+- compose build definitions now also pass through standard proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, plus lowercase variants) so restricted-network hosts can reuse the same image assets
+- the `agentd` image build defaults `GOPROXY` to `https://goproxy.cn,direct` and `GOSUMDB` to `sum.golang.google.cn`; override them through compose build args if your environment prefers different Go module infrastructure
 
 Current scope limit:
 

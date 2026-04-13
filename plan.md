@@ -465,6 +465,52 @@ Recorded follow-through:
 - updated `.claude/context.md`
 - updated `.claude/logs/session-notes.md`
 
+### 2026-04-13 Docker Validation Follow-up Complete With Network Caveat
+
+- Scope:
+  - install Docker Engine plus Compose on the current WSL2 machine and run real compose validation instead of static-only checks
+  - fix any Docker asset issues surfaced by actual image resolution or build steps
+  - keep the repository changes focused on reusable build robustness, not one-off machine hacks
+- Target files:
+  - `deploy/docker/Dockerfile`
+  - `deploy/docker/agentd.Dockerfile`
+  - `deploy/docker/funasr-worker.cpu.Dockerfile`
+  - `deploy/docker/compose.base.yml`
+  - `deploy/docker/compose.local-asr.yml`
+  - `README.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `plan.md`
+- Acceptance for this execution step:
+  - real `docker compose config` succeeds for both `agentd` only and `agentd + local-asr`
+  - `agentd` image can be built on this machine without depending on `gcr.io/distroless`
+  - Docker build paths honor the same constrained-network assumptions already proven on this machine
+  - any remaining worker-image blockers are identified as repository issues or external-network caveats with clear follow-up
+
+Validation recorded for this execution step:
+
+- installed `docker.io 29.1.3` and `docker-compose-v2 2.40.3` on the current WSL2 Ubuntu machine
+- `docker version`
+- `docker compose -f deploy/docker/compose.base.yml config`
+- `docker compose -f deploy/docker/compose.base.yml -f deploy/docker/compose.local-asr.yml config`
+- `docker pull golang:1.24.4`
+- `docker compose -f deploy/docker/compose.base.yml build agentd`
+- `docker pull python:3.11-slim-bookworm`
+- `docker compose -f deploy/docker/compose.base.yml -f deploy/docker/compose.local-asr.yml build funasr-worker`
+
+Observed outcome:
+
+- `agentd` image now builds successfully on this machine
+- CPU `funasr-worker` image now gets past base-image resolution and bootstrap pip setup, but the current network still times out on large `torch` CPU wheel downloads from `download-r2.pytorch.org`
+- the remaining worker-image failure is therefore an external network caveat on this machine, not a protocol or layering issue in the repository design
+
+Recorded follow-through:
+
+- switched `agentd` runtime images from `gcr.io/distroless` to `scratch` with copied CA bundle and non-root user
+- added Docker build defaults for `GOPROXY=https://goproxy.cn,direct` and `GOSUMDB=sum.golang.google.cn`
+- removed the unused worker-side apt system-package layer from the CPU FunASR image
+- added proxy build-arg passthrough in compose and worker Dockerfile so constrained-network hosts can reuse standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
+- updated Docker deployment documentation with build-network notes and remaining worker-network caveat
+
 ### 2026-04-05 P1-1 Complete
 
 - Scope:
