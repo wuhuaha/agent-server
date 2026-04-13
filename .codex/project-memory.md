@@ -154,6 +154,13 @@
 - Linux-side repository dependency bring-up should now go through `scripts/install-linux-stack.sh`, which installs Go modules, the desktop client package, and the FunASR worker env from one place without changing the runtime architecture.
 - The worker package now declares two meaningful extras: `runtime` for the base local FunASR path (`funasr==1.3.1`, `modelscope==1.24.1`) and `stream-vad` for stronger local endpointing (`onnxruntime`, `silero-vad`).
 - On this machine, local editable installs need three bootstrap safeguards to be reliable: keep `setuptools<82` because of `torch 2.11.0(+cu128)`, preinstall `hatchling`, and preinstall `editables` before using `--no-build-isolation`.
+- The first formal Docker deployment slice now lives under `deploy/docker` and stays layered by design:
+  - `deploy/docker/compose.base.yml` is the preferred `agentd`-only entrypoint
+  - `deploy/docker/compose.local-asr.yml` overlays a separate CPU `funasr-worker`
+  - `deploy/docker/docker-compose.yml` remains only as a compatibility single-service `agentd` entrypoint
+- Docker deployment must preserve the runtime boundary between `agentd` and the local ASR worker. Do not collapse them into one convenience container for the baseline path.
+- Inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use service-name networking (`http://funasr-worker:8091/v1/asr/transcribe`) rather than `127.0.0.1`.
+- The baseline Docker slice is CPU-first. GPU worker containerization is a separate follow-up so CUDA runtime and driver assumptions can be validated independently.
 - The default hidden endpoint policy is now: base silence window for lexically complete partials, plus an extra hold window for obviously unfinished partials.
 - When a lexically complete partial also carries a provider endpoint hint, the shared turn detector may use a shorter endpoint window; incomplete partials still stay on the conservative hold path.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.

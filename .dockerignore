@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.codex
+.tmp
+tmp
+artifacts
+deploy/docker/.env.docker
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.swp
+.DS_Store
+

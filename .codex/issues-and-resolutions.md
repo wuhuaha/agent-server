@@ -327,3 +327,9 @@
 - Problem: once the Linux install flow was exercised for real, three packaging issues surfaced: upgrading `setuptools` too far conflicted with `torch 2.11.0(+cu128)`, local editable installs under hatchling still needed `hatchling` available without network, and `--no-build-isolation` also required `editables`.
 - Resolution: hardened the install script to keep `setuptools<82`, preinstall `hatchling` and `editables`, and then install repository-local packages with `--no-build-isolation`. After that change, the full install flow completed successfully and the worker env still loaded `torch`, `onnxruntime`, and `silero_vad`.
 - Status: resolved.
+
+### Docker CLI Is Not Installed In This Workspace
+
+- Problem: the current machine context for `/root/agent-server` does not have a `docker` executable, so this turn could not run `docker compose config`, image builds, or live container smoke validation for the new Docker deployment slice.
+- Resolution: completed static validation instead by parsing the compose YAML files with `python3` + `yaml.safe_load`, checking the Dockerfiles for expected image and entrypoint directives, and documenting the runtime assumptions in `README.md` plus `docs/architecture/runtime-configuration.md`.
+- Status: open environment caveat. Real compose validation should run after Docker is installed on the target machine.

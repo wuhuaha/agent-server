@@ -217,3 +217,24 @@ Current implementation details:
 - the older non-streaming `wav` decode path remains as a compatibility fallback inside the synthesizer implementation
 - `iflytek_tts_ws` and `volcengine_tts` now share the same `StreamingSynthesizer` boundary, so the gateway keeps one audio pacing path regardless of provider protocol differences
 - all currently supported cloud TTS backends are normalized to realtime output `pcm16le` frames before they reach the websocket gateway
+
+## Docker Deployment Notes
+
+The first formal Docker deployment slice is intentionally layered and keeps the runtime boundary intact:
+
+- `deploy/docker/agentd.Dockerfile`: production-oriented `agentd` image
+- `deploy/docker/funasr-worker.cpu.Dockerfile`: separate CPU `FunASR` worker image
+- `deploy/docker/compose.base.yml`: `agentd` only
+- `deploy/docker/compose.local-asr.yml`: overlays the local CPU `funasr-worker`
+- `deploy/docker/.env.docker.example`: docker-specific env template
+
+Container-networking rules for this slice:
+
+- when `agentd` talks to the local ASR worker inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use the compose service DNS name `http://funasr-worker:8091/v1/asr/transcribe`
+- do not use `127.0.0.1` for that worker URL unless the worker actually runs in the same container
+- the worker image mounts named volumes for `MODELSCOPE_CACHE`, `HF_HOME`, and `TORCH_HOME` under `/models/...` so model downloads survive container replacement
+
+Current scope limit:
+
+- this slice covers `agentd` alone and `agentd + local CPU FunASR worker`
+- GPU worker containerization remains a later follow-up so CUDA packaging, driver passthrough, and model-cache behavior can be validated separately without weakening the baseline deployment path

@@ -108,6 +108,48 @@ On Linux, the equivalent dependency preparation path is:
 conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service --host 127.0.0.1 --port 8091 --device cpu
 ```
 
+## Docker Deployment
+
+The repository now has a first formal Docker deployment slice for:
+
+- `agentd` alone
+- `agentd + local CPU FunASR worker`
+
+Files:
+
+- [deploy/docker/agentd.Dockerfile](deploy/docker/agentd.Dockerfile)
+- [deploy/docker/funasr-worker.cpu.Dockerfile](deploy/docker/funasr-worker.cpu.Dockerfile)
+- [deploy/docker/compose.base.yml](deploy/docker/compose.base.yml)
+- [deploy/docker/compose.local-asr.yml](deploy/docker/compose.local-asr.yml)
+- [deploy/docker/.env.docker.example](deploy/docker/.env.docker.example)
+
+Prepare the env file:
+
+```bash
+cd deploy/docker
+cp .env.docker.example .env.docker
+```
+
+Start only `agentd`:
+
+```bash
+docker compose -f compose.base.yml up --build
+```
+
+Start `agentd + local CPU FunASR worker`:
+
+```bash
+docker compose -f compose.base.yml -f compose.local-asr.yml up --build
+```
+
+The older [deploy/docker/docker-compose.yml](deploy/docker/docker-compose.yml) remains as a compatibility single-service entrypoint for `agentd`, but the layered compose files above are now the preferred path.
+
+Important container-networking note:
+
+- when `agentd` talks to the local worker inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use the service name `http://funasr-worker:8091/v1/asr/transcribe`
+- do not use `127.0.0.1` for the ASR worker URL inside compose unless the worker runs in the same container
+- the local worker image stores model caches in named volumes under `/models/modelscope`, `/models/hf`, and `/models/torch`
+
 For repeatable scripted validation of discovery, text, audio, and server-initiated close:
 
 ```bash

@@ -525,3 +525,17 @@
   - installed `onnxruntime 1.24.4` and `silero-vad 6.2.1` into the `xiaozhi-esp32-server` conda env
   - verified worker-side `Silero VAD` runtime loading
   - verified a live stream preview smoke run returned `preview_silero_vad_silence` on the sample `qinyu_xiaoou_16k.wav`
+- Formalized the first Docker deployment slice under `deploy/docker`:
+  - added `.dockerignore`
+  - added dedicated images for `agentd` and the local CPU `funasr-worker`
+  - added layered compose entrypoints for `agentd` alone and `agentd + local CPU FunASR`
+  - added `deploy/docker/.env.docker.example` as the docker-specific env template
+  - kept `deploy/docker/docker-compose.yml` as the compatibility single-service entrypoint for `agentd`
+- Updated deployment documentation and durable records for the Docker slice:
+  - added a `Docker Deployment` section in `README.md`
+  - added Docker-specific runtime notes in `docs/architecture/runtime-configuration.md`
+  - updated `plan.md`, `.codex/issues-and-resolutions.md`, `.codex/project-memory.md`, `.claude/context.md`, and `.claude/logs/session-notes.md`
+- Completed static validation available in this workspace:
+  - parsed all compose YAML files successfully with `python3` + `yaml.safe_load`
+  - checked all Dockerfiles for expected top-level image and entrypoint directives
+  - recorded the missing local `docker` CLI as an environment caveat for later real compose validation

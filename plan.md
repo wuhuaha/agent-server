@@ -123,6 +123,7 @@ Current planning note:
 - hosted realtime speech providers remain comparison baselines, not the main implementation target
 - the next `L2` hardening slice should strengthen local endpoint evidence inside the Python FunASR worker rather than widening the public realtime contract
 - that slice should add an optional stronger acoustic endpoint hint path, preferably `Silero VAD`, while preserving the current tail-energy hint as the default and graceful fallback
+- after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 
 ## Current Execution Log
 
@@ -240,6 +241,34 @@ Recorded follow-through:
 - added `docs/adr/0010-separate-agent-persona-from-execution-mode.md`
 
 ### 2026-04-05 P0-4 Complete
+
+- Scope:
+  - upgrade the desktop scripted runner output into a comparable end-to-end quality report
+  - add baseline latency and audio counters per scenario without changing the device-facing realtime protocol
+  - include enough discovery metadata in the report to compare provider and mode combinations across runs
+  - document the report shape so smoke scripts and future CI can archive it consistently
+- Target files:
+  - `clients/python-desktop-client/src/agent_server_desktop_client/protocol.py`
+  - `clients/python-desktop-client/src/agent_server_desktop_client/runner.py`
+  - `clients/python-desktop-client/tests/test_runner.py`
+  - `clients/python-desktop-client/README.md`
+  - `README.md`
+- Acceptance for this execution step:
+  - runner JSON output includes per-scenario latency metrics and aggregate quality summary
+  - report payload includes enough discovery metadata to compare runs across providers or turn modes
+  - unit tests cover the report summary logic
+
+Validation recorded for `P0-4`:
+
+- `PYTHONPATH=clients/python-desktop-client/src python3 -m unittest discover -s clients/python-desktop-client/tests -v`
+
+Recorded follow-through:
+
+- updated `clients/python-desktop-client/src/agent_server_desktop_client/protocol.py`
+- updated `clients/python-desktop-client/src/agent_server_desktop_client/runner.py`
+- updated `clients/python-desktop-client/tests/test_runner.py`
+- updated `clients/python-desktop-client/README.md`
+- updated `README.md`
 
 ### 2026-04-11 L2 Preview Config And Validation Slice Complete
 
@@ -386,33 +415,55 @@ Validation recorded for this execution step:
   - preview endpoint reason: `preview_silero_vad_silence`
   - final text: `小欧管家。`
 
+### 2026-04-13 Dockerization P0 Slice Complete
+
 - Scope:
-  - upgrade the desktop scripted runner output into a comparable end-to-end quality report
-  - add baseline latency and audio counters per scenario without changing the device-facing realtime protocol
-  - include enough discovery metadata in the report to compare provider and mode combinations across runs
-  - document the report shape so smoke scripts and future CI can archive it consistently
+  - turn the current ad hoc Docker assets into a first formal deployment slice
+  - keep `agentd` and the local FunASR worker as separate containers so the shared runtime boundary stays intact
+  - support two initial deployment shapes: `agentd` alone and `agentd + local CPU ASR worker`
 - Target files:
-  - `clients/python-desktop-client/src/agent_server_desktop_client/protocol.py`
-  - `clients/python-desktop-client/src/agent_server_desktop_client/runner.py`
-  - `clients/python-desktop-client/tests/test_runner.py`
-  - `clients/python-desktop-client/README.md`
+  - `.dockerignore`
+  - `deploy/docker/Dockerfile`
+  - `deploy/docker/docker-compose.yml`
+  - `deploy/docker/agentd.Dockerfile`
+  - `deploy/docker/funasr-worker.cpu.Dockerfile`
+  - `deploy/docker/compose.base.yml`
+  - `deploy/docker/compose.local-asr.yml`
+  - `deploy/docker/.env.docker.example`
   - `README.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `plan.md`
 - Acceptance for this execution step:
-  - runner JSON output includes per-scenario latency metrics and aggregate quality summary
-  - report payload includes enough discovery metadata to compare runs across providers or turn modes
-  - unit tests cover the report summary logic
+  - the `agentd` image uses a Go version aligned with `go.mod` and includes `go.sum`
+  - there is a dedicated CPU worker image for the local FunASR HTTP service
+  - compose files can express `agentd` alone or `agentd + funasr-worker` with service-name networking instead of `127.0.0.1`
+  - Docker env examples and docs make the container-networking assumptions explicit
+  - GPU-specific deployment remains a documented follow-up, not mixed into the first CPU slice
 
-Validation recorded for `P0-4`:
+Validation recorded for this execution step:
 
-- `PYTHONPATH=clients/python-desktop-client/src python3 -m unittest discover -s clients/python-desktop-client/tests -v`
+- `python3 -c "import yaml,sys; [yaml.safe_load(open(f)) for f in ['deploy/docker/compose.base.yml','deploy/docker/compose.local-asr.yml','deploy/docker/docker-compose.yml']]; print('yaml-ok')"`
+- `python3 -c "from pathlib import Path; import re; files=['deploy/docker/agentd.Dockerfile','deploy/docker/funasr-worker.cpu.Dockerfile','deploy/docker/Dockerfile']; ..."`
+- `docker compose ...` validation could not run in this workspace because the `docker` CLI is not installed on this machine
 
 Recorded follow-through:
 
-- updated `clients/python-desktop-client/src/agent_server_desktop_client/protocol.py`
-- updated `clients/python-desktop-client/src/agent_server_desktop_client/runner.py`
-- updated `clients/python-desktop-client/tests/test_runner.py`
-- updated `clients/python-desktop-client/README.md`
+- added `.dockerignore`
+- added `deploy/docker/agentd.Dockerfile`
+- added `deploy/docker/funasr-worker.cpu.Dockerfile`
+- added `deploy/docker/compose.base.yml`
+- added `deploy/docker/compose.local-asr.yml`
+- added `deploy/docker/.env.docker.example`
+- updated `deploy/docker/Dockerfile`
+- updated `deploy/docker/docker-compose.yml`
+- updated `docs/architecture/runtime-configuration.md`
 - updated `README.md`
+- updated `plan.md`
+- updated `.codex/change-log.md`
+- updated `.codex/issues-and-resolutions.md`
+- updated `.codex/project-memory.md`
+- updated `.claude/context.md`
+- updated `.claude/logs/session-notes.md`
 
 ### 2026-04-05 P1-1 Complete
 
