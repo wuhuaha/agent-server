@@ -31,24 +31,25 @@ type httpTranscriptionRequest struct {
 }
 
 type httpTranscriptionResponse struct {
-	StreamID       string   `json:"stream_id"`
-	Text           string   `json:"text"`
-	PreviewText    string   `json:"preview_text"`
-	Segments       []string `json:"segments"`
-	DurationMs     int      `json:"duration_ms"`
-	ElapsedMs      int      `json:"elapsed_ms"`
-	Model          string   `json:"model"`
-	Device         string   `json:"device"`
-	Language       string   `json:"language"`
-	Emotion        string   `json:"emotion"`
-	SpeakerID      string   `json:"speaker_id"`
-	AudioEvents    []string `json:"audio_events"`
-	EndpointReason string   `json:"endpoint_reason"`
-	Partials       []string `json:"partials"`
-	LatestPartial  string   `json:"latest_partial"`
-	PreviewChanged bool     `json:"preview_changed"`
-	Mode           string   `json:"mode"`
-	Error          string   `json:"error"`
+	StreamID              string   `json:"stream_id"`
+	Text                  string   `json:"text"`
+	PreviewText           string   `json:"preview_text"`
+	Segments              []string `json:"segments"`
+	DurationMs            int      `json:"duration_ms"`
+	ElapsedMs             int      `json:"elapsed_ms"`
+	Model                 string   `json:"model"`
+	Device                string   `json:"device"`
+	Language              string   `json:"language"`
+	Emotion               string   `json:"emotion"`
+	SpeakerID             string   `json:"speaker_id"`
+	AudioEvents           []string `json:"audio_events"`
+	EndpointReason        string   `json:"endpoint_reason"`
+	Partials              []string `json:"partials"`
+	LatestPartial         string   `json:"latest_partial"`
+	PreviewChanged        bool     `json:"preview_changed"`
+	PreviewEndpointReason string   `json:"preview_endpoint_reason"`
+	Mode                  string   `json:"mode"`
+	Error                 string   `json:"error"`
 }
 
 type httpStreamingStartRequest struct {
@@ -72,13 +73,14 @@ type httpStreamingFinishRequest struct {
 }
 
 type httpStreamingSession struct {
-	transcriber     HTTPTranscriber
-	streamID        string
-	sink            TranscriptionDeltaSink
-	started         bool
-	closed          bool
-	totalAudioBytes int
-	lastPartial     string
+	transcriber        HTTPTranscriber
+	streamID           string
+	sink               TranscriptionDeltaSink
+	started            bool
+	closed             bool
+	totalAudioBytes    int
+	lastPartial        string
+	lastEndpointReason string
 }
 
 func NewHTTPTranscriber(endpoint string, timeout time.Duration, language string) HTTPTranscriber {
@@ -273,15 +275,18 @@ func (s *httpStreamingSession) PushAudio(ctx context.Context, chunk []byte) erro
 	if previewText == "" && decoded.PreviewChanged {
 		previewText = strings.TrimSpace(decoded.LatestPartial)
 	}
-	if previewText != "" && previewText != s.lastPartial {
+	endpointReason := strings.TrimSpace(decoded.PreviewEndpointReason)
+	if previewText != "" && (previewText != s.lastPartial || endpointReason != s.lastEndpointReason) {
 		if err := emitTranscriptionDelta(ctx, s.sink, TranscriptionDelta{
-			Kind:       TranscriptionDeltaKindPartial,
-			Text:       previewText,
-			AudioBytes: s.totalAudioBytes,
+			Kind:           TranscriptionDeltaKindPartial,
+			Text:           previewText,
+			EndpointReason: endpointReason,
+			AudioBytes:     s.totalAudioBytes,
 		}); err != nil {
 			return err
 		}
 		s.lastPartial = previewText
+		s.lastEndpointReason = endpointReason
 	}
 	return nil
 }

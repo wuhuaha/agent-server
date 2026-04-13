@@ -8,10 +8,11 @@ import (
 func TestSilenceTurnDetectorSuggestsCommitForLexicallyCompletePartial(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{
-			MinAudioMs:          100,
-			SilenceMs:           300,
-			LexicalEndpointMode: turnDetectorLexicalModeConservative,
-			IncompleteHoldMs:    600,
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
 		},
 		16000,
 		1,
@@ -35,10 +36,11 @@ func TestSilenceTurnDetectorSuggestsCommitForLexicallyCompletePartial(t *testing
 func TestSilenceTurnDetectorExtendsHoldForIncompleteLexicalPartial(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{
-			MinAudioMs:          100,
-			SilenceMs:           300,
-			LexicalEndpointMode: turnDetectorLexicalModeConservative,
-			IncompleteHoldMs:    600,
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
 		},
 		16000,
 		1,
@@ -65,10 +67,11 @@ func TestSilenceTurnDetectorExtendsHoldForIncompleteLexicalPartial(t *testing.T)
 func TestSilenceTurnDetectorCanDisableLexicalGuard(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{
-			MinAudioMs:          100,
-			SilenceMs:           300,
-			LexicalEndpointMode: turnDetectorLexicalModeOff,
-			IncompleteHoldMs:    600,
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeOff,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
 		},
 		16000,
 		1,
@@ -105,5 +108,69 @@ func TestLooksLexicallyComplete(t *testing.T) {
 		if got := looksLexicallyComplete(tc.text); got != tc.expected {
 			t.Fatalf("looksLexicallyComplete(%q) = %v, want %v", tc.text, got, tc.expected)
 		}
+	}
+}
+
+func TestSilenceTurnDetectorUsesProviderEndpointHintToShortenSilence(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind:           TranscriptionDeltaKindPartial,
+		Text:           "打开客厅灯",
+		EndpointReason: "preview_tail_silence",
+	})
+
+	if snapshot := detector.Snapshot(startedAt.Add(100 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("preview should not commit before hint silence window elapses")
+	}
+	snapshot := detector.Snapshot(startedAt.Add(170 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected commit suggestion after shortened hint silence window")
+	}
+	if snapshot.EndpointReason != "preview_tail_silence" {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
+	}
+}
+
+func TestSilenceTurnDetectorDoesNotLetHintBypassIncompleteLexicalHold(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind:           TranscriptionDeltaKindPartial,
+		Text:           "帮我把",
+		EndpointReason: "preview_tail_silence",
+	})
+
+	if snapshot := detector.Snapshot(startedAt.Add(400 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("incomplete lexical partial should still be held even with provider hint")
+	}
+	snapshot := detector.Snapshot(startedAt.Add(950 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected commit suggestion after lexical hold window")
+	}
+	if snapshot.EndpointReason != lexicalHoldServerEndpointReason {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
 	}
 }

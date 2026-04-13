@@ -31,6 +31,8 @@ class WorkerConfig:
     use_itn: bool
     stream_preview_min_audio_ms: int
     stream_preview_min_interval_ms: int
+    stream_endpoint_tail_ms: int
+    stream_endpoint_mean_abs_threshold: int
 
 
 @dataclass(slots=True)
@@ -76,6 +78,8 @@ class FunASREngine:
             "language": self.config.language,
             "stream_preview_min_audio_ms": self.config.stream_preview_min_audio_ms,
             "stream_preview_min_interval_ms": self.config.stream_preview_min_interval_ms,
+            "stream_endpoint_tail_ms": self.config.stream_endpoint_tail_ms,
+            "stream_endpoint_mean_abs_threshold": self.config.stream_endpoint_mean_abs_threshold,
             "last_error": self._last_error,
         }
 
@@ -187,6 +191,9 @@ class FunASREngine:
             state = self._must_get_stream_locked(stream_id)
             if preview_payload is not None:
                 latest_partial = preview_payload.get("text", "").strip()
+                preview_endpoint_reason = self._preview_endpoint_reason(preview_snapshot, preview_payload)
+                if preview_endpoint_reason:
+                    preview_payload["preview_endpoint_reason"] = preview_endpoint_reason
                 state.last_preview_at_monotonic = time.monotonic()
                 if latest_partial and latest_partial != state.last_partial_text:
                     state.last_partial_text = latest_partial
@@ -276,7 +283,41 @@ class FunASREngine:
             payload["preview_elapsed_ms"] = int(preview_payload.get("elapsed_ms", 0))
             payload["preview_text"] = str(preview_payload.get("text", "")).strip()
             payload["preview_changed"] = preview_changed
+            payload["preview_endpoint_reason"] = str(preview_payload.get("preview_endpoint_reason", "")).strip()
         return payload
+
+    def _preview_endpoint_reason(self, snapshot: dict[str, Any], preview_payload: dict[str, Any]) -> str:
+        preview_text = str(preview_payload.get("text", "")).strip()
+        if not preview_text:
+            return ""
+        mean_abs = self._tail_mean_abs_pcm16(
+            snapshot["audio_bytes"],
+            int(snapshot["sample_rate_hz"]),
+            int(snapshot["channels"]),
+            self.config.stream_endpoint_tail_ms,
+        )
+        if mean_abs <= self.config.stream_endpoint_mean_abs_threshold:
+            return "preview_tail_silence"
+        return ""
+
+    def _tail_mean_abs_pcm16(self, audio_bytes: bytes, sample_rate_hz: int, channels: int, tail_ms: int) -> float:
+        if not audio_bytes or sample_rate_hz <= 0 or channels <= 0 or tail_ms <= 0:
+            return 0.0
+        tail_frames = max(int(sample_rate_hz * tail_ms / 1000), 1)
+        tail_bytes = tail_frames * channels * 2
+        sample = audio_bytes[-tail_bytes:]
+        usable = len(sample) - (len(sample) % 2)
+        if usable <= 0:
+            return 0.0
+        total = 0
+        count = 0
+        for index in range(0, usable, 2):
+            value = int.from_bytes(sample[index : index + 2], byteorder="little", signed=True)
+            total += abs(value)
+            count += 1
+        if count == 0:
+            return 0.0
+        return total / count
 
     def _preview_snapshot_locked(self, state: StreamState) -> dict[str, Any]:
         return {
@@ -478,6 +519,16 @@ def build_config() -> WorkerConfig:
         type=int,
         default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_INTERVAL_MS", "240")),
     )
+    parser.add_argument(
+        "--stream-endpoint-tail-ms",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_TAIL_MS", "160")),
+    )
+    parser.add_argument(
+        "--stream-endpoint-mean-abs-threshold",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_MEAN_ABS_THRESHOLD", "180")),
+    )
     parser.add_argument("--use-itn", action="store_true", default=_env_bool("AGENT_SERVER_FUNASR_USE_ITN", True))
     parser.add_argument(
         "--trust-remote-code",
@@ -502,6 +553,8 @@ def build_config() -> WorkerConfig:
         use_itn=bool(args.use_itn),
         stream_preview_min_audio_ms=args.stream_preview_min_audio_ms,
         stream_preview_min_interval_ms=args.stream_preview_min_interval_ms,
+        stream_endpoint_tail_ms=args.stream_endpoint_tail_ms,
+        stream_endpoint_mean_abs_threshold=args.stream_endpoint_mean_abs_threshold,
     )
 
 

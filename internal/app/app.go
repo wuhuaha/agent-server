@@ -231,10 +231,11 @@ func buildXiaozhiProfile(cfg Config, logger *slog.Logger) gateway.XiaozhiCompatP
 
 func buildTurnDetectionConfig(cfg Config) voice.SilenceTurnDetectorConfig {
 	return voice.SilenceTurnDetectorConfig{
-		MinAudioMs:          cfg.Voice.ServerEndpointMinAudioMs,
-		SilenceMs:           cfg.Voice.ServerEndpointSilenceMs,
-		LexicalEndpointMode: cfg.Voice.ServerEndpointLexicalMode,
-		IncompleteHoldMs:    cfg.Voice.ServerEndpointIncompleteHoldMs,
+		MinAudioMs:            cfg.Voice.ServerEndpointMinAudioMs,
+		SilenceMs:             cfg.Voice.ServerEndpointSilenceMs,
+		LexicalEndpointMode:   cfg.Voice.ServerEndpointLexicalMode,
+		IncompleteHoldMs:      cfg.Voice.ServerEndpointIncompleteHoldMs,
+		EndpointHintSilenceMs: cfg.Voice.ServerEndpointHintSilenceMs,
 	}
 }
 

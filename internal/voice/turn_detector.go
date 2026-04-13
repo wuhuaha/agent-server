@@ -10,6 +10,7 @@ const (
 	defaultTurnDetectorSilenceMs        = 480
 	defaultTurnDetectorMinAudioMs       = 320
 	defaultTurnDetectorIncompleteHoldMs = 720
+	defaultTurnDetectorHintSilenceMs    = 160
 	defaultTurnDetectorLexicalMode      = "conservative"
 	turnDetectorLexicalModeOff          = "off"
 	turnDetectorLexicalModeConservative = "conservative"
@@ -18,22 +19,24 @@ const (
 )
 
 type SilenceTurnDetectorConfig struct {
-	MinAudioMs          int
-	SilenceMs           int
-	LexicalEndpointMode string
-	IncompleteHoldMs    int
+	MinAudioMs            int
+	SilenceMs             int
+	LexicalEndpointMode   string
+	IncompleteHoldMs      int
+	EndpointHintSilenceMs int
 }
 
 type SilenceTurnDetector struct {
-	config          SilenceTurnDetectorConfig
-	sampleRateHz    int
-	channels        int
-	audioBytes      int
-	lastAudioAt     time.Time
-	speechStarted   bool
-	latestPartial   string
-	commitSuggested bool
-	commitReason    string
+	config             SilenceTurnDetectorConfig
+	sampleRateHz       int
+	channels           int
+	audioBytes         int
+	lastAudioAt        time.Time
+	speechStarted      bool
+	latestPartial      string
+	latestEndpointHint string
+	commitSuggested    bool
+	commitReason       string
 }
 
 func NewSilenceTurnDetector(cfg SilenceTurnDetectorConfig, sampleRateHz, channels int) SilenceTurnDetector {
@@ -45,6 +48,9 @@ func NewSilenceTurnDetector(cfg SilenceTurnDetectorConfig, sampleRateHz, channel
 	}
 	if cfg.IncompleteHoldMs <= 0 {
 		cfg.IncompleteHoldMs = defaultTurnDetectorIncompleteHoldMs
+	}
+	if cfg.EndpointHintSilenceMs <= 0 {
+		cfg.EndpointHintSilenceMs = defaultTurnDetectorHintSilenceMs
 	}
 	cfg.LexicalEndpointMode = normalizeTurnDetectorLexicalMode(cfg.LexicalEndpointMode)
 	if sampleRateHz <= 0 {
@@ -77,6 +83,9 @@ func (d *SilenceTurnDetector) ObserveTranscriptionDelta(_ time.Time, delta Trans
 		if text := delta.Text; text != "" {
 			d.latestPartial = text
 		}
+		d.latestEndpointHint = strings.TrimSpace(delta.EndpointReason)
+	case TranscriptionDeltaKindSpeechEnd:
+		d.latestEndpointHint = strings.TrimSpace(delta.EndpointReason)
 	}
 }
 
@@ -115,6 +124,13 @@ func (d *SilenceTurnDetector) audioDurationMs() int {
 
 func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string) {
 	required := time.Duration(d.config.SilenceMs) * time.Millisecond
+	if hint := strings.TrimSpace(d.latestEndpointHint); hint != "" && looksLexicallyComplete(d.latestPartial) {
+		hintSilence := time.Duration(d.config.EndpointHintSilenceMs) * time.Millisecond
+		if hintSilence > 0 && hintSilence < required {
+			return hintSilence, hint
+		}
+		return required, hint
+	}
 	if d.config.LexicalEndpointMode == turnDetectorLexicalModeOff || looksLexicallyComplete(d.latestPartial) {
 		return required, defaultServerEndpointReason
 	}

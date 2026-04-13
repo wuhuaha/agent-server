@@ -51,6 +51,7 @@ type VoiceConfig struct {
 	ServerEndpointSilenceMs        int
 	ServerEndpointLexicalMode      string
 	ServerEndpointIncompleteHoldMs int
+	ServerEndpointHintSilenceMs    int
 	EmitPlaceholderAudio           bool
 	IflytekRTASR                   IflytekRTASRProviderConfig
 }
@@ -224,6 +225,7 @@ func LoadConfig() Config {
 			ServerEndpointSilenceMs:        getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS", 480),
 			ServerEndpointLexicalMode:      getenv("AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE", "conservative"),
 			ServerEndpointIncompleteHoldMs: getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS", 720),
+			ServerEndpointHintSilenceMs:    getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS", 160),
 			EmitPlaceholderAudio:           getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID", ""),
@@ -480,6 +482,9 @@ func withRealtimeDefaults(cfg Config) Config {
 	}
 	if cfg.Voice.ServerEndpointIncompleteHoldMs <= 0 {
 		cfg.Voice.ServerEndpointIncompleteHoldMs = 720
+	}
+	if cfg.Voice.ServerEndpointHintSilenceMs <= 0 {
+		cfg.Voice.ServerEndpointHintSilenceMs = 160
 	}
 	if cfg.TTS.Provider == "" {
 		cfg.TTS.Provider = "none"

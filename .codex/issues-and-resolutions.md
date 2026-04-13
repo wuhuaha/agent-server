@@ -303,3 +303,9 @@
 - Problem: after the first hidden preview slices, auto-commit still depended only on “enough audio + silence window + at least one partial”. That meant a partial like `帮我把` or `还有` could still be cut into a turn if the speaker paused briefly, even though the phrase was obviously unfinished.
 - Resolution: kept the fix inside `internal/voice` by extending the shared turn detector with a conservative lexical false-endpoint guard plus a configurable extra hold window. The hidden preview mode now delays auto-commit for obviously unfinished partials, while still falling back to a longer timeout so turns are not held forever.
 - Status: resolved for the current hidden-preview stage.
+
+### Hidden Endpoint Preview Still Ignored Provider Endpoint Signals
+
+- Problem: after the lexical-guard slice, hidden endpoint preview was still driven almost entirely by local silence windows plus shared lexical heuristics. The local streaming worker could produce useful preview-side evidence, but that evidence still stopped at the worker boundary and never affected shared turn detection.
+- Resolution: added a lightweight worker-side preview endpoint hint derived from tail-audio energy, propagated it through `HTTPTranscriber` partial deltas, and taught the shared turn detector to use that hint for a shorter endpoint wait on lexically complete partials. The hint path still remains internal to `internal/voice`, and incomplete partials remain on the conservative hold path.
+- Status: resolved for the current hidden-preview stage.

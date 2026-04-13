@@ -50,6 +50,8 @@ That hidden preview path is now explicitly runtime-configurable through shared v
 
 The latest `L2` hardening slice also keeps false-endpoint protection inside the same shared layer: the hidden preview path can now hold back auto-commit when the most recent partial still looks lexically unfinished, then fall back to a longer timeout instead of splitting the turn on every short pause.
 
+The next `L2` slice keeps that same ownership model while making provider endpoint signals useful: local worker preview hints now travel through `StreamingTranscriber` deltas into the shared turn detector, and only the shared voice runtime decides whether those hints justify a shorter endpoint window.
+
 ### 4. Device Adapters
 
 Own ingress and egress for RTOS devices, desktops, and browsers. They translate transport details into core events and shared turn inputs.

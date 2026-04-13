@@ -21,6 +21,8 @@ class FunASRServiceTests(unittest.TestCase):
             "use_itn": True,
             "stream_preview_min_audio_ms": 20,
             "stream_preview_min_interval_ms": 0,
+            "stream_endpoint_tail_ms": 160,
+            "stream_endpoint_mean_abs_threshold": 180,
         }
         values.update(overrides)
         return WorkerConfig(**values)
@@ -44,6 +46,8 @@ class FunASRServiceTests(unittest.TestCase):
         self.assertFalse(config.trust_remote_code)
         self.assertEqual(config.stream_preview_min_audio_ms, 320)
         self.assertEqual(config.stream_preview_min_interval_ms, 240)
+        self.assertEqual(config.stream_endpoint_tail_ms, 160)
+        self.assertEqual(config.stream_endpoint_mean_abs_threshold, 180)
 
     def test_stream_lifecycle_tracks_preview_and_final_without_duplicate_partials(self) -> None:
         engine = FunASREngine(self.make_config(language="zh"))
@@ -77,11 +81,13 @@ class FunASRServiceTests(unittest.TestCase):
             self.assertEqual(pushed_once["latest_partial"], "打开")
             self.assertEqual(pushed_once["partials"], ["打开"])
             self.assertEqual(pushed_once["language"], "zh")
+            self.assertEqual(pushed_once["preview_endpoint_reason"], "preview_tail_silence")
 
             pushed_twice = engine.push_stream_audio(stream_id, final_audio)
             self.assertEqual(pushed_twice["preview_text"], "打开")
             self.assertFalse(pushed_twice["preview_changed"])
             self.assertEqual(pushed_twice["partials"], ["打开"])
+            self.assertEqual(pushed_twice["preview_endpoint_reason"], "preview_tail_silence")
 
             finished = engine.finish_stream(stream_id)
             self.assertEqual(finished["text"], "打开客厅灯")
@@ -90,6 +96,31 @@ class FunASRServiceTests(unittest.TestCase):
             self.assertEqual(finished["endpoint_reason"], "stream_finish")
             self.assertEqual(finished["mode"], "stream_preview_batch")
             self.assertEqual(transcribe.call_count, 3)
+
+    def test_preview_endpoint_reason_uses_tail_energy(self) -> None:
+        engine = FunASREngine(self.make_config())
+        silent = bytes(640)
+        noisy = b"".join(int(1200).to_bytes(2, byteorder="little", signed=True) for _ in range(320))
+
+        silent_reason = engine._preview_endpoint_reason(
+            {
+                "audio_bytes": silent,
+                "sample_rate_hz": 16000,
+                "channels": 1,
+            },
+            {"text": "打开客厅灯"},
+        )
+        noisy_reason = engine._preview_endpoint_reason(
+            {
+                "audio_bytes": noisy,
+                "sample_rate_hz": 16000,
+                "channels": 1,
+            },
+            {"text": "打开客厅灯"},
+        )
+
+        self.assertEqual(silent_reason, "preview_tail_silence")
+        self.assertEqual(noisy_reason, "")
 
     def test_close_stream_removes_state(self) -> None:
         engine = FunASREngine(self.make_config())

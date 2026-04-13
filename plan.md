@@ -295,6 +295,39 @@ Validation recorded for this execution step:
 
 - `go test ./internal/voice ./internal/app`
 
+### 2026-04-13 L2 Provider Endpoint Hint Slice Complete
+
+- Scope:
+  - make hidden server-endpoint preview consume real provider endpoint hints instead of relying only on silence windows plus local lexical heuristics
+  - keep provider-specific logic behind shared `StreamingTranscriber` deltas and worker responses, with adapters still unaware of provider details
+  - remain conservative by only shortening the silence window when the latest partial already looks complete
+- Target files:
+  - `workers/python/src/agent_server_workers/funasr_service.py`
+  - `workers/python/tests/test_funasr_service.py`
+  - `workers/python/README.md`
+  - `internal/voice/http_transcriber.go`
+  - `internal/voice/http_transcriber_test.go`
+  - `internal/voice/turn_detector.go`
+  - `internal/voice/turn_detector_test.go`
+  - `internal/voice/asr_responder.go`
+  - `internal/app/config.go`
+  - `internal/app/app.go`
+  - `internal/app/app_test.go`
+  - `internal/app/voice_runtime_test.go`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/architecture/overview.md`
+  - `docs/adr/0021-local-open-source-first-full-duplex-roadmap-prioritizes-voice-orchestration.md`
+- Acceptance for this execution step:
+  - local worker preview responses can expose a lightweight endpoint hint
+  - `HTTPTranscriber` preserves that hint on partial deltas
+  - shared turn detection can use the hint to shorten the endpoint wait for lexically complete partials, without changing public discovery or wire contracts
+  - incomplete lexical partials still stay on the conservative hold path
+
+Validation recorded for this execution step:
+
+- `go test ./internal/voice ./internal/app`
+- `env PYTHONPATH=workers/python/src python3 -m unittest discover -s workers/python/tests -v`
+
 - Scope:
   - upgrade the desktop scripted runner output into a comparable end-to-end quality report
   - add baseline latency and audio counters per scenario without changing the device-facing realtime protocol

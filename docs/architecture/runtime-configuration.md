@@ -117,6 +117,7 @@ Current runtime note:
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`: trailing local silence window before the hidden preview path may suggest auto-commit, default `480`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`: hidden lexical false-endpoint guard mode, default `conservative`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`: extra hold window applied when the latest partial still looks unfinished, default `720`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`: shortened silence window used when a provider preview carries an explicit endpoint hint and the latest partial already looks complete, default `160`
 - `AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO`: whether to keep emitting silent audio chunks until real TTS is added
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID`
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID`
@@ -143,7 +144,9 @@ Current internal endpoint-preview note:
 
 - when `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true`, websocket adapters may start an internal input-preview session behind the shared `internal/voice` boundary and auto-commit an audio turn after a local silence window
 - the first hidden endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
 - the current default hidden policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
+- the local FunASR worker now also emits a lightweight preview endpoint hint (`preview_tail_silence`) based on tail-audio energy, and the shared voice runtime consumes that hint without widening the public protocol
 - this path currently stays intentionally undisclosed at the public discovery layer, so `turn_mode` still advertises `client_wakeup_client_commit`
 - the first implementation slice uses a silence-based detector on top of streaming ASR partials; it is a stepping stone toward fuller server-side endpointing, not the final policy
 - the Python desktop runner now exposes a non-default `server-endpoint-preview` scenario for this hidden mode; it intentionally stays out of `full` and `regression`, and it should be used together with `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` plus a speech-like `--wav` sample

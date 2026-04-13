@@ -20,6 +20,7 @@ type ASRResponder struct {
 	TurnDetectionMinAudioMs       int
 	TurnDetectionLexicalMode      string
 	TurnDetectionIncompleteHoldMs int
+	TurnDetectionHintSilenceMs    int
 	OutputCodec                   string
 	OutputSampleRate              int
 	OutputChannels                int
@@ -174,6 +175,7 @@ func (r ASRResponder) WithTurnDetectionConfig(cfg SilenceTurnDetectorConfig) ASR
 	r.TurnDetectionSilenceMs = cfg.SilenceMs
 	r.TurnDetectionLexicalMode = cfg.LexicalEndpointMode
 	r.TurnDetectionIncompleteHoldMs = cfg.IncompleteHoldMs
+	r.TurnDetectionHintSilenceMs = cfg.EndpointHintSilenceMs
 	return r
 }
 
@@ -260,10 +262,11 @@ func (r ASRResponder) audioOutput(ctx context.Context, req TurnRequest, userText
 
 func (r ASRResponder) turnDetectionConfig() SilenceTurnDetectorConfig {
 	return SilenceTurnDetectorConfig{
-		MinAudioMs:          r.TurnDetectionMinAudioMs,
-		SilenceMs:           r.TurnDetectionSilenceMs,
-		LexicalEndpointMode: r.TurnDetectionLexicalMode,
-		IncompleteHoldMs:    r.TurnDetectionIncompleteHoldMs,
+		MinAudioMs:            r.TurnDetectionMinAudioMs,
+		SilenceMs:             r.TurnDetectionSilenceMs,
+		LexicalEndpointMode:   r.TurnDetectionLexicalMode,
+		IncompleteHoldMs:      r.TurnDetectionIncompleteHoldMs,
+		EndpointHintSilenceMs: r.TurnDetectionHintSilenceMs,
 	}
 }
 

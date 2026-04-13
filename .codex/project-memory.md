@@ -146,6 +146,10 @@
 - The hidden preview mode now also has conservative false-endpoint guard controls under the same shared voice-runtime boundary:
   - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`
   - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`
+- The hidden preview mode can now also consume provider endpoint hints under the same shared voice-runtime boundary:
+  - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`
+- The local FunASR worker now emits one lightweight preview endpoint hint, `preview_tail_silence`, based on tail-audio energy; `HTTPTranscriber` carries it into shared transcription deltas instead of teaching gateways about worker-specific response fields.
 - The default hidden endpoint policy is now: base silence window for lexically complete partials, plus an extra hold window for obviously unfinished partials.
+- When a lexically complete partial also carries a provider endpoint hint, the shared turn detector may use a shorter endpoint window; incomplete partials still stay on the conservative hold path.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.
 - Duplicate late client commit after a server auto-commit now needs guarding at the adapter layer; native realtime rejects `audio.in.commit` unless the session is currently `active`, and `xiaozhi` ignores late `listen.stop` once the turn has already advanced.

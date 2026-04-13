@@ -495,3 +495,11 @@
   - incomplete partials waiting for the additional hold window
   - lexical guard disable mode falling back to the original silence-only behavior
   - app-level responder wiring preserving lexical-mode and hold settings
+- Completed the next `L2` slice for provider endpoint hints:
+  - the local FunASR worker now emits a lightweight preview endpoint hint `preview_tail_silence` from tail-audio energy
+  - `HTTPTranscriber` now preserves preview endpoint hints on partial deltas, including the case where preview text stays stable but the hint appears later
+  - the shared turn detector can use provider endpoint hints to shorten the endpoint wait for lexically complete partials, while keeping incomplete partials on the conservative hold path
+- Added or updated regression coverage for:
+  - worker preview endpoint hints derived from tail-audio energy
+  - transcriber propagation of preview endpoint hints on partial deltas
+  - hint-driven shortened endpoint wait only for lexically complete partials

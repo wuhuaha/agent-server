@@ -53,6 +53,7 @@ The first server-endpoint execution slices should also preserve the current publ
 - add any preview or endpoint logic first as internal `internal/voice` capabilities plus hidden runtime switches
 - let adapters consume preview suggestions instead of embedding provider-specific turn rules
 - keep early hidden endpoint policies conservative, including voice-runtime-owned false-endpoint guards, before any public protocol rollout
+- let provider endpoint hints enter only through shared voice-runtime deltas and shared turn detectors, never as adapter-local turn rules
 
 ## Consequences
 

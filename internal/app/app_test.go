@@ -224,6 +224,9 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	if cfg.Voice.ServerEndpointIncompleteHoldMs != 720 {
 		t.Fatalf("expected default incomplete hold 720ms, got %d", cfg.Voice.ServerEndpointIncompleteHoldMs)
 	}
+	if cfg.Voice.ServerEndpointHintSilenceMs != 160 {
+		t.Fatalf("expected default hint silence 160ms, got %d", cfg.Voice.ServerEndpointHintSilenceMs)
+	}
 	if cfg.Agent.Persona != "household_control_screen" {
 		t.Fatalf("expected household_control_screen persona default, got %q", cfg.Agent.Persona)
 	}

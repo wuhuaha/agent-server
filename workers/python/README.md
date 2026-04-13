@@ -49,6 +49,12 @@ The worker can emit local preview partials by repeatedly re-running FunASR on th
 - `AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_INTERVAL_MS`
   - minimum interval between preview attempts on the same stream
   - default: `240`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_TAIL_MS`
+  - tail-audio window used for the worker's lightweight preview endpoint hint
+  - default: `160`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_MEAN_ABS_THRESHOLD`
+  - mean-absolute PCM threshold below which the tail window is treated as silence
+  - default: `180`
 
 ## Health Check
 

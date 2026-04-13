@@ -18,6 +18,7 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 			ServerEndpointSilenceMs:        960,
 			ServerEndpointLexicalMode:      "off",
 			ServerEndpointIncompleteHoldMs: 1500,
+			ServerEndpointHintSilenceMs:    220,
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           "app-id",
 				AccessKeyID:     "key-id",
@@ -54,6 +55,9 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 	if asrResponder.TurnDetectionIncompleteHoldMs != 1500 {
 		t.Fatalf("expected incomplete hold 1500ms, got %d", asrResponder.TurnDetectionIncompleteHoldMs)
 	}
+	if asrResponder.TurnDetectionHintSilenceMs != 220 {
+		t.Fatalf("expected hint silence 220ms, got %d", asrResponder.TurnDetectionHintSilenceMs)
+	}
 }
 
 func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
@@ -67,6 +71,7 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			ServerEndpointSilenceMs:        700,
 			ServerEndpointLexicalMode:      "conservative",
 			ServerEndpointIncompleteHoldMs: 900,
+			ServerEndpointHintSilenceMs:    180,
 			EmitPlaceholderAudio:           true,
 		},
 	})
@@ -87,6 +92,9 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.TurnDetectionIncompleteHoldMs != 900 {
 		t.Fatalf("expected incomplete hold 900ms, got %d", asrResponder.TurnDetectionIncompleteHoldMs)
+	}
+	if asrResponder.TurnDetectionHintSilenceMs != 180 {
+		t.Fatalf("expected hint silence 180ms, got %d", asrResponder.TurnDetectionHintSilenceMs)
 	}
 }
 
