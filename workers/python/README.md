@@ -10,6 +10,20 @@ This package hosts Python-side workers for `agent-server`.
   - accepts normalized PCM16LE audio from the Go server and returns text transcription
   - supports both batch `/v1/asr/transcribe` and the local streaming preview lifecycle under `/v1/asr/stream/*`
 
+## Linux Install
+
+From the repository root:
+
+```bash
+./scripts/install-linux-stack.sh --skip-desktop-client
+```
+
+To also install the optional local/open-source stream VAD runtime:
+
+```bash
+./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
+```
+
 ## Start From Existing Conda Env
 
 ```powershell
@@ -55,6 +69,34 @@ The worker can emit local preview partials by repeatedly re-running FunASR on th
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_MEAN_ABS_THRESHOLD`
   - mean-absolute PCM threshold below which the tail window is treated as silence
   - default: `180`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`
+  - preview endpoint hint provider selection
+  - `energy`: default lightweight tail-energy hint
+  - `silero`: prefer `Silero VAD`; if the runtime is unavailable or the audio format is unsupported, fall back to `energy`
+  - `auto`: try `Silero VAD` first, otherwise fall back to `energy`
+  - `none`: disable worker-side preview endpoint hints
+  - default: `energy`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_THRESHOLD`
+  - VAD threshold passed to `Silero VAD`
+  - default: `0.5`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_MIN_SILENCE_MS`
+  - minimum trailing silence required before the worker emits `preview_silero_vad_silence`
+  - default: `160`
+- `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS`
+  - speech padding passed to `Silero VAD`
+  - default: `30`
+
+Optional local/open-source VAD install:
+
+```bash
+./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
+```
+
+The current stream preview path stays conservative by default:
+
+- `energy` remains the default endpoint-hint source, so existing bring-up behavior does not change unexpectedly
+- `Silero VAD` only strengthens worker-side hinting; it does not widen the public websocket or `xiaozhi` compatibility protocol
+- `/healthz` and `/v1/asr/info` now expose the configured VAD provider plus lazy runtime status and any fallback error string
 
 ## Health Check
 

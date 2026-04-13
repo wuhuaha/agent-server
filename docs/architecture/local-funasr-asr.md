@@ -26,6 +26,16 @@ Replace the bootstrap audio-byte-count reply with real local speech recognition 
 - `trust_remote_code`: `false`
 - input format: `pcm16le / 16000 Hz / mono`
 
+## Install Entry Point
+
+On Linux, repository-local dependency bring-up now goes through:
+
+```bash
+./scripts/install-linux-stack.sh --skip-desktop-client
+```
+
+Add `--with-stream-vad` when the worker should also install `onnxruntime` and `silero-vad` for stronger local preview endpoint hints.
+
 ## Current Status
 
 - the gateway can now normalize supported speech-oriented `opus` uplink packets to `pcm16le/16000/mono` before calling the worker

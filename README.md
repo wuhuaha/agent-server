@@ -29,8 +29,27 @@ Current priorities:
 ## Quick Start
 
 ```bash
+./scripts/install-linux-stack.sh
 go test ./...
 go run ./cmd/agentd
+```
+
+On Linux, the new install entrypoint audits and installs the repository-local dependency layers:
+
+- Go module dependencies for `agentd`
+- editable install of `clients/python-desktop-client`
+- editable install of `workers/python` with runtime extras in the `xiaozhi-esp32-server` conda env
+
+To also install the worker-side local VAD runtime used by hidden endpoint preview:
+
+```bash
+./scripts/install-linux-stack.sh --with-stream-vad
+```
+
+If you only want to prepare the FunASR worker env and leave desktop-client install untouched:
+
+```bash
+./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
 ```
 
 Then open:
@@ -80,6 +99,13 @@ In another terminal:
 ```powershell
 cd E:\agent-server
 .\scripts\dev-funasr-mimo.ps1
+```
+
+On Linux, the equivalent dependency preparation path is:
+
+```bash
+./scripts/install-linux-stack.sh --with-stream-vad
+conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service --host 127.0.0.1 --port 8091 --device cpu
 ```
 
 For repeatable scripted validation of discovery, text, audio, and server-initiated close:

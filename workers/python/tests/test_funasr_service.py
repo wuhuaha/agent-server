@@ -23,6 +23,10 @@ class FunASRServiceTests(unittest.TestCase):
             "stream_preview_min_interval_ms": 0,
             "stream_endpoint_tail_ms": 160,
             "stream_endpoint_mean_abs_threshold": 180,
+            "stream_endpoint_vad_provider": "energy",
+            "stream_endpoint_vad_threshold": 0.5,
+            "stream_endpoint_vad_min_silence_ms": 160,
+            "stream_endpoint_vad_speech_pad_ms": 30,
         }
         values.update(overrides)
         return WorkerConfig(**values)
@@ -48,6 +52,10 @@ class FunASRServiceTests(unittest.TestCase):
         self.assertEqual(config.stream_preview_min_interval_ms, 240)
         self.assertEqual(config.stream_endpoint_tail_ms, 160)
         self.assertEqual(config.stream_endpoint_mean_abs_threshold, 180)
+        self.assertEqual(config.stream_endpoint_vad_provider, "energy")
+        self.assertEqual(config.stream_endpoint_vad_threshold, 0.5)
+        self.assertEqual(config.stream_endpoint_vad_min_silence_ms, 160)
+        self.assertEqual(config.stream_endpoint_vad_speech_pad_ms, 30)
 
     def test_stream_lifecycle_tracks_preview_and_final_without_duplicate_partials(self) -> None:
         engine = FunASREngine(self.make_config(language="zh"))
@@ -98,7 +106,7 @@ class FunASRServiceTests(unittest.TestCase):
             self.assertEqual(transcribe.call_count, 3)
 
     def test_preview_endpoint_reason_uses_tail_energy(self) -> None:
-        engine = FunASREngine(self.make_config())
+        engine = FunASREngine(self.make_config(stream_endpoint_vad_provider="energy"))
         silent = bytes(640)
         noisy = b"".join(int(1200).to_bytes(2, byteorder="little", signed=True) for _ in range(320))
 
@@ -121,6 +129,63 @@ class FunASRServiceTests(unittest.TestCase):
 
         self.assertEqual(silent_reason, "preview_tail_silence")
         self.assertEqual(noisy_reason, "")
+
+    def test_preview_endpoint_reason_prefers_silero_when_available(self) -> None:
+        engine = FunASREngine(self.make_config(stream_endpoint_vad_provider="silero"))
+        with patch.object(
+            engine,
+            "_preview_endpoint_reason_silero",
+            return_value=("preview_silero_vad_silence", True),
+        ) as silero, patch.object(engine, "_preview_endpoint_reason_energy", return_value="preview_tail_silence") as energy:
+            reason = engine._preview_endpoint_reason(
+                {
+                    "audio_bytes": bytes(640),
+                    "sample_rate_hz": 16000,
+                    "channels": 1,
+                },
+                {"text": "打开客厅灯"},
+            )
+        self.assertEqual(reason, "preview_silero_vad_silence")
+        silero.assert_called_once()
+        energy.assert_not_called()
+
+    def test_preview_endpoint_reason_falls_back_to_energy_when_silero_is_unavailable(self) -> None:
+        engine = FunASREngine(self.make_config(stream_endpoint_vad_provider="silero"))
+        with patch.object(
+            engine,
+            "_preview_endpoint_reason_silero",
+            return_value=("", False),
+        ) as silero, patch.object(engine, "_preview_endpoint_reason_energy", return_value="preview_tail_silence") as energy:
+            reason = engine._preview_endpoint_reason(
+                {
+                    "audio_bytes": bytes(640),
+                    "sample_rate_hz": 16000,
+                    "channels": 1,
+                },
+                {"text": "打开客厅灯"},
+            )
+        self.assertEqual(reason, "preview_tail_silence")
+        silero.assert_called_once()
+        energy.assert_called_once()
+
+    def test_preview_endpoint_reason_does_not_fall_back_when_silero_runs_and_rejects_hint(self) -> None:
+        engine = FunASREngine(self.make_config(stream_endpoint_vad_provider="auto"))
+        with patch.object(
+            engine,
+            "_preview_endpoint_reason_silero",
+            return_value=("", True),
+        ) as silero, patch.object(engine, "_preview_endpoint_reason_energy", return_value="preview_tail_silence") as energy:
+            reason = engine._preview_endpoint_reason(
+                {
+                    "audio_bytes": bytes(640),
+                    "sample_rate_hz": 16000,
+                    "channels": 1,
+                },
+                {"text": "打开客厅灯"},
+            )
+        self.assertEqual(reason, "")
+        silero.assert_called_once()
+        energy.assert_not_called()
 
     def test_close_stream_removes_state(self) -> None:
         engine = FunASREngine(self.make_config())

@@ -149,6 +149,11 @@
 - The hidden preview mode can now also consume provider endpoint hints under the same shared voice-runtime boundary:
   - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`
 - The local FunASR worker now emits one lightweight preview endpoint hint, `preview_tail_silence`, based on tail-audio energy; `HTTPTranscriber` carries it into shared transcription deltas instead of teaching gateways about worker-specific response fields.
+- Stronger local acoustic endpoint evidence should still stay worker-side: the FunASR worker may now optionally use `Silero VAD` to emit `preview_silero_vad_silence`, but the shared Go runtime still only consumes normalized preview endpoint hints and the public protocol remains unchanged.
+- The current default worker hint provider remains `energy`; `Silero VAD` is an optional local/open-source enhancement behind `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`, with graceful fallback to the existing tail-energy path.
+- Linux-side repository dependency bring-up should now go through `scripts/install-linux-stack.sh`, which installs Go modules, the desktop client package, and the FunASR worker env from one place without changing the runtime architecture.
+- The worker package now declares two meaningful extras: `runtime` for the base local FunASR path (`funasr==1.3.1`, `modelscope==1.24.1`) and `stream-vad` for stronger local endpointing (`onnxruntime`, `silero-vad`).
+- On this machine, local editable installs need three bootstrap safeguards to be reliable: keep `setuptools<82` because of `torch 2.11.0(+cu128)`, preinstall `hatchling`, and preinstall `editables` before using `--no-build-isolation`.
 - The default hidden endpoint policy is now: base silence window for lexically complete partials, plus an extra hold window for obviously unfinished partials.
 - When a lexically complete partial also carries a provider endpoint hint, the shared turn detector may use a shorter endpoint window; incomplete partials still stay on the conservative hold path.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.

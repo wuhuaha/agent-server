@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from array import array
 import base64
 from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import time
@@ -33,6 +36,10 @@ class WorkerConfig:
     stream_preview_min_interval_ms: int
     stream_endpoint_tail_ms: int
     stream_endpoint_mean_abs_threshold: int
+    stream_endpoint_vad_provider: str
+    stream_endpoint_vad_threshold: float
+    stream_endpoint_vad_min_silence_ms: int
+    stream_endpoint_vad_speech_pad_ms: int
 
 
 @dataclass(slots=True)
@@ -62,6 +69,10 @@ class FunASREngine:
         self._model: Any | None = None
         self._postprocess = None
         self._last_error = ""
+        self._vad_lock = threading.Lock()
+        self._silero_vad_runtime: tuple[Any, Any] | None = None
+        self._silero_vad_attempted = False
+        self._silero_vad_error = ""
         self._streams_lock = threading.Lock()
         self._streams: dict[str, StreamState] = {}
 
@@ -80,6 +91,14 @@ class FunASREngine:
             "stream_preview_min_interval_ms": self.config.stream_preview_min_interval_ms,
             "stream_endpoint_tail_ms": self.config.stream_endpoint_tail_ms,
             "stream_endpoint_mean_abs_threshold": self.config.stream_endpoint_mean_abs_threshold,
+            "stream_endpoint_vad_provider": _normalize_stream_endpoint_vad_provider(
+                self.config.stream_endpoint_vad_provider
+            ),
+            "stream_endpoint_vad_runtime_status": self._stream_endpoint_vad_status(),
+            "stream_endpoint_vad_threshold": self.config.stream_endpoint_vad_threshold,
+            "stream_endpoint_vad_min_silence_ms": self.config.stream_endpoint_vad_min_silence_ms,
+            "stream_endpoint_vad_speech_pad_ms": self.config.stream_endpoint_vad_speech_pad_ms,
+            "stream_endpoint_vad_last_error": self._silero_vad_error,
             "last_error": self._last_error,
         }
 
@@ -290,6 +309,18 @@ class FunASREngine:
         preview_text = str(preview_payload.get("text", "")).strip()
         if not preview_text:
             return ""
+        provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
+        if provider == "none":
+            return ""
+        if provider in {"auto", "silero"}:
+            silero_reason, silero_handled = self._preview_endpoint_reason_silero(snapshot)
+            if silero_handled:
+                return silero_reason
+        if provider in {"auto", "silero", "energy"}:
+            return self._preview_endpoint_reason_energy(snapshot)
+        return ""
+
+    def _preview_endpoint_reason_energy(self, snapshot: dict[str, Any]) -> str:
         mean_abs = self._tail_mean_abs_pcm16(
             snapshot["audio_bytes"],
             int(snapshot["sample_rate_hz"]),
@@ -299,6 +330,121 @@ class FunASREngine:
         if mean_abs <= self.config.stream_endpoint_mean_abs_threshold:
             return "preview_tail_silence"
         return ""
+
+    def _preview_endpoint_reason_silero(self, snapshot: dict[str, Any]) -> tuple[str, bool]:
+        sample_rate_hz = int(snapshot.get("sample_rate_hz", 0))
+        channels = int(snapshot.get("channels", 0))
+        audio_bytes = bytes(snapshot.get("audio_bytes", b""))
+        if not audio_bytes or sample_rate_hz <= 0 or channels <= 0:
+            return "", True
+        if sample_rate_hz not in {8000, 16000}:
+            return "", False
+        runtime = self._ensure_silero_vad_runtime()
+        if runtime is None:
+            return "", False
+        model, get_speech_timestamps = runtime
+        try:
+            audio_tensor = self._pcm16le_bytes_to_mono_float_tensor(audio_bytes, channels)
+            if audio_tensor is None:
+                return "", True
+            total_samples = int(audio_tensor.numel())
+            if total_samples <= 0:
+                return "", True
+            timestamps = get_speech_timestamps(
+                audio_tensor,
+                model,
+                threshold=self.config.stream_endpoint_vad_threshold,
+                sampling_rate=sample_rate_hz,
+                min_silence_duration_ms=self.config.stream_endpoint_vad_min_silence_ms,
+                speech_pad_ms=self.config.stream_endpoint_vad_speech_pad_ms,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._silero_vad_error = str(exc)
+            return "", False
+        if not timestamps:
+            return "", True
+        last_end = self._speech_timestamp_end(timestamps[-1])
+        if last_end <= 0:
+            return "", True
+        required_silence_samples = max(
+            int(sample_rate_hz * self.config.stream_endpoint_vad_min_silence_ms / 1000),
+            0,
+        )
+        if total_samples - last_end >= required_silence_samples:
+            return "preview_silero_vad_silence", True
+        return "", True
+
+    def _ensure_silero_vad_runtime(self) -> tuple[Any, Any] | None:
+        if self._silero_vad_runtime is not None:
+            return self._silero_vad_runtime
+        if self._silero_vad_attempted:
+            return None
+        with self._vad_lock:
+            if self._silero_vad_runtime is not None:
+                return self._silero_vad_runtime
+            if self._silero_vad_attempted:
+                return None
+            self._silero_vad_attempted = True
+            try:
+                silero_vad = importlib.import_module("silero_vad")
+                load_silero_vad = getattr(silero_vad, "load_silero_vad", None)
+                get_speech_timestamps = getattr(silero_vad, "get_speech_timestamps", None)
+                if load_silero_vad is None or get_speech_timestamps is None:
+                    raise RuntimeError("silero_vad missing load_silero_vad/get_speech_timestamps")
+                self._silero_vad_runtime = (load_silero_vad(), get_speech_timestamps)
+                self._silero_vad_error = ""
+            except Exception as exc:  # noqa: BLE001
+                self._silero_vad_runtime = None
+                self._silero_vad_error = str(exc)
+            return self._silero_vad_runtime
+
+    def _stream_endpoint_vad_status(self) -> str:
+        provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
+        if provider not in {"auto", "silero"}:
+            return "not_requested"
+        if self._silero_vad_runtime is not None:
+            return "ready"
+        if self._silero_vad_attempted:
+            return "fallback_energy"
+        return "lazy"
+
+    def _pcm16le_bytes_to_mono_float_tensor(self, audio_bytes: bytes, channels: int) -> Any | None:
+        usable = len(audio_bytes) - (len(audio_bytes) % 2)
+        if usable <= 0 or channels <= 0:
+            return None
+        try:
+            import torch
+        except Exception as exc:  # noqa: BLE001
+            self._silero_vad_error = str(exc)
+            return None
+        samples = array("h")
+        samples.frombytes(audio_bytes[:usable])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        mono_samples: list[float]
+        if channels == 1:
+            mono_samples = [float(sample) for sample in samples]
+        else:
+            mono_samples = []
+            for index in range(0, len(samples), channels):
+                frame = samples[index : index + channels]
+                if len(frame) == 0:
+                    continue
+                mono_samples.append(float(sum(frame)) / float(len(frame)))
+        if not mono_samples:
+            return None
+        return torch.tensor(mono_samples, dtype=torch.float32) / 32768.0
+
+    def _speech_timestamp_end(self, payload: Any) -> int:
+        if isinstance(payload, dict):
+            for key in ("end", "stop"):
+                value = payload.get(key)
+                if value is not None:
+                    return int(value)
+            return 0
+        if isinstance(payload, (list, tuple)) and len(payload) >= 2:
+            return int(payload[1])
+        return 0
 
     def _tail_mean_abs_pcm16(self, audio_bytes: bytes, sample_rate_hz: int, channels: int, tail_ms: int) -> float:
         if not audio_bytes or sample_rate_hz <= 0 or channels <= 0 or tail_ms <= 0:
@@ -529,6 +675,25 @@ def build_config() -> WorkerConfig:
         type=int,
         default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_MEAN_ABS_THRESHOLD", "180")),
     )
+    parser.add_argument(
+        "--stream-endpoint-vad-provider",
+        default=os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER", "energy"),
+    )
+    parser.add_argument(
+        "--stream-endpoint-vad-threshold",
+        type=float,
+        default=float(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_THRESHOLD", "0.5")),
+    )
+    parser.add_argument(
+        "--stream-endpoint-vad-min-silence-ms",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_MIN_SILENCE_MS", "160")),
+    )
+    parser.add_argument(
+        "--stream-endpoint-vad-speech-pad-ms",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS", "30")),
+    )
     parser.add_argument("--use-itn", action="store_true", default=_env_bool("AGENT_SERVER_FUNASR_USE_ITN", True))
     parser.add_argument(
         "--trust-remote-code",
@@ -555,6 +720,10 @@ def build_config() -> WorkerConfig:
         stream_preview_min_interval_ms=args.stream_preview_min_interval_ms,
         stream_endpoint_tail_ms=args.stream_endpoint_tail_ms,
         stream_endpoint_mean_abs_threshold=args.stream_endpoint_mean_abs_threshold,
+        stream_endpoint_vad_provider=_normalize_stream_endpoint_vad_provider(args.stream_endpoint_vad_provider),
+        stream_endpoint_vad_threshold=args.stream_endpoint_vad_threshold,
+        stream_endpoint_vad_min_silence_ms=args.stream_endpoint_vad_min_silence_ms,
+        stream_endpoint_vad_speech_pad_ms=args.stream_endpoint_vad_speech_pad_ms,
     )
 
 
@@ -573,6 +742,15 @@ def _env_bool(name: str, fallback: bool) -> bool:
     if value is None or value == "":
         return fallback
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_stream_endpoint_vad_provider(value: str) -> str:
+    candidate = value.strip().lower()
+    if candidate in {"", "energy"}:
+        return "energy"
+    if candidate in {"auto", "silero", "none"}:
+        return candidate
+    return "energy"
 
 
 if __name__ == "__main__":

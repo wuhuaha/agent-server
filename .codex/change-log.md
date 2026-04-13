@@ -503,3 +503,25 @@
   - worker preview endpoint hints derived from tail-audio energy
   - transcriber propagation of preview endpoint hints on partial deltas
   - hint-driven shortened endpoint wait only for lexically complete partials
+- Completed the next `L2` worker-side acoustic hardening slice:
+  - the Python FunASR worker now supports `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER=energy|silero|auto|none`
+  - worker-side preview hint generation can now use optional `Silero VAD` and emit `preview_silero_vad_silence`
+  - if the local `Silero VAD` runtime is unavailable or the input format is unsupported, the worker falls back to the existing `preview_tail_silence` path instead of changing the shared contract
+  - worker health/info output now exposes the configured VAD provider, lazy runtime status, and any fallback error string
+  - `workers/python/pyproject.toml` now declares an optional `stream-vad` extra for `silero-vad` plus `onnxruntime`
+- Added or updated regression coverage for:
+  - worker selection of `Silero VAD` over energy when available
+  - fallback from `Silero VAD` to energy when the runtime is unavailable
+  - no fallback to energy when `Silero VAD` runs successfully but decides not to emit a hint
+  - shared turn-detector compatibility with alternate endpoint-hint values such as `preview_silero_vad_silence`
+- Consolidated Linux-side dependency installation for the repository:
+  - added `scripts/install-linux-stack.sh` as the repository-local install entrypoint for Go modules, desktop client install, and FunASR worker env preparation
+  - `workers/python/pyproject.toml` now declares `runtime` extras for `funasr==1.3.1` and `modelscope==1.24.1`, plus `stream-vad` extras for `onnxruntime` and `silero-vad`
+  - updated `README.md`, `workers/python/README.md`, and `docs/architecture/local-funasr-asr.md` to point Linux bring-up at that new install path
+- Hardened the install script against real machine constraints found during execution:
+  - pin bootstrap tooling to `setuptools<82` so the existing `torch 2.11.0(+cu128)` constraint is respected
+  - install `hatchling` and `editables`, then use `--no-build-isolation` for editable local package installs so the script does not rely on extra network fetches for local build backends
+- Completed live machine validation for the worker-side VAD install:
+  - installed `onnxruntime 1.24.4` and `silero-vad 6.2.1` into the `xiaozhi-esp32-server` conda env
+  - verified worker-side `Silero VAD` runtime loading
+  - verified a live stream preview smoke run returned `preview_silero_vad_silence` on the sample `qinyu_xiaoou_16k.wav`

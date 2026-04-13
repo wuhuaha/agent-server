@@ -143,6 +143,38 @@ func TestSilenceTurnDetectorUsesProviderEndpointHintToShortenSilence(t *testing.
 	}
 }
 
+func TestSilenceTurnDetectorUsesSileroEndpointHintToShortenSilence(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind:           TranscriptionDeltaKindPartial,
+		Text:           "打开客厅灯",
+		EndpointReason: "preview_silero_vad_silence",
+	})
+
+	if snapshot := detector.Snapshot(startedAt.Add(100 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("preview should not commit before hint silence window elapses")
+	}
+	snapshot := detector.Snapshot(startedAt.Add(170 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected commit suggestion after shortened hint silence window")
+	}
+	if snapshot.EndpointReason != "preview_silero_vad_silence" {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
+	}
+}
+
 func TestSilenceTurnDetectorDoesNotLetHintBypassIncompleteLexicalHold(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{

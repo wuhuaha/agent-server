@@ -147,6 +147,13 @@ Current internal endpoint-preview note:
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
 - the current default hidden policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
 - the local FunASR worker now also emits a lightweight preview endpoint hint (`preview_tail_silence`) based on tail-audio energy, and the shared voice runtime consumes that hint without widening the public protocol
+- the local FunASR worker can now optionally strengthen that internal hint path through `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`:
+  - `energy`: keep the existing lightweight tail-energy hint as the default behavior
+  - `silero`: try `Silero VAD` inside the worker and emit `preview_silero_vad_silence` when the buffered speech already ends in enough local silence
+  - `auto`: prefer `Silero VAD` when its runtime is available, otherwise fall back to `energy`
+  - `none`: disable worker-side preview endpoint hints entirely
+- additional worker-side VAD knobs are `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_THRESHOLD`, `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_MIN_SILENCE_MS`, and `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS`
+- even when `silero` is configured, unsupported sample rates or missing local VAD dependencies still fall back to the existing `preview_tail_silence` path instead of changing the shared contract or breaking stream preview
 - this path currently stays intentionally undisclosed at the public discovery layer, so `turn_mode` still advertises `client_wakeup_client_commit`
 - the first implementation slice uses a silence-based detector on top of streaming ASR partials; it is a stepping stone toward fuller server-side endpointing, not the final policy
 - the Python desktop runner now exposes a non-default `server-endpoint-preview` scenario for this hidden mode; it intentionally stays out of `full` and `regression`, and it should be used together with `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` plus a speech-like `--wav` sample

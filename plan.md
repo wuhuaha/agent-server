@@ -121,6 +121,8 @@ Current planning note:
 
 - for the next full-duplex voice stage, the primary execution route is now explicitly `local / open-source first`
 - hosted realtime speech providers remain comparison baselines, not the main implementation target
+- the next `L2` hardening slice should strengthen local endpoint evidence inside the Python FunASR worker rather than widening the public realtime contract
+- that slice should add an optional stronger acoustic endpoint hint path, preferably `Silero VAD`, while preserving the current tail-energy hint as the default and graceful fallback
 
 ## Current Execution Log
 
@@ -327,6 +329,62 @@ Validation recorded for this execution step:
 
 - `go test ./internal/voice ./internal/app`
 - `env PYTHONPATH=workers/python/src python3 -m unittest discover -s workers/python/tests -v`
+
+### 2026-04-13 L2 Optional Stronger Local Acoustic Endpoint Slice Complete
+
+- Scope:
+  - strengthen the hidden preview endpoint-hint path with a better local/open-source acoustic signal without widening public discovery or websocket contracts
+  - keep the new logic inside the Python FunASR worker so adapters and the shared Go runtime still consume only normalized preview endpoint hints
+  - preserve the existing tail-energy hint as the default and graceful fallback path
+- Target files:
+  - `workers/python/src/agent_server_workers/funasr_service.py`
+  - `workers/python/tests/test_funasr_service.py`
+  - `workers/python/pyproject.toml`
+  - `workers/python/README.md`
+  - `internal/voice/turn_detector_test.go`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/architecture/overview.md`
+  - `plan.md`
+- Acceptance for this execution step:
+  - the worker can optionally use `Silero VAD` for internal preview endpoint hints
+  - when `Silero VAD` is unavailable or unsupported, the worker falls back to the current `preview_tail_silence` path instead of changing behavior abruptly
+  - the shared turn detector continues to treat alternate provider hints generically, without new adapter-specific code
+  - public discovery and protocol docs remain unchanged
+
+Validation recorded for this execution step:
+
+- `env PYTHONPATH=workers/python/src python3 -m unittest discover -s workers/python/tests -v`
+- `go test ./internal/voice ./internal/app ./internal/gateway`
+
+### 2026-04-13 Linux Dependency Install Consolidation Complete
+
+- Scope:
+  - audit the repository's real dependency layers across Go service, desktop client, and FunASR worker
+  - replace machine-history-only setup knowledge with a usable Linux install entrypoint
+  - actually install `onnxruntime` and `silero-vad` into the worker conda env and verify the real preview-hint path
+- Target files:
+  - `scripts/install-linux-stack.sh`
+  - `README.md`
+  - `workers/python/pyproject.toml`
+  - `workers/python/README.md`
+  - `docs/architecture/local-funasr-asr.md`
+  - `plan.md`
+- Acceptance for this execution step:
+  - Linux bring-up has one repository-local install entrypoint for Go deps, desktop client, and worker env preparation
+  - worker packaging declares runtime extras (`funasr`, `modelscope`) and optional `stream-vad` extras (`onnxruntime`, `silero-vad`)
+  - the install script handles the real local editable-install constraints discovered on this machine: `setuptools<82`, plus `hatchling` and `editables`
+  - the `xiaozhi-esp32-server` env actually imports `onnxruntime` and `silero_vad`
+  - a live worker smoke run returns `preview_silero_vad_silence` on the stream preview path
+
+Validation recorded for this execution step:
+
+- `./scripts/install-linux-stack.sh --with-stream-vad`
+- `conda run -n xiaozhi-esp32-server python -c "import silero_vad, onnxruntime; print(silero_vad.__version__); print(onnxruntime.__version__)"`
+- `conda run -n xiaozhi-esp32-server python -c "from agent_server_workers.funasr_service import FunASREngine, WorkerConfig; ... engine._ensure_silero_vad_runtime() ..."`
+- live worker smoke on `127.0.0.1:8093` with `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER=silero`, using `artifacts/live-baseline/20260409/samples/qinyu_xiaoou_16k.wav` plus trailing silence:
+  - preview text: `小欧管家。`
+  - preview endpoint reason: `preview_silero_vad_silence`
+  - final text: `小欧管家。`
 
 - Scope:
   - upgrade the desktop scripted runner output into a comparable end-to-end quality report

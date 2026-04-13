@@ -309,3 +309,21 @@
 - Problem: after the lexical-guard slice, hidden endpoint preview was still driven almost entirely by local silence windows plus shared lexical heuristics. The local streaming worker could produce useful preview-side evidence, but that evidence still stopped at the worker boundary and never affected shared turn detection.
 - Resolution: added a lightweight worker-side preview endpoint hint derived from tail-audio energy, propagated it through `HTTPTranscriber` partial deltas, and taught the shared turn detector to use that hint for a shorter endpoint wait on lexically complete partials. The hint path still remains internal to `internal/voice`, and incomplete partials remain on the conservative hold path.
 - Status: resolved for the current hidden-preview stage.
+
+### Hidden Endpoint Preview Still Relied On A Weak Tail-Energy Hint Only
+
+- Problem: after the first provider-hint slice landed, the worker still had only one lightweight acoustic hint source: tail mean-absolute energy. That was useful as a minimal signal, but it was still weaker than a proper local/open-source VAD path and risked noisy false hints or missed endpoints on more varied speech.
+- Resolution: kept the enhancement inside the Python worker boundary by adding an optional `Silero VAD` preview-hint path behind `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`. The worker can now emit `preview_silero_vad_silence` when the local VAD runtime is available, while unsupported inputs or missing dependencies still fall back to the existing `preview_tail_silence` path. The shared Go voice runtime remains generic over endpoint hints, and the public realtime contract still does not change.
+- Status: resolved for the current hidden-preview stage.
+
+### Linux Bring-Up Still Relied On Historical Machine State Instead Of A Real Install Entry Point
+
+- Problem: the repository had PowerShell bring-up scripts and scattered docs, but no single Linux install entrypoint that encoded the real dependency layers already assumed by this machine. The local FunASR worker especially depended on undeclared conda-env state such as `funasr`, `modelscope`, and later `onnxruntime` / `silero-vad`.
+- Resolution: added `scripts/install-linux-stack.sh` as the repository-local Linux install entrypoint and updated docs to point at it. The worker package now declares `runtime` and `stream-vad` extras so the install path matches the actual runtime shape instead of hidden machine history.
+- Status: resolved.
+
+### Local Editable Install Flow Broke On Real Packaging Constraints
+
+- Problem: once the Linux install flow was exercised for real, three packaging issues surfaced: upgrading `setuptools` too far conflicted with `torch 2.11.0(+cu128)`, local editable installs under hatchling still needed `hatchling` available without network, and `--no-build-isolation` also required `editables`.
+- Resolution: hardened the install script to keep `setuptools<82`, preinstall `hatchling` and `editables`, and then install repository-local packages with `--no-build-isolation`. After that change, the full install flow completed successfully and the worker env still loaded `torch`, `onnxruntime`, and `silero_vad`.
+- Status: resolved.
