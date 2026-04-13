@@ -53,6 +53,8 @@ For Linux dependency preparation:
   - `plan.md`
 - Historical execution archive:
   - `docs/codex/execution-log-archive-2026-04.md`
+- Live validation runbook:
+  - `docs/codex/live-validation-runbook.md`
 - Architecture:
   - `docs/architecture/overview.md`
   - `docs/architecture/agent-runtime-core.md`
@@ -83,6 +85,8 @@ The richer manual and scripted validation assets live here:
   - `clients/python-desktop-client/README.md`
 - archived live baselines:
   - `artifacts/live-baseline/`
+- canonical live runbook:
+  - `docs/codex/live-validation-runbook.md`
 - Codex-local debugging records:
   - `.codex/change-log.md`
   - `.codex/issues-and-resolutions.md`
@@ -106,5 +110,5 @@ The richer manual and scripted validation assets live here:
 These are known next-step improvements:
 
 - GitHub Actions currently covers only fast checks; live ASR/TTS smokes are still manual.
-- live-validation runbooks and archived artifact naming are still less standardized than the fast local command surface.
+- Linux-side one-command live stack bring-up is still less standardized than the current Windows PowerShell smoke path.
 - CPU worker image builds still depend on stable access to large PyTorch wheels.

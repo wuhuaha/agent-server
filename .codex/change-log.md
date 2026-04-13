@@ -577,3 +577,12 @@
   - added `.github/ISSUE_TEMPLATE/config.yml`
   - added `.github/pull_request_template.md`
   - made boundary impact, protocol/docs follow-through, and validation commands first-class in the template flow
+- Standardized live-validation runbooks and artifact naming:
+  - added `docs/codex/live-validation-runbook.md`
+  - defined canonical roots for `artifacts/live-smoke/YYYYMMDD/<profile>/` and `artifacts/live-baseline/YYYYMMDD/<profile>/`
+  - defined stable profile names such as `desktop-full`, `desktop-regression`, `desktop-server-endpoint-preview`, and `rtos-mock`
+  - updated `README.md`, `clients/python-desktop-client/README.md`, and `docs/codex/harness-workflow.md` to point at the same runbook
+- Aligned the existing Windows smoke scripts with that runbook:
+  - `scripts/smoke-funasr.ps1` now defaults to repository-local `artifacts/live-smoke/YYYYMMDD/desktop-full/`
+  - `scripts/smoke-rtos-mock.ps1` now defaults to repository-local `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
+  - both scripts now use canonical top-level names such as `input.wav` and `report.json`

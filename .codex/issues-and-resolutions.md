@@ -387,3 +387,9 @@
 - Problem: even after the command surface and harness docs were standardized, future work proposals and PRs still had no shared template requiring architecture boundaries, protocol or ADR impact, or validation against the common command surface.
 - Resolution: added GitHub issue templates for bugs and architecture or feature tasks, plus a PR template that asks for boundary impact, docs follow-through, secret checks, and validation with the shared `make` entrypoints.
 - Status: resolved.
+
+### Live Validation Evidence Still Used Inconsistent Artifact Roots And Historical One-Off Names
+
+- Problem: the repository had working live validation tools, but the archived outputs still mixed historical locations such as `.codex/artifacts/*`, ad hoc `report.json` paths, and handwritten references in docs. That made it harder to compare runs or tell which artifact directories were baseline-quality versus quick smoke output.
+- Resolution: added `docs/codex/live-validation-runbook.md` and standardized two artifact roots: `artifacts/live-smoke/YYYYMMDD/<profile>/` for quick local reruns and `artifacts/live-baseline/YYYYMMDD/<profile>/` for comparison-worthy archived runs. Also aligned the Windows smoke scripts with repository-local paths plus canonical top-level names such as `input.wav` and `report.json`.
+- Status: resolved.

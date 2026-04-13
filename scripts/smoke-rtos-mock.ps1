@@ -1,5 +1,5 @@
 param(
-  [string]$OutputDir = "E:\agent-server\.codex\artifacts\smoke-rtos-mock",
+  [string]$OutputDir = "",
   [string]$SpeechText = "hello from agent server",
   [int]$ServerPort = 18080,
   [int]$WorkerPort = 18091,
@@ -7,9 +7,13 @@ param(
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$wavPath = Join-Path $OutputDir "smoke-input.wav"
-$reportPath = Join-Path $OutputDir "rtos-mock-report.json"
-$rxPath = Join-Path $OutputDir "rtos-mock-rx.wav"
+if (-not $OutputDir) {
+  $OutputDir = Join-Path $repoRoot ("artifacts\live-smoke\{0}\rtos-mock" -f (Get-Date).ToString("yyyyMMdd"))
+}
+
+$wavPath = Join-Path $OutputDir "input.wav"
+$reportPath = Join-Path $OutputDir "report.json"
+$rxPath = Join-Path $OutputDir "received-audio.wav"
 $workerLog = Join-Path $OutputDir "worker.log"
 $workerErr = Join-Path $OutputDir "worker.err.log"
 $serverLog = Join-Path $OutputDir "agentd.log"
@@ -70,6 +74,7 @@ try {
       "--http-base", "http://127.0.0.1:$ServerPort",
       "--wav", $wavPath,
       "--save-rx", $rxPath,
+      "--save-rx-dir", $OutputDir,
       "--output", $reportPath,
       "--timeout-sec", "60"
     )

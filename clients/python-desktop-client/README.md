@@ -60,6 +60,11 @@ Useful options:
 - `--output .\runner-report.json`
 - `--save-rx-dir .\artifacts`
 
+Recommended live artifact root:
+
+- quick smoke: `artifacts/live-smoke/YYYYMMDD/desktop-full`
+- archived comparison run: `artifacts/live-baseline/YYYYMMDD/desktop-regression`
+
 The JSON report now includes:
 
 - run metadata such as `generated_at`, `run_id`, and optional `artifact_dir`
@@ -90,6 +95,8 @@ The `regression` scenario runs the broader migration baseline:
 5. `barge-in`
 6. `timeout`
 
+For the canonical artifact-root and profile naming convention used across the repository, see [../../docs/codex/live-validation-runbook.md](../../docs/codex/live-validation-runbook.md).
+
 Current intent of the additional scenarios:
 
 - `server-endpoint-preview`: uploads audio without sending `audio.in.commit` and expects hidden server endpointing to auto-close the turn; this requires `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` and a speech-like `--wav` input
@@ -114,6 +121,11 @@ Useful options:
 - `--output .\rtos-mock-report.json`
 - `--save-rx .\rtos-rx.wav`
 - `--save-rx-dir .\rtos-artifacts`
+
+Recommended live artifact root:
+
+- quick smoke: `artifacts/live-smoke/YYYYMMDD/rtos-mock`
+- archived comparison run: `artifacts/live-baseline/YYYYMMDD/rtos-mock`
 
 The RTOS mock JSON report now uses the same baseline vocabulary as the desktop runner for:
 

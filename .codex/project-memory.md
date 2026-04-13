@@ -191,3 +191,21 @@
 - Repository collaboration templates now have a durable required shape:
   - issues should capture the affected architecture boundary, protocol or docs impact, and representative validation or reproduction evidence
   - pull requests should capture boundary impact, required follow-through files, secret checks, and validation against the shared `make` entrypoints
+- Live validation now has a durable repository-level convention:
+  - quick reruns go under `artifacts/live-smoke/YYYYMMDD/<profile>/`
+  - comparison-worthy archived runs go under `artifacts/live-baseline/YYYYMMDD/<profile>/`
+- Preferred live-validation profile names are now:
+  - `desktop-full`
+  - `desktop-regression`
+  - `desktop-server-endpoint-preview`
+  - `rtos-mock`
+  - `samples`
+  - `web-h5-manual`
+- Canonical top-level live-run filenames should be:
+  - `report.json`
+  - `input.wav` when the run owns the input sample
+  - `agentd.log`, `agentd.err.log`, `worker.log`, and `worker.err.log` when the run owns the local stack
+- The desktop runner and RTOS mock should keep their replay-friendly `run_<id>/` subdirectories under the chosen profile root rather than inventing different archive layouts.
+- The current Windows smoke scripts now default to repository-local runbook paths:
+  - `scripts/smoke-funasr.ps1` -> `artifacts/live-smoke/YYYYMMDD/desktop-full/`
+  - `scripts/smoke-rtos-mock.ps1` -> `artifacts/live-smoke/YYYYMMDD/rtos-mock/`

@@ -10,6 +10,7 @@
 
 - Keep root decisions aligned with `AGENTS.md`.
 - Use `plan.md` for the active execution ledger and `docs/codex/execution-log-archive-2026-04.md` for older completed slices.
+- Use `docs/codex/live-validation-runbook.md` when a task needs archived live-stack evidence instead of fast local checks.
 - Mirror durable implementation changes into `.codex` logs.
 - Prefer the shared `Makefile` and repository scripts over ad hoc shell sequences when a repeatable command surface exists.
 - Keep repository issue and PR templates aligned with the shared command surface and required protocol or ADR follow-through.

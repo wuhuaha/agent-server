@@ -125,7 +125,8 @@ Current planning note:
 - that slice should add an optional stronger acoustic endpoint hint path, preferably `Silero VAD`, while preserving the current tail-energy hint as the default and graceful fallback
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context
-- the next Codex harness follow-up should standardize live-validation runbooks and artifact naming without widening the current fast CI surface
+- the Codex harness now also has a canonical live-validation runbook plus artifact naming convention under `docs/codex/live-validation-runbook.md`
+- the next Codex harness follow-up should standardize Linux-side live stack bring-up helpers so the current PowerShell smoke path is no longer the only one with a one-command archived output flow
 
 ## Current Execution Log
 
@@ -178,6 +179,52 @@ Recorded follow-through:
 - added a pull-request template aligned with the repo guardrails and standard command surface
 - updated `plan.md`, `docs/codex/harness-workflow.md`, `.claude/context.md`, and `.codex/` durable records
 
+### 2026-04-13 Codex Live Validation Runbook Slice Complete
+
+- Scope:
+  - standardize how live local validation is described and archived without widening the fast CI surface
+  - define stable artifact roots, profile names, and canonical top-level filenames for smoke runs versus comparison-worthy baselines
+  - align the existing Windows smoke scripts with that artifact convention so the runbook is reflected in real tooling
+- Target files:
+  - `docs/codex/live-validation-runbook.md`
+  - `docs/codex/harness-workflow.md`
+  - `README.md`
+  - `clients/python-desktop-client/README.md`
+  - `scripts/smoke-funasr.ps1`
+  - `scripts/smoke-rtos-mock.ps1`
+  - `plan.md`
+  - `.claude/context.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - the repository has one canonical doc for live-validation run selection, artifact roots, profile names, and file layout
+  - the root harness docs point at that runbook explicitly
+  - smoke scripts default to repository-local `artifacts/live-smoke/YYYYMMDD/<profile>/` paths and canonical `report.json` naming
+  - desktop-runner and RTOS-mock docs now point users at the same artifact convention
+
+Validation recorded for this execution step:
+
+- `git diff --check`
+- `make doctor`
+- `make verify-fast`
+- PowerShell parse check for:
+  - `scripts/smoke-funasr.ps1`
+  - `scripts/smoke-rtos-mock.ps1`
+
+Observed outcome:
+
+- live validation now has one canonical naming and archiving convention instead of being spread across historical notes and one-off artifact paths
+- repository docs now distinguish clearly between `artifacts/live-smoke/` for quick reruns and `artifacts/live-baseline/` for comparison-worthy runs
+- the Windows smoke scripts now default to repository-relative artifact roots rather than historical machine-specific paths
+
+Recorded follow-through:
+
+- added `docs/codex/live-validation-runbook.md`
+- updated harness, root, and desktop-client docs to point at the same convention
+- aligned the Windows smoke scripts with repository-local artifact roots and canonical top-level filenames
+- updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
+
 ### Recent Slices Still Relevant
 
 - `2026-04-13 Codex Harness P0`
@@ -186,6 +233,9 @@ Recorded follow-through:
 - `2026-04-13 Docker Validation Follow-up`
   - validated layered compose files and the `agentd` image on this WSL2 machine, while the CPU worker image remains externally gated by large PyTorch wheel downloads
   - validation: layered `docker compose ... config` plus `docker compose ... build agentd`
+- `2026-04-13 Codex Live Validation Runbook`
+  - standardized live-validation artifact roots, profile names, top-level filenames, and smoke-script defaults
+  - validation: `git diff --check`, `make doctor`, `make verify-fast`, and PowerShell parse checks for the smoke scripts
 - `2026-04-13 Linux Dependency Install Consolidation`
   - standardized Linux bring-up under `scripts/install-linux-stack.sh` and validated `silero-vad` plus `onnxruntime` in the worker env
   - validation: `./scripts/install-linux-stack.sh --with-stream-vad`

@@ -1,13 +1,17 @@
 param(
-  [string]$OutputDir = "E:\agent-server\.codex\artifacts\smoke-funasr",
+  [string]$OutputDir = "",
   [string]$SpeechText = "hello from agent server",
   [int]$ServerPort = 8080,
   [int]$WorkerPort = 8091
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$wavPath = Join-Path $OutputDir "smoke-input.wav"
-$reportPath = Join-Path $OutputDir "runner-report.json"
+if (-not $OutputDir) {
+  $OutputDir = Join-Path $repoRoot ("artifacts\live-smoke\{0}\desktop-full" -f (Get-Date).ToString("yyyyMMdd"))
+}
+
+$wavPath = Join-Path $OutputDir "input.wav"
+$reportPath = Join-Path $OutputDir "report.json"
 $workerLog = Join-Path $OutputDir "worker.log"
 $workerErr = Join-Path $OutputDir "worker.err.log"
 $serverLog = Join-Path $OutputDir "agentd.log"

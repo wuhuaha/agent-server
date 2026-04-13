@@ -182,6 +182,8 @@ agent-server-rtos-mock --http-base http://127.0.0.1:8080 --wav .\sample.wav
 
 The desktop runner report is now also a baseline quality artifact: it records discovery metadata plus per-scenario latency metrics and a top-level `quality_summary`, so different ASR/TTS/LLM configurations can be compared across archived JSON runs.
 
+For the canonical live-validation directory layout, profile names, and archived artifact conventions, see [docs/codex/live-validation-runbook.md](docs/codex/live-validation-runbook.md).
+
 For firmware-side RTOS adaptation against the current native websocket and audio contract, see:
 
 - [RTOS client adaptation checklist](docs/protocols/rtos-client-adaptation-checklist.md)
@@ -206,6 +208,8 @@ cd E:\agent-server
 .\scripts\smoke-funasr.ps1
 .\scripts\smoke-rtos-mock.ps1 -EnableBargeIn
 ```
+
+Those smoke scripts now default to `artifacts/live-smoke/YYYYMMDD/<profile>/` under the repository root.
 
 ## Runtime Bring-Up Notes
 
