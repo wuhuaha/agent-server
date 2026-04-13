@@ -375,3 +375,15 @@
 - Problem: common repository checks were spread across README snippets and one-off shell commands, so there was no stable command surface that Codex sessions and CI could reuse consistently for environment inspection, fast validation, or Docker compose config checks.
 - Resolution: expanded `Makefile` with `doctor`, `test-go`, `test-py`, `docker-config`, `verify-fast`, and `run`; added `scripts/codex-doctor.sh`, `scripts/docker-config-check.sh`, and `scripts/verify-fast.sh`; and added a fast GitHub Actions workflow that runs the same Go, Python, and Docker-config checks. Local validation passed on this machine.
 - Status: resolved.
+
+### Root Planning Context Had Become Too Large For Fast Agent Loading
+
+- Problem: after many implementation slices, `plan.md` had grown into a 1400+ line mixed active-plan and historical ledger. That made the root planning context heavier than necessary for everyday Codex work, even after `AGENTS.md` had already been shortened.
+- Resolution: moved older completed slice history into `docs/codex/execution-log-archive-2026-04.md` and rewrote `plan.md` so it keeps only active direction, the recent execution window, and next-step notes.
+- Status: resolved.
+
+### Repository Collaboration Still Lacked Structured Issue And PR Scaffolding
+
+- Problem: even after the command surface and harness docs were standardized, future work proposals and PRs still had no shared template requiring architecture boundaries, protocol or ADR impact, or validation against the common command surface.
+- Resolution: added GitHub issue templates for bugs and architecture or feature tasks, plus a PR template that asks for boundary impact, docs follow-through, secret checks, and validation with the shared `make` entrypoints.
+- Status: resolved.

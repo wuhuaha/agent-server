@@ -567,3 +567,13 @@
   - `make doctor`
   - `make docker-config`
   - `make verify-fast`
+- Reduced top-level planning weight for future Codex sessions:
+  - archived older completed execution slices into `docs/codex/execution-log-archive-2026-04.md`
+  - rewrote `plan.md` so the root ledger keeps active direction plus only a small recent execution window
+  - updated `docs/codex/harness-workflow.md` and `.claude/context.md` to point agents at the archive explicitly
+- Added repository collaboration templates aligned with the guardrails:
+  - added `.github/ISSUE_TEMPLATE/bug-report.md`
+  - added `.github/ISSUE_TEMPLATE/architecture-task.md`
+  - added `.github/ISSUE_TEMPLATE/config.yml`
+  - added `.github/pull_request_template.md`
+  - made boundary impact, protocol/docs follow-through, and validation commands first-class in the template flow

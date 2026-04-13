@@ -184,3 +184,10 @@
 - `make verify-fast` is the preferred combined local check. It runs Go tests, Python desktop-client tests, and Docker compose config expansion only when the Docker daemon is reachable.
 - `make docker-config` is the strict Docker validation entrypoint and may require the same unrestricted daemon-access context as other local Docker operations on this machine.
 - The fast CI surface should stay limited to stable repository checks: Go tests, Python desktop-client tests, and layered Docker compose config validation. Do not widen it into heavy live ASR/TTS/GPU checks by default.
+- `plan.md` should remain a short active ledger. Older completed slices now belong in `docs/codex/execution-log-archive-2026-04.md` instead of accumulating indefinitely at the repository root.
+- The Codex-facing workflow docs should point agents to both files explicitly:
+  - `plan.md` for current direction
+  - `docs/codex/execution-log-archive-2026-04.md` for older execution history
+- Repository collaboration templates now have a durable required shape:
+  - issues should capture the affected architecture boundary, protocol or docs impact, and representative validation or reproduction evidence
+  - pull requests should capture boundary impact, required follow-through files, secret checks, and validation against the shared `make` entrypoints

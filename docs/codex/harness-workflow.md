@@ -51,6 +51,8 @@ For Linux dependency preparation:
 
 - Current milestone and execution ledger:
   - `plan.md`
+- Historical execution archive:
+  - `docs/codex/execution-log-archive-2026-04.md`
 - Architecture:
   - `docs/architecture/overview.md`
   - `docs/architecture/agent-runtime-core.md`
@@ -86,6 +88,12 @@ The richer manual and scripted validation assets live here:
   - `.codex/issues-and-resolutions.md`
   - `.codex/project-memory.md`
 
+## Collaboration Templates
+
+- Use `.github/ISSUE_TEMPLATE/bug-report.md` for regressions, runtime failures, or deployment breakage.
+- Use `.github/ISSUE_TEMPLATE/architecture-task.md` for planned feature, refactor, or migration slices.
+- Use `.github/pull_request_template.md` to keep boundary, protocol, docs, and validation follow-through aligned with the repo guardrails.
+
 ## Working Rules
 
 - Do not bypass `internal/agent` or `internal/voice` from adapters.
@@ -98,5 +106,5 @@ The richer manual and scripted validation assets live here:
 These are known next-step improvements:
 
 - GitHub Actions currently covers only fast checks; live ASR/TTS smokes are still manual.
-- `plan.md` is still history-heavy and should be split further when the execution log grows again.
+- live-validation runbooks and archived artifact naming are still less standardized than the fast local command surface.
 - CPU worker image builds still depend on stable access to large PyTorch wheels.
