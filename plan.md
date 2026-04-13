@@ -124,6 +124,7 @@ Current planning note:
 - the next `L2` hardening slice should strengthen local endpoint evidence inside the Python FunASR worker rather than widening the public realtime contract
 - that slice should add an optional stronger acoustic endpoint hint path, preferably `Silero VAD`, while preserving the current tail-energy hint as the default and graceful fallback
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
+- the next Codex harness follow-up should keep top-level agent context thin, move deeper execution guidance into `docs/codex/`, and expose a stable repo command surface through `Makefile`, `scripts/`, and fast CI
 
 ## Current Execution Log
 
@@ -510,6 +511,59 @@ Recorded follow-through:
 - removed the unused worker-side apt system-package layer from the CPU FunASR image
 - added proxy build-arg passthrough in compose and worker Dockerfile so constrained-network hosts can reuse standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
 - updated Docker deployment documentation with build-network notes and remaining worker-network caveat
+
+### 2026-04-13 Codex Harness P0 Slice Complete
+
+- Scope:
+  - reduce the top-level agent instruction weight so coding agents load the repo guardrails faster
+  - move deeper Codex execution guidance into a dedicated `docs/codex/` document instead of keeping it in `AGENTS.md`
+  - expose a stable repository command surface for common validation and bring-up paths
+  - add a fast CI path that exercises the same shared repo entrypoints
+- Target files:
+  - `AGENTS.md`
+  - `docs/codex/harness-workflow.md`
+  - `Makefile`
+  - `scripts/codex-doctor.sh`
+  - `scripts/docker-config-check.sh`
+  - `scripts/verify-fast.sh`
+  - `.github/workflows/ci.yml`
+  - `README.md`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+  - `.claude/context.md`
+- Acceptance for this execution step:
+  - `AGENTS.md` stays focused on mission, priorities, guardrails, follow-through, command surface, and context map
+  - deeper Codex workflow notes live under `docs/codex/`
+  - common local verification paths are available through stable `make` and `scripts/` entrypoints
+  - fast CI checks the same Go, Python, and Docker-config surfaces that local Codex sessions are expected to use
+
+Validation recorded for this execution step:
+
+- `bash -n scripts/codex-doctor.sh`
+- `bash -n scripts/docker-config-check.sh`
+- `bash -n scripts/verify-fast.sh`
+- `make test-go`
+- `make test-py`
+- `make doctor`
+- `make docker-config`
+- `make verify-fast`
+
+Observed outcome:
+
+- the new `make` command surface works locally for Go tests, Python desktop-client tests, Docker compose config validation, and combined fast verification
+- `docs/codex/harness-workflow.md` now holds the deeper Codex-specific execution guidance so `AGENTS.md` can stay short and high-signal
+- Docker compose validation on this machine still requires the same unrestricted daemon access context used for prior Docker bring-up, so `make docker-config` is the strict check while `make verify-fast` skips Docker only when the daemon is unavailable
+
+Recorded follow-through:
+
+- shortened `AGENTS.md` into a repo-specific high-signal instruction file
+- added `docs/codex/harness-workflow.md` as the deeper Codex workflow reference
+- expanded `Makefile` with `doctor`, `test-go`, `test-py`, `docker-config`, `verify-fast`, and `bootstrap-linux`
+- added repository helper scripts for environment inspection and fast validation
+- added a GitHub Actions workflow covering Go tests, Python desktop-client tests, and Docker compose config expansion
+- updated `README.md`, `plan.md`, `.codex/`, and `.claude/context.md` to align on the same entrypoints
 
 ### 2026-04-05 P1-1 Complete
 

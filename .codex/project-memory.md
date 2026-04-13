@@ -172,3 +172,15 @@
 - When a lexically complete partial also carries a provider endpoint hint, the shared turn detector may use a shorter endpoint window; incomplete partials still stay on the conservative hold path.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.
 - Duplicate late client commit after a server auto-commit now needs guarding at the adapter layer; native realtime rejects `audio.in.commit` unless the session is currently `active`, and `xiaozhi` ignores late `listen.stop` once the turn has already advanced.
+- `AGENTS.md` should remain intentionally short. Put only hard guardrails, repo priorities, required follow-through, standard entrypoints, and the doc context map at the top level.
+- Deeper Codex workflow guidance now lives in `docs/codex/harness-workflow.md` so agents can load it on demand instead of carrying a large top-level instruction block.
+- The standard repository command surface for coding sessions is now:
+  - `make doctor`
+  - `make test-go`
+  - `make test-py`
+  - `make docker-config`
+  - `make verify-fast`
+  - `make run`
+- `make verify-fast` is the preferred combined local check. It runs Go tests, Python desktop-client tests, and Docker compose config expansion only when the Docker daemon is reachable.
+- `make docker-config` is the strict Docker validation entrypoint and may require the same unrestricted daemon-access context as other local Docker operations on this machine.
+- The fast CI surface should stay limited to stable repository checks: Go tests, Python desktop-client tests, and layered Docker compose config validation. Do not widen it into heavy live ASR/TTS/GPU checks by default.

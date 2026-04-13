@@ -550,3 +550,20 @@
   - removed the unused apt system-package layer from the CPU FunASR worker image
   - added proxy build-arg passthrough for compose and the worker Dockerfile, plus a higher default `pip` timeout for large wheel downloads
 - Updated Docker-facing documentation with the new build-network behavior and the remaining worker-image network caveat.
+- Reduced the top-level Codex instruction weight:
+  - rewrote `AGENTS.md` into a short repo-specific guardrail and entrypoint file
+  - moved deeper Codex execution guidance into `docs/codex/harness-workflow.md`
+  - added a context map so large changes can load the right docs instead of carrying a long top-level instruction dump
+- Standardized the repository command surface for local coding sessions:
+  - expanded `Makefile` with `doctor`, `test-go`, `test-py`, `docker-config`, `verify-fast`, and `bootstrap-linux`
+  - added `scripts/codex-doctor.sh`, `scripts/docker-config-check.sh`, and `scripts/verify-fast.sh`
+  - updated `README.md` and `.claude/context.md` to point at those shared entrypoints
+- Added a fast CI lane aligned with the same local entrypoints:
+  - added `.github/workflows/ci.yml`
+  - wired GitHub Actions to run Go tests, Python desktop-client tests, and layered Docker compose config validation
+- Completed local validation for the new harness surface:
+  - `make test-go`
+  - `make test-py`
+  - `make doctor`
+  - `make docker-config`
+  - `make verify-fast`

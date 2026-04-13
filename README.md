@@ -23,15 +23,19 @@ Current priorities:
 - `docs/architecture`: architecture notes and boundaries.
 - `docs/protocols`: protocol contracts and compatibility notes.
 - `docs/adr`: architecture decision records.
+- `docs/codex`: Codex-facing workflow, harness entrypoints, and repo execution guidance.
 - `.codex`: Codex-facing memory, logs, and project-local skills.
 - `.claude`: Claude-facing context, commands, and review roles.
 
 ## Quick Start
 
+For the Codex-facing repository workflow, start with [docs/codex/harness-workflow.md](docs/codex/harness-workflow.md).
+
 ```bash
 ./scripts/install-linux-stack.sh
-go test ./...
-go run ./cmd/agentd
+make doctor
+make verify-fast
+make run
 ```
 
 On Linux, the new install entrypoint audits and installs the repository-local dependency layers:
@@ -50,6 +54,17 @@ If you only want to prepare the FunASR worker env and leave desktop-client insta
 
 ```bash
 ./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
+```
+
+The standard local validation and bring-up entrypoints are now:
+
+```bash
+make doctor
+make test-go
+make test-py
+make docker-config
+make verify-fast
+make run
 ```
 
 Then open:

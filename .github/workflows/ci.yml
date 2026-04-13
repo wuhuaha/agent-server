@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    env:
+      GOPROXY: https://goproxy.cn,direct
+      GOSUMDB: sum.golang.google.cn
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests
+        run: make test-go
+
+  python-desktop-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install desktop-client test dependency
+        run: python -m pip install "websockets>=15.0,<16.0"
+
+      - name: Run desktop-client tests
+        run: make test-py
+
+  docker-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Docker Compose version
+        run: docker compose version
+
+      - name: Validate layered compose files
+        run: make docker-config

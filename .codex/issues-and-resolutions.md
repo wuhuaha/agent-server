@@ -363,3 +363,15 @@
 - Problem: after base-image and apt issues were resolved, the CPU worker image still failed intermittently while downloading the large `torch 2.11.0+cpu` wheel from `download-r2.pytorch.org`, ending with `incomplete-download` after repeated resume attempts.
 - Resolution: added proxy-environment passthrough to the worker Dockerfile and compose build args, plus a higher `pip` default timeout. That improved the build path and got validation through bootstrap pip setup plus into the PyTorch stage, but the final wheel download still depends on external network quality on this machine.
 - Status: open environment caveat.
+
+### Top-Level Agent Instructions Had Become Too Heavy For Reliable Codex Use
+
+- Problem: the repository-level `AGENTS.md` had accumulated a large imported baseline plus project-specific rules, which made the top-level instruction surface noisy and reduced the chance that coding agents would quickly load only the repo-critical guardrails before starting work.
+- Resolution: rewrote `AGENTS.md` into a short high-signal file containing the repo mission, priority order, guardrails, required follow-through, standard command surface, and context map. Moved deeper Codex execution guidance into `docs/codex/harness-workflow.md`.
+- Status: resolved.
+
+### Validation Entry Points Were Fragmented Across Ad Hoc Commands
+
+- Problem: common repository checks were spread across README snippets and one-off shell commands, so there was no stable command surface that Codex sessions and CI could reuse consistently for environment inspection, fast validation, or Docker compose config checks.
+- Resolution: expanded `Makefile` with `doctor`, `test-go`, `test-py`, `docker-config`, `verify-fast`, and `run`; added `scripts/codex-doctor.sh`, `scripts/docker-config-check.sh`, and `scripts/verify-fast.sh`; and added a fast GitHub Actions workflow that runs the same Go, Python, and Docker-config checks. Local validation passed on this machine.
+- Status: resolved.

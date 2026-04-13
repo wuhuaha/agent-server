@@ -11,6 +11,7 @@
 - Keep root decisions aligned with `AGENTS.md`.
 - Use `plan.md` as the current execution ledger.
 - Mirror durable implementation changes into `.codex` logs.
+- Prefer the shared `Makefile` and repository scripts over ad hoc shell sequences when a repeatable command surface exists.
 
 ## Current Constraints
 
