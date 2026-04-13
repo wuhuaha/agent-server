@@ -211,6 +211,15 @@ cd E:\agent-server
 
 Those smoke scripts now default to `artifacts/live-smoke/YYYYMMDD/<profile>/` under the repository root.
 
+On Linux, the equivalent archived-output smoke helpers are:
+
+```bash
+./scripts/smoke-funasr.sh
+./scripts/smoke-rtos-mock.sh --enable-barge-in
+```
+
+If you do not provide `--wav`, the Linux helpers generate a silence `input.wav` so the live stack can still be exercised without an external sample.
+
 ## Runtime Bring-Up Notes
 
 The bootstrap runtime now ships with first real in-process backends behind the shared `internal/agent` contracts:

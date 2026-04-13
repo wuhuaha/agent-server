@@ -110,5 +110,5 @@ The richer manual and scripted validation assets live here:
 These are known next-step improvements:
 
 - GitHub Actions currently covers only fast checks; live ASR/TTS smokes are still manual.
-- Linux-side one-command live stack bring-up is still less standardized than the current Windows PowerShell smoke path.
+- Web/H5 manual capture is still less standardized than the current desktop and RTOS live-smoke helpers.
 - CPU worker image builds still depend on stable access to large PyTorch wheels.

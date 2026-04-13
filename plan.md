@@ -126,7 +126,8 @@ Current planning note:
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context
 - the Codex harness now also has a canonical live-validation runbook plus artifact naming convention under `docs/codex/live-validation-runbook.md`
-- the next Codex harness follow-up should standardize Linux-side live stack bring-up helpers so the current PowerShell smoke path is no longer the only one with a one-command archived output flow
+- Linux-side archived-output live-smoke helpers now exist alongside the PowerShell scripts
+- the next Codex harness follow-up should standardize Web/H5 manual capture and artifact attachment so browser-side validation evidence is as structured as desktop and RTOS runs
 
 ## Current Execution Log
 
@@ -223,6 +224,52 @@ Recorded follow-through:
 - added `docs/codex/live-validation-runbook.md`
 - updated harness, root, and desktop-client docs to point at the same convention
 - aligned the Windows smoke scripts with repository-local artifact roots and canonical top-level filenames
+
+### 2026-04-13 Codex Linux Live-Smoke Helper Slice Complete
+
+- Scope:
+  - give Linux the same one-command archived-output smoke path that Windows already had through PowerShell scripts
+  - keep the helper behavior aligned with the live-validation runbook instead of inventing a second artifact layout
+  - avoid widening the fast CI surface; this slice should stay in the manual live-validation tier
+- Target files:
+  - `scripts/smoke-funasr.sh`
+  - `scripts/smoke-rtos-mock.sh`
+  - `docs/codex/live-validation-runbook.md`
+  - `docs/codex/harness-workflow.md`
+  - `README.md`
+  - `clients/python-desktop-client/README.md`
+  - `plan.md`
+  - `.claude/context.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - Linux has one-command smoke helpers for desktop runner and RTOS mock flows
+  - those helpers default to `artifacts/live-smoke/YYYYMMDD/<profile>/` under the repository root
+  - root docs and runbook clearly describe Linux and Windows parity for archived-output smoke runs
+  - helper scripts pass syntax validation and the standard fast command surface still passes afterward
+
+Validation recorded for this execution step:
+
+- `bash -n scripts/smoke-funasr.sh`
+- `bash -n scripts/smoke-rtos-mock.sh`
+- `./scripts/smoke-funasr.sh --help`
+- `./scripts/smoke-rtos-mock.sh --help`
+- `git diff --check`
+- `make doctor`
+- `make verify-fast`
+
+Observed outcome:
+
+- Linux now has repository-local one-command smoke helpers for both desktop and RTOS mock paths
+- the runbook's live-smoke artifact roots are now reflected in real tooling on both Windows and Linux
+- when no speech sample is provided, the Linux helpers generate a silence `input.wav` so the end-to-end stack can still be exercised without external files
+
+Recorded follow-through:
+
+- added `scripts/smoke-funasr.sh`
+- added `scripts/smoke-rtos-mock.sh`
+- updated the runbook, harness docs, root README, desktop-client README, and durable repo records
 - updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
 
 ### Recent Slices Still Relevant
@@ -236,6 +283,9 @@ Recorded follow-through:
 - `2026-04-13 Codex Live Validation Runbook`
   - standardized live-validation artifact roots, profile names, top-level filenames, and smoke-script defaults
   - validation: `git diff --check`, `make doctor`, `make verify-fast`, and PowerShell parse checks for the smoke scripts
+- `2026-04-13 Codex Linux Live-Smoke Helpers`
+  - added Linux one-command archived-output smoke helpers for desktop runner and RTOS mock flows
+  - validation: `bash -n`, `--help`, `make doctor`, and `make verify-fast`
 - `2026-04-13 Linux Dependency Install Consolidation`
   - standardized Linux bring-up under `scripts/install-linux-stack.sh` and validated `silero-vad` plus `onnxruntime` in the worker env
   - validation: `./scripts/install-linux-stack.sh --with-stream-vad`

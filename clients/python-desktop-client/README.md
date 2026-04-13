@@ -64,6 +64,7 @@ Recommended live artifact root:
 
 - quick smoke: `artifacts/live-smoke/YYYYMMDD/desktop-full`
 - archived comparison run: `artifacts/live-baseline/YYYYMMDD/desktop-regression`
+- one-command local stack helper on Linux: `./scripts/smoke-funasr.sh`
 
 The JSON report now includes:
 
@@ -126,6 +127,7 @@ Recommended live artifact root:
 
 - quick smoke: `artifacts/live-smoke/YYYYMMDD/rtos-mock`
 - archived comparison run: `artifacts/live-baseline/YYYYMMDD/rtos-mock`
+- one-command local stack helper on Linux: `./scripts/smoke-rtos-mock.sh --enable-barge-in`
 
 The RTOS mock JSON report now uses the same baseline vocabulary as the desktop runner for:
 

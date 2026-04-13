@@ -586,3 +586,13 @@
   - `scripts/smoke-funasr.ps1` now defaults to repository-local `artifacts/live-smoke/YYYYMMDD/desktop-full/`
   - `scripts/smoke-rtos-mock.ps1` now defaults to repository-local `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
   - both scripts now use canonical top-level names such as `input.wav` and `report.json`
+- Added Linux one-command live-smoke helpers aligned with the same runbook:
+  - added `scripts/smoke-funasr.sh`
+  - added `scripts/smoke-rtos-mock.sh`
+  - both helpers start the local worker and `agentd`, write repository-local archived outputs, and stop the stack afterward
+  - both helpers default to canonical roots under `artifacts/live-smoke/YYYYMMDD/<profile>/`
+- Updated docs for Linux and Windows parity:
+  - updated `README.md`
+  - updated `clients/python-desktop-client/README.md`
+  - updated `docs/codex/live-validation-runbook.md`
+  - updated `docs/codex/harness-workflow.md`

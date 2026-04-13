@@ -120,6 +120,15 @@ Windows one-command smokes now default to:
 - `scripts/smoke-rtos-mock.ps1`
   - `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
 
+Linux one-command smokes now default to the same profile roots:
+
+- `scripts/smoke-funasr.sh`
+  - `artifacts/live-smoke/YYYYMMDD/desktop-full/`
+- `scripts/smoke-rtos-mock.sh`
+  - `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
+
+If no `--wav` is provided, the Linux helpers generate a local silence `input.wav` so the stack can still be exercised end to end without an external sample file.
+
 ## Runbook Selection
 
 Choose the smallest live path that proves the change:

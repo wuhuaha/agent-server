@@ -209,3 +209,8 @@
 - The current Windows smoke scripts now default to repository-local runbook paths:
   - `scripts/smoke-funasr.ps1` -> `artifacts/live-smoke/YYYYMMDD/desktop-full/`
   - `scripts/smoke-rtos-mock.ps1` -> `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
+- Linux now has repository-local archived-output smoke helpers with the same runbook roots:
+  - `scripts/smoke-funasr.sh` -> `artifacts/live-smoke/YYYYMMDD/desktop-full/`
+  - `scripts/smoke-rtos-mock.sh` -> `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
+- The Linux helpers start the local FunASR worker and `agentd`, run the desktop runner or RTOS mock, archive outputs, and stop the local stack afterward.
+- If no speech WAV is provided to the Linux helpers, they generate a silence `input.wav` so the end-to-end stack can still be exercised without an external sample file.

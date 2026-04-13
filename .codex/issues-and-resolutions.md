@@ -393,3 +393,9 @@
 - Problem: the repository had working live validation tools, but the archived outputs still mixed historical locations such as `.codex/artifacts/*`, ad hoc `report.json` paths, and handwritten references in docs. That made it harder to compare runs or tell which artifact directories were baseline-quality versus quick smoke output.
 - Resolution: added `docs/codex/live-validation-runbook.md` and standardized two artifact roots: `artifacts/live-smoke/YYYYMMDD/<profile>/` for quick local reruns and `artifacts/live-baseline/YYYYMMDD/<profile>/` for comparison-worthy archived runs. Also aligned the Windows smoke scripts with repository-local paths plus canonical top-level names such as `input.wav` and `report.json`.
 - Status: resolved.
+
+### Linux Still Lacked A One-Command Archived-Output Live-Smoke Path
+
+- Problem: after the runbook and artifact naming conventions were standardized, Linux still did not have repository-local helper scripts that started the local worker and `agentd`, ran the desktop or RTOS smoke flow, and archived outputs under the canonical live-smoke roots. Windows had that path already through PowerShell scripts.
+- Resolution: added `scripts/smoke-funasr.sh` and `scripts/smoke-rtos-mock.sh`, both aligned with `artifacts/live-smoke/YYYYMMDD/<profile>/`, repository-local logging, and the existing desktop-runner or RTOS-mock archive formats.
+- Status: resolved.
