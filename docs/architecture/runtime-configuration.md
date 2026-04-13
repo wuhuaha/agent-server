@@ -9,6 +9,16 @@ This document explains the environment variables currently reserved for the firs
 - `AGENT_SERVER_NAME`: service name
 - `AGENT_SERVER_VERSION`: build or release version
 
+Startup validation note:
+
+- `agentd` now validates the composed runtime configuration before mounting handlers
+- invalid cross-domain combinations fail fast during process startup instead of surfacing later in request handling
+- current startup-time checks include:
+  - explicit `deepseek_chat` selection without a DeepSeek API key
+  - selected TTS provider without its required credentials
+  - `xiaozhi` enabled while shared realtime output is not `pcm16le`
+  - hidden server-endpoint preview enabled on a non-streaming voice provider
+
 ## Realtime Transport
 
 - `AGENT_SERVER_REALTIME_WS_PATH`: WebSocket path for RTOS profile
@@ -143,6 +153,7 @@ For `opus` device uplink, the current server path supports mono speech-oriented 
 Current internal endpoint-preview note:
 
 - when `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true`, websocket adapters may start an internal input-preview session behind the shared `internal/voice` boundary and auto-commit an audio turn after a local silence window
+- preview polling, auto-commit suggestions, playout interruption, playout completion, and heard-text persistence now all flow through one shared `internal/voice.SessionOrchestrator` boundary instead of being split across multiple gateway handlers
 - the first hidden endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
 - the current default hidden policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
@@ -217,6 +228,7 @@ Current implementation details:
 - the older non-streaming `wav` decode path remains as a compatibility fallback inside the synthesizer implementation
 - `iflytek_tts_ws` and `volcengine_tts` now share the same `StreamingSynthesizer` boundary, so the gateway keeps one audio pacing path regardless of provider protocol differences
 - all currently supported cloud TTS backends are normalized to realtime output `pcm16le` frames before they reach the websocket gateway
+- playback completion and interruption now also feed a shared voice-runtime memory writeback path so the runtime can distinguish generated text, delivered text, and heard text
 
 ## Docker Deployment Notes
 

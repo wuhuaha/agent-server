@@ -1,5 +1,15 @@
 # Change Log
 
+## 2026-04-13
+
+- Completed the review-driven runtime ownership refactor after the earlier shared gateway turn-flow slice.
+- Added `internal/voice.SessionOrchestrator` and moved hidden preview polling, auto-commit suggestions, playback lifecycle callbacks, and heard-text persistence behind the shared voice runtime boundary.
+- Expanded runtime memory records to distinguish generated text, delivered text, heard text, interruption state, truncation state, and playback completion.
+- Added a runtime-skill registry under `internal/agent`, moved the built-in household behavior into `HouseholdControlSkill`, and kept core builtin tools separate from skill-contributed tools.
+- Split `internal/app` config into realtime, agent, voice, TTS, and `xiaozhi` domain files, added `Config.Validate()`, and made `NewServer(...)` fail fast on invalid provider or credential combinations.
+- Added `internal/channel.RuntimeBridge`, extended the channel contracts with message or thread or idempotency metadata, and added bridge tests that cover normalize -> runtime handoff -> deliver plus delivery-status reporting.
+- Updated `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/channel-skill-contract-v0.md`, and new ADRs `0024` and `0025` to record the new ownership boundaries.
+
 ## 2026-03-25
 
 - Created the `agent-server` repository on `E:\agent-server`.

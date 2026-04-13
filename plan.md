@@ -79,11 +79,11 @@ Live smoke validation has also succeeded against a local `agentd` process for:
 - [x] Replace the no-op memory and tool implementations with real providers behind the same runtime contracts.
 - [x] Add the first optional cloud LLM-backed executor behind the same runtime boundary.
 - [x] Add a built-in household control-screen assistant prompt template and assistant-name runtime config for the LLM path.
-- [ ] Route future channel adapters through this runtime boundary instead of responder-local logic.
+- [x] Route future channel adapters through this runtime boundary instead of responder-local logic.
 
 ### M2 Channel Skill Framework
 
-- [ ] Finalize channel contract and registry around the `Agent Runtime Core` handoff.
+- [x] Finalize the shared channel contract and runtime bridge around the `Agent Runtime Core` handoff.
 - [ ] Add the first Feishu channel adapter skeleton.
 - [ ] Connect channel messages into the shared runtime turn contract.
 
@@ -129,8 +129,9 @@ Current planning note:
 - Linux-side archived-output live-smoke helpers now exist alongside the PowerShell scripts
 - the Codex harness now also has a Web/H5 manual-evidence scaffolding helper under `scripts/web-h5-manual-capture.sh`
 - the next Codex harness follow-up should decide whether browser console export and screenshot naming should stay manual or gain another lightweight helper layer
-- the next architecture refactor step after iteration 1 should move preview, interrupt arbitration, and playout ownership from gateway helpers into `internal/voice`
-- until that migration lands, native realtime and `xiaozhi` adapters should keep sharing one gateway-side turn flow instead of copying lifecycle logic again
+- the voice-runtime ownership migration is now landed: hidden preview, playout callbacks, and heard-text persistence live behind `internal/voice.SessionOrchestrator`
+- external channel follow-up should build the first Feishu adapter on top of `internal/channel.RuntimeBridge` instead of adding another adapter-local orchestration path
+- startup config is now split by runtime domain and validated before handler wiring, so future provider additions should extend `Config.Validate()` instead of relying on request-time failures
 
 ## Current Execution Log
 
@@ -366,6 +367,58 @@ Observed outcome:
 - Python entrypoints now validate `3.11+` explicitly and worker tests have their own stable make target
 - the shared command surface no longer depends on script execute bits from `Makefile`
 - gateway turn execution, interruption return-to-active, and active/end completion logic now live in shared helpers instead of separate native and `xiaozhi` copies
+
+### 2026-04-13 Review-Driven Runtime Ownership Refactor Slice Complete
+
+- Scope:
+  - finish the review-driven phase 2 to 6 refactor after the earlier gateway turn-flow sharing slice
+  - move hidden preview and playout memory ownership into `internal/voice`
+  - add heard-text persistence for interrupted spoken replies
+  - split app config by domain and fail invalid combinations at startup
+  - add the first shared channel runtime bridge so future adapters stay normalize -> handoff -> deliver
+- Target files:
+  - `internal/voice/session_orchestrator.go`
+  - `internal/agent/contracts.go`
+  - `internal/agent/runtime_skill.go`
+  - `internal/agent/runtime_skill_household.go`
+  - `internal/app/config*.go`
+  - `internal/channel/contracts.go`
+  - `internal/channel/runtime_bridge.go`
+  - `docs/architecture/overview.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/protocols/channel-skill-contract-v0.md`
+  - `docs/adr/0024-voice-runtime-owns-preview-playout-and-heard-text.md`
+  - `docs/adr/0025-channel-adapters-use-a-shared-runtime-bridge.md`
+  - `.claude/context.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - gateway adapters no longer own hidden preview or playout memory persistence
+  - memory writeback can distinguish generated, delivered, and heard text for interrupted spoken replies
+  - invalid provider combinations fail in `NewServer(...)` before handler wiring
+  - `internal/channel` exposes a shared runtime bridge that keeps adapters off provider APIs
+
+Validation recorded for this execution step:
+
+- `go test ./internal/app ./internal/agent ./internal/voice ./internal/gateway`
+- `go test ./internal/channel ./internal/app ./internal/agent ./internal/voice ./internal/gateway`
+
+Observed outcome:
+
+- hidden preview polling and playout writeback now flow through one shared `internal/voice` orchestrator
+- runtime memory now persists heard-text state for interrupted spoken output
+- runtime skills are now registry-backed instead of being hardwired into the core backend wiring
+- startup config validation now fails fast on invalid provider or credential combinations
+- the first channel handoff path is now shared and provider-neutral
+
+Recorded follow-through:
+
+- added `SessionOrchestrator` under `internal/voice`
+- extended runtime memory records with delivered or heard or truncated playback state
+- split `internal/app` config by domain and validated it at `NewServer(...)`
+- added `internal/channel.RuntimeBridge` plus delivery-status reporting primitives
+- updated architecture docs, runtime configuration docs, channel contract docs, and ADRs
 
 ### Recent Slices Still Relevant
 

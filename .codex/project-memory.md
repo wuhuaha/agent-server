@@ -43,6 +43,11 @@
 - The shared agent runtime now owns prompt composition as three layers: persona template, runtime output contract, and execution-mode policy.
 - `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is now treated as a persona-template override, while execution-mode policy remains runtime-owned and still gets appended.
 - The current built-in execution-mode set is `simulation`, `dry_run`, and `live_control`; transports and voice responders must stay unaware of those prompt-policy details.
+- Hidden preview polling, auto-commit suggestions, playout callbacks, and heard-text persistence now belong to `internal/voice.SessionOrchestrator`; gateway adapters only report transport events into that shared voice-runtime boundary.
+- Runtime memory records now distinguish generated response text, delivered text, heard text, interruption state, truncation state, and playback completion state so future full-duplex work can reason about what the user actually heard.
+- Runtime skills are now registry-backed under `internal/agent`; core builtin tools stay separate from skill-contributed prompt fragments and tools.
+- App startup config is now split by domain (`realtime`, `agent`, `voice`, `tts`, `xiaozhi`) and must fail fast through `Config.Validate()` when provider or credential combinations are invalid.
+- External channel adapters should now use `internal/channel.RuntimeBridge` for normalize -> runtime handoff -> deliver; channel code must not open-code provider access or its own agent orchestration.
 - The Python desktop runner report is now the first baseline quality artifact for end-to-end comparison: it records discovery metadata, per-scenario latency metrics, and a top-level `quality_summary` in archived JSON output.
 - The shared agent runtime now owns the full cloud-model tool loop: streamed text deltas, tool-call handling, tool invocation, tool-result reinjection, and loop step budgets stay inside `internal/agent`.
 - Provider-specific tool-name constraints must be absorbed inside `internal/agent`; runtime tool identities such as `session.describe` and `memory.recall` stay stable even when a model provider requires sanitized function names.

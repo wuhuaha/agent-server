@@ -1,5 +1,25 @@
 # Issues And Resolutions
 
+## 2026-04-13
+
+### Hidden Preview And Playout Ownership Was Still Split Between Gateway And Voice
+
+- Problem: even after native realtime and `xiaozhi` shared one gateway turn flow, hidden preview polling, auto-commit suggestions, playback lifecycle callbacks, and memory writeback were still split between gateway helpers and `internal/voice`. That was already blocking the next full-duplex step and prevented memory from knowing what the user actually heard after interruption.
+- Resolution: added `internal/voice.SessionOrchestrator`, moved preview and playout ownership behind that shared boundary, and wired playback start or progress or interrupt or complete callbacks through it. Runtime memory now persists delivered or heard or truncated state instead of only the generated reply.
+- Status: resolved.
+
+### Invalid Runtime Configurations Still Surfaced Too Late
+
+- Problem: app config had already grown across realtime, agent, voice, TTS, and `xiaozhi`, but invalid combinations such as explicit `deepseek_chat` without a key or hidden preview on a non-streaming voice provider still surfaced only during later request handling.
+- Resolution: split `internal/app` config by domain, added `Config.Validate()`, and made `NewServer(...)` fail fast before handler wiring. Added regression coverage for the new validation paths.
+- Status: resolved.
+
+### Channel Adapters Still Had No Shared Runtime Handoff Path
+
+- Problem: `internal/channel` had only basic adapter contracts. The first real external channel would have been tempted to open-code normalize, runtime handoff, delivery, and retry metadata differently per adapter, or even call providers directly.
+- Resolution: added `internal/channel.RuntimeBridge`, extended the channel contract with message or thread or idempotency metadata, and added delivery-status reporting primitives so future adapters stay on normalize -> runtime -> deliver instead of learning provider APIs.
+- Status: resolved.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace

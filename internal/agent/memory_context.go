@@ -17,6 +17,7 @@ func buildMemoryQuery(input TurnInput, trimmedText string, metadata map[string]s
 
 func buildMemoryRecord(input TurnInput, trimmedText, responseText string, metadata map[string]string) MemoryRecord {
 	return MemoryRecord{
+		TurnID:       input.TurnID,
 		SessionID:    input.SessionID,
 		DeviceID:     input.DeviceID,
 		ClientType:   input.ClientType,
@@ -27,6 +28,10 @@ func buildMemoryRecord(input TurnInput, trimmedText, responseText string, metada
 		ResponseText: responseText,
 		Metadata:     metadata,
 	}
+}
+
+func BuildMemoryRecord(input TurnInput, trimmedText, responseText string, metadata map[string]string) MemoryRecord {
+	return buildMemoryRecord(input, trimmedText, responseText, metadata)
 }
 
 func memoryMetadataValue(metadata map[string]string, keys ...string) string {

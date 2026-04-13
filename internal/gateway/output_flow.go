@@ -141,3 +141,13 @@ func audioStreamForTurnResponse(response voice.TurnResponse) voice.AudioStream {
 	}
 	return nil
 }
+
+func plannedPlaybackDurationForResponse(response voice.TurnResponse, chunkDuration time.Duration) time.Duration {
+	if chunkDuration <= 0 {
+		return 0
+	}
+	if len(response.AudioChunks) > 0 {
+		return time.Duration(len(response.AudioChunks)) * chunkDuration
+	}
+	return 0
+}

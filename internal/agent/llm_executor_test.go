@@ -436,7 +436,7 @@ func TestLLMTurnExecutorCanComposeCustomCorePromptSectionsWithSkillSections(t *t
 	model := &recordingChatModel{
 		response: ChatModelResponse{Text: "好的。"},
 	}
-	toolBackend := NewBuiltinToolBackend(NewNoopMemoryStore()).WithSkills([]string{"household_control"})
+	toolBackend := NewRuntimeToolBackend(NewNoopMemoryStore(), []string{"household_control"})
 	executor := NewLLMTurnExecutor(model).
 		WithPromptSectionProvider(staticPromptSectionProvider{
 			sections: []PromptSection{
@@ -525,7 +525,7 @@ func TestLLMTurnExecutorDoesNotBypassModelForHouseholdControl(t *testing.T) {
 
 func TestLLMTurnExecutorUsesHouseholdSkillThroughToolLoop(t *testing.T) {
 	memoryStore := &recordingMemoryStore{}
-	toolBackend := NewBuiltinToolBackend(memoryStore).WithSkills([]string{"household_control"})
+	toolBackend := NewRuntimeToolBackend(memoryStore, []string{"household_control"})
 	model := &scriptedChatModel{
 		responses: []ChatModelResponse{
 			{

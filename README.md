@@ -16,7 +16,7 @@ Current priorities:
 - `internal/gateway`: transport adapters such as realtime device ingress.
 - `internal/session`: session state machine and turn lifecycle.
 - `internal/voice`: voice pipeline contracts and future provider adapters.
-- `internal/channel`: channel skill contracts for Feishu and similar platforms.
+- `internal/channel`: channel skill contracts plus a shared runtime bridge for Feishu and similar platforms.
 - `internal/control`: health, info, admin-oriented APIs, and built-in debug surfaces such as the Web/H5 realtime page.
 - `pkg/events`: shared event envelope types.
 - `clients/python-desktop-client`: desktop debug client for realtime protocol bring-up.

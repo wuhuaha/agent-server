@@ -12,13 +12,13 @@ func TestInMemoryMemoryStoreKeepsRecentTurns(t *testing.T) {
 	store := NewInMemoryMemoryStore(2)
 	ctx := context.Background()
 
-	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_1", DeviceID: "rtos-1", UserText: "hello", ResponseText: "hi"}); err != nil {
+	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_1", TurnID: "turn_1", DeviceID: "rtos-1", UserText: "hello", ResponseText: "hi", DeliveredText: "hi", HeardText: "hi", PlaybackCompleted: true}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
-	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_2", DeviceID: "rtos-1", UserText: "how are you", ResponseText: "fine"}); err != nil {
+	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_2", TurnID: "turn_2", DeviceID: "rtos-1", UserText: "how are you", ResponseText: "fine", DeliveredText: "fine", HeardText: "fine", PlaybackCompleted: true}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
-	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_3", DeviceID: "rtos-1", UserText: "bye", ResponseText: "goodbye"}); err != nil {
+	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_3", TurnID: "turn_3", DeviceID: "rtos-1", UserText: "bye", ResponseText: "goodbye", DeliveredText: "goodbye", HeardText: "goodbye", PlaybackCompleted: true}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
 
@@ -51,22 +51,30 @@ func TestInMemoryMemoryStoreCanRecallUserScopedHistory(t *testing.T) {
 	ctx := context.Background()
 
 	if err := store.SaveTurn(ctx, MemoryRecord{
-		SessionID:    "sess_1",
-		DeviceID:     "shared-panel",
-		UserID:       "alice",
-		HouseholdID:  "home-1",
-		UserText:     "打开客厅灯",
-		ResponseText: "好的，已经打开客厅灯。",
+		SessionID:         "sess_1",
+		TurnID:            "turn_1",
+		DeviceID:          "shared-panel",
+		UserID:            "alice",
+		HouseholdID:       "home-1",
+		UserText:          "打开客厅灯",
+		ResponseText:      "好的，已经打开客厅灯。",
+		DeliveredText:     "好的，已经打开客厅灯。",
+		HeardText:         "好的，已经打开客厅灯。",
+		PlaybackCompleted: true,
 	}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
 	if err := store.SaveTurn(ctx, MemoryRecord{
-		SessionID:    "sess_2",
-		DeviceID:     "shared-panel",
-		UserID:       "alice",
-		HouseholdID:  "home-1",
-		UserText:     "再暗一点",
-		ResponseText: "好的，已经调暗一些。",
+		SessionID:         "sess_2",
+		TurnID:            "turn_2",
+		DeviceID:          "shared-panel",
+		UserID:            "alice",
+		HouseholdID:       "home-1",
+		UserText:          "再暗一点",
+		ResponseText:      "好的，已经调暗一些。",
+		DeliveredText:     "好的，已经调暗一些。",
+		HeardText:         "好的，已经调暗一些。",
+		PlaybackCompleted: true,
 	}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
@@ -98,7 +106,7 @@ func TestInMemoryMemoryStoreCanRecallUserScopedHistory(t *testing.T) {
 func TestBuiltinToolBackendListsAndInvokesTools(t *testing.T) {
 	store := NewInMemoryMemoryStore(4)
 	ctx := context.Background()
-	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_1", DeviceID: "rtos-1", UserText: "hello", ResponseText: "hi"}); err != nil {
+	if err := store.SaveTurn(ctx, MemoryRecord{SessionID: "sess_1", TurnID: "turn_1", DeviceID: "rtos-1", UserText: "hello", ResponseText: "hi", DeliveredText: "hi", HeardText: "hi", PlaybackCompleted: true}); err != nil {
 		t.Fatalf("SaveTurn failed: %v", err)
 	}
 
@@ -154,7 +162,7 @@ func TestBuiltinToolBackendListsAndInvokesTools(t *testing.T) {
 }
 
 func TestBuiltinToolBackendCanExposeHouseholdControlSkill(t *testing.T) {
-	backend := NewBuiltinToolBackend(NewNoopMemoryStore()).WithSkills([]string{"household_control"})
+	backend := NewRuntimeToolBackend(NewNoopMemoryStore(), []string{"household_control"})
 
 	tools, err := backend.ListTools(context.Background(), ToolCatalogRequest{})
 	if err != nil {
@@ -196,5 +204,70 @@ func TestBuiltinToolBackendCanExposeHouseholdControlSkill(t *testing.T) {
 	}
 	if payload["goal"] != "打开客厅灯光" {
 		t.Fatalf("expected normalized goal, got %+v", payload)
+	}
+}
+
+func TestInMemoryMemoryStoreUsesHeardTextForRecentMessages(t *testing.T) {
+	store := NewInMemoryMemoryStore(4)
+	ctx := context.Background()
+
+	if err := store.SaveTurn(ctx, MemoryRecord{
+		SessionID:           "sess_1",
+		TurnID:              "turn_1",
+		DeviceID:            "rtos-1",
+		UserText:            "讲个笑话",
+		ResponseText:        "这里有一个很长很长的笑话。",
+		DeliveredText:       "这里有一个很长很长的笑话。",
+		HeardText:           "这里有一个很长",
+		ResponseInterrupted: true,
+		ResponseTruncated:   true,
+		PlaybackCompleted:   false,
+	}); err != nil {
+		t.Fatalf("SaveTurn failed: %v", err)
+	}
+
+	memoryContext, err := store.LoadTurnContext(ctx, MemoryQuery{DeviceID: "rtos-1"})
+	if err != nil {
+		t.Fatalf("LoadTurnContext failed: %v", err)
+	}
+	if len(memoryContext.RecentMessages) != 2 {
+		t.Fatalf("expected user and partial assistant messages, got %+v", memoryContext.RecentMessages)
+	}
+	if got := memoryContext.RecentMessages[1].Content; got != "这里有一个很长" {
+		t.Fatalf("expected heard assistant text, got %q", got)
+	}
+}
+
+func TestInMemoryMemoryStoreUpsertsTurnByTurnID(t *testing.T) {
+	store := NewInMemoryMemoryStore(4)
+	ctx := context.Background()
+
+	record := MemoryRecord{
+		SessionID:     "sess_1",
+		TurnID:        "turn_1",
+		DeviceID:      "rtos-1",
+		UserText:      "打开客厅灯",
+		ResponseText:  "好的，已经打开客厅灯。",
+		DeliveredText: "好的，已经打开客厅灯。",
+	}
+	if err := store.SaveTurn(ctx, record); err != nil {
+		t.Fatalf("SaveTurn failed: %v", err)
+	}
+	record.HeardText = "好的，已经打开"
+	record.ResponseInterrupted = true
+	record.ResponseTruncated = true
+	if err := store.SaveTurn(ctx, record); err != nil {
+		t.Fatalf("SaveTurn update failed: %v", err)
+	}
+
+	memoryContext, err := store.LoadTurnContext(ctx, MemoryQuery{DeviceID: "rtos-1"})
+	if err != nil {
+		t.Fatalf("LoadTurnContext failed: %v", err)
+	}
+	if len(memoryContext.RecentMessages) != 2 {
+		t.Fatalf("expected one updated turn in recent messages, got %+v", memoryContext.RecentMessages)
+	}
+	if got := memoryContext.RecentMessages[1].Content; got != "好的，已经打开" {
+		t.Fatalf("expected updated heard text, got %q", got)
 	}
 }

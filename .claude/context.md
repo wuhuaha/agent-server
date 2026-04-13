@@ -24,4 +24,5 @@
 - Protocol fields must still leave room for future auth and capability negotiation.
 - Realtime session control must support both client-driven and server-driven end-of-dialog.
 - The baseline Docker deployment path must keep `agentd` and the local FunASR worker in separate containers instead of collapsing runtime boundaries for convenience.
-- Gateway adapters should share one turn and output lifecycle path until preview and playout ownership move into `internal/voice`.
+- Hidden preview, playout lifecycle, and heard-text persistence now live behind `internal/voice.SessionOrchestrator`; gateway adapters should report transport events into that boundary instead of rebuilding orchestration locally.
+- Future external messaging adapters should build on `internal/channel.RuntimeBridge` so they stay normalize -> runtime handoff -> deliver adapters over the shared `Agent Runtime Core`.

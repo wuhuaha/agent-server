@@ -98,15 +98,21 @@ type MemoryContext struct {
 }
 
 type MemoryRecord struct {
-	SessionID    string
-	DeviceID     string
-	ClientType   string
-	UserID       string
-	RoomID       string
-	HouseholdID  string
-	UserText     string
-	ResponseText string
-	Metadata     map[string]string
+	TurnID              string
+	SessionID           string
+	DeviceID            string
+	ClientType          string
+	UserID              string
+	RoomID              string
+	HouseholdID         string
+	UserText            string
+	ResponseText        string
+	DeliveredText       string
+	HeardText           string
+	ResponseInterrupted bool
+	ResponseTruncated   bool
+	PlaybackCompleted   bool
+	Metadata            map[string]string
 }
 
 type MemoryStore interface {

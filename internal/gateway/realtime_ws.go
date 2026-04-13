@@ -181,7 +181,7 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(int64(readLimit))
 
 	peer := &wsPeer{conn: conn}
-	runtime := newConnectionRuntime(conn, peer, session.NewRealtimeSession())
+	runtime := newConnectionRuntime(conn, peer, session.NewRealtimeSession(), h.responder)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	defer runtime.interruptOutput(50 * time.Millisecond)
@@ -648,7 +648,18 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 	if err != nil {
 		return h.terminateWithError(runtime, "response_generation_failed", err.Error())
 	}
-	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.Response)
+	inputText := strings.TrimSpace(result.Response.InputText)
+	if inputText == "" {
+		inputText = strings.TrimSpace(text)
+	}
+	deliveredText := strings.TrimSpace(result.AggregatedText)
+	if deliveredText == "" {
+		deliveredText = strings.TrimSpace(result.Response.Text)
+	}
+	if runtime.voiceSession != nil {
+		runtime.voiceSession.PrepareTurn(request, inputText, strings.TrimSpace(result.Response.Text))
+	}
+	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.Response, deliveredText)
 }
 
 func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, trace turnTrace, text string) voice.TurnRequest {
@@ -701,8 +712,8 @@ func responseModalities(deltas []voice.ResponseDelta, response voice.TurnRespons
 	return modalities
 }
 
-func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, trace turnTrace, response voice.TurnResponse) error {
-	return finalizeTurnLifecycle(trace, response, "", turnFinalizeHooks{
+func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, trace turnTrace, response voice.TurnResponse, deliveredText string) error {
+	return finalizeTurnLifecycle(trace, response, deliveredText, turnFinalizeHooks{
 		Completion: turnCompletionHooks{
 			Runtime:   runtime,
 			Profile:   h.profile,
@@ -719,7 +730,16 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 				return h.endSession(runtime, reason, message)
 			},
 		},
+		BeforeNoAudio: func(_ turnTrace, _ voice.TurnResponse, aggregatedText string) error {
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.FinalizeTextResponse(aggregatedText)
+			}
+			return nil
+		},
 		BeforeSpeaking: func(trace turnTrace) error {
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.StartPlayback(deliveredText, outputFrameInterval, plannedPlaybackDurationForResponse(response, outputFrameInterval))
+			}
 			return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{
 				State:  session.StateSpeaking,
 				TurnID: trace.TurnID,
@@ -768,6 +788,9 @@ func (h *realtimeWSHandler) startAudioStream(
 				}
 				current := runtime.session.Snapshot()
 				if current.SessionID == sessionID && current.State == session.StateSpeaking {
+					if runtime.voiceSession != nil {
+						runtime.voiceSession.InterruptPlayback()
+					}
 					logTurnTraceError(h.logger, "gateway turn audio stream failed", sessionID, runtime.turnTrace.Current(), err)
 					_ = runtime.peer.WriteEvent(events.TypeError, sessionID, errorPayload{Code: "audio_stream_failed", Message: err.Error(), Recoverable: false})
 					_ = h.endSession(runtime, session.CloseReasonError, err.Error())
@@ -779,6 +802,9 @@ func (h *realtimeWSHandler) startAudioStream(
 			}
 			if err := runtime.peer.WriteBinary(chunk); err != nil {
 				return
+			}
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.ObservePlaybackChunk()
 			}
 			select {
 			case <-streamCtx.Done():
@@ -794,6 +820,9 @@ func (h *realtimeWSHandler) startAudioStream(
 		current := runtime.session.Snapshot()
 		if current.SessionID != sessionID || current.State != session.StateSpeaking {
 			return
+		}
+		if runtime.voiceSession != nil {
+			runtime.voiceSession.CompletePlayback()
 		}
 
 		if endSession {

@@ -7,7 +7,7 @@ A channel skill adapts an external platform such as Feishu into the shared sessi
 ## Responsibilities
 
 - Receive channel events.
-- Normalize user identity, thread identity, and attachments.
+- Normalize user identity, thread identity, message identity, idempotency keys, and attachments.
 - Convert inbound messages into shared session inputs.
 - Hand normalized turns to the shared runtime turn contract instead of calling model providers directly.
 - Convert outbound responses into channel-specific actions.
@@ -30,6 +30,45 @@ A channel skill adapts an external platform such as Feishu into the shared sessi
 - attachment mapping
 - delivery status reporting
 - retry and idempotency hooks
+
+The first shared implementation shape lives in `internal/channel/runtime_bridge.go` and keeps adapters on one narrow path:
+
+1. `Normalize(...)`
+2. `TurnExecutor.ExecuteTurn(...)`
+3. `Deliver(...)`
+4. `ReportDelivery(...)`
+
+Current bridge-oriented data expectations:
+
+- inbound message:
+  - channel name
+  - external message id
+  - user id
+  - thread id
+  - optional session id
+  - retry attempt
+  - idempotency key
+  - attachments
+  - adapter-local metadata
+- normalized input:
+  - session key
+  - thread key
+  - normalized message key
+  - normalized user text
+  - attachments
+  - normalized metadata
+- outbound message:
+  - channel name
+  - thread id
+  - session id
+  - reply target message id
+  - idempotency key
+  - user-facing text
+  - adapter-local delivery metadata
+- delivery status:
+  - delivered, skipped, or failed
+  - failure stage when applicable
+  - adapter, channel, session, thread, message, turn, and trace identifiers
 
 ## First Planned Target
 

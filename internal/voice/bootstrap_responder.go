@@ -13,6 +13,7 @@ type BootstrapResponder struct {
 	OutputChannels   int
 	Executor         agent.TurnExecutor
 	Synthesizer      Synthesizer
+	MemoryStore      agent.MemoryStore
 }
 
 func NewBootstrapResponder(outputCodec string, outputSampleRate, outputChannels int) BootstrapResponder {
@@ -57,6 +58,15 @@ func (r BootstrapResponder) WithTurnExecutor(executor agent.TurnExecutor) Bootst
 func (r BootstrapResponder) WithSynthesizer(s Synthesizer) BootstrapResponder {
 	r.Synthesizer = s
 	return r
+}
+
+func (r BootstrapResponder) WithMemoryStore(store agent.MemoryStore) BootstrapResponder {
+	r.MemoryStore = store
+	return r
+}
+
+func (r BootstrapResponder) NewSessionOrchestrator() *SessionOrchestrator {
+	return NewSessionOrchestrator(r.MemoryStore)
 }
 
 func bootstrapAudio(codec string, sampleRate, channels int) [][]byte {

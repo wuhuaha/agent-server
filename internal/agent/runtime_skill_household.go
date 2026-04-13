@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -115,7 +116,24 @@ func householdControlToolDefinition() ToolDefinition {
 	}
 }
 
-func (b *BuiltinToolBackend) invokeHouseholdControl(call ToolCall) (ToolResult, error) {
+type HouseholdControlSkill struct{}
+
+func (HouseholdControlSkill) Name() string {
+	return builtinSkillHouseholdControl
+}
+
+func (HouseholdControlSkill) ListTools(context.Context, ToolCatalogRequest) ([]ToolDefinition, error) {
+	return []ToolDefinition{householdControlToolDefinition()}, nil
+}
+
+func (HouseholdControlSkill) ListPromptFragments(context.Context, SkillPromptRequest) ([]string, error) {
+	return []string{householdControlSkillPrompt()}, nil
+}
+
+func (HouseholdControlSkill) InvokeTool(_ context.Context, call ToolCall) (ToolResult, bool, error) {
+	if strings.TrimSpace(call.ToolName) != householdControlSimulationToolName {
+		return ToolResult{}, false, nil
+	}
 	input, err := parseHouseholdControlToolInput(call.ToolInput)
 	if err != nil {
 		return ToolResult{
@@ -123,7 +141,7 @@ func (b *BuiltinToolBackend) invokeHouseholdControl(call ToolCall) (ToolResult, 
 			ToolName:   call.ToolName,
 			ToolStatus: "failed",
 			ToolOutput: encodeToolOutput(map[string]any{"error": err.Error()}),
-		}, nil
+		}, true, nil
 	}
 
 	result := householdControlToolResult(input)
@@ -132,7 +150,7 @@ func (b *BuiltinToolBackend) invokeHouseholdControl(call ToolCall) (ToolResult, 
 		ToolName:   call.ToolName,
 		ToolStatus: "completed",
 		ToolOutput: encodeToolOutput(result),
-	}, nil
+	}, true, nil
 }
 
 func parseHouseholdControlToolInput(raw string) (householdControlToolInput, error) {

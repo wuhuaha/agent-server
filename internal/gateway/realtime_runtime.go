@@ -23,20 +23,19 @@ type connectionRuntime struct {
 	peer            *wsPeer
 	session         *session.RealtimeSession
 	inputNormalizer voice.InputNormalizer
+	voiceSession    *voice.SessionOrchestrator
 	turnTrace       turnTraceState
 
 	outputMu sync.Mutex
 	output   *outputStream
-
-	previewMu sync.Mutex
-	preview   *inputTurnPreview
 }
 
-func newConnectionRuntime(conn *websocket.Conn, peer *wsPeer, rtSession *session.RealtimeSession) *connectionRuntime {
+func newConnectionRuntime(conn *websocket.Conn, peer *wsPeer, rtSession *session.RealtimeSession, responder voice.Responder) *connectionRuntime {
 	return &connectionRuntime{
-		conn:    conn,
-		peer:    peer,
-		session: rtSession,
+		conn:         conn,
+		peer:         peer,
+		session:      rtSession,
+		voiceSession: voice.NewSessionOrchestratorFromResponder(responder),
 	}
 }
 
@@ -77,12 +76,18 @@ func (r *connectionRuntime) interruptOutput(wait time.Duration) bool {
 		case <-time.After(wait):
 		}
 	}
+	if r.voiceSession != nil {
+		r.voiceSession.InterruptPlayback()
+	}
 	return true
 }
 
 func applyReadDeadline(runtime *connectionRuntime, snapshot session.Snapshot, profile RealtimeProfile) error {
 	deadline := readDeadlineForSnapshot(snapshot, profile)
-	previewDeadline := runtime.previewReadDeadline(time.Now().UTC())
+	previewDeadline := time.Time{}
+	if runtime.voiceSession != nil {
+		previewDeadline = runtime.voiceSession.PreviewReadDeadline(time.Now().UTC())
+	}
 	if !previewDeadline.IsZero() && (deadline.IsZero() || previewDeadline.Before(deadline)) {
 		deadline = previewDeadline
 	}

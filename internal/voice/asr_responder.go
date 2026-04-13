@@ -15,6 +15,7 @@ type ASRResponder struct {
 	Transcriber                   Transcriber
 	Executor                      agent.TurnExecutor
 	Synthesizer                   Synthesizer
+	MemoryStore                   agent.MemoryStore
 	Language                      string
 	TurnDetectionSilenceMs        int
 	TurnDetectionMinAudioMs       int
@@ -170,6 +171,11 @@ func (r ASRResponder) WithSynthesizer(s Synthesizer) ASRResponder {
 	return r
 }
 
+func (r ASRResponder) WithMemoryStore(store agent.MemoryStore) ASRResponder {
+	r.MemoryStore = store
+	return r
+}
+
 func (r ASRResponder) WithTurnDetectionConfig(cfg SilenceTurnDetectorConfig) ASRResponder {
 	r.TurnDetectionMinAudioMs = cfg.MinAudioMs
 	r.TurnDetectionSilenceMs = cfg.SilenceMs
@@ -191,6 +197,10 @@ func (r ASRResponder) WithTurnDetectionLexicalGuard(mode string, incompleteHoldM
 	cfg.LexicalEndpointMode = mode
 	cfg.IncompleteHoldMs = incompleteHoldMs
 	return r.WithTurnDetectionConfig(cfg)
+}
+
+func (r ASRResponder) NewSessionOrchestrator() *SessionOrchestrator {
+	return NewSessionOrchestrator(r.MemoryStore)
 }
 
 func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {

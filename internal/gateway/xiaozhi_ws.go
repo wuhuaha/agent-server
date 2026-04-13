@@ -168,7 +168,7 @@ func (h *xiaozhiWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(int64(readLimit))
 
 	peer := &xiaozhiJSONPeer{conn: conn}
-	runtime := newConnectionRuntime(conn, nil, session.NewRealtimeSession())
+	runtime := newConnectionRuntime(conn, nil, session.NewRealtimeSession(), h.responder)
 	versionHeader := firstNonEmpty(strings.TrimSpace(r.Header.Get("Protocol-Version")), strings.TrimSpace(r.URL.Query().Get("protocol-version")))
 	state := xiaozhiCompatState{
 		sessionID:             fmt.Sprintf("sess_xiaozhi_%d", time.Now().UTC().UnixNano()),
@@ -576,8 +576,19 @@ func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connec
 			return err
 		}
 	}
+	deliveredText := strings.TrimSpace(result.AggregatedText)
+	if deliveredText == "" {
+		deliveredText = responseTextForXiaozhi(result.Response)
+	}
+	inputText := strings.TrimSpace(result.Response.InputText)
+	if inputText == "" {
+		inputText = strings.TrimSpace(text)
+	}
+	if runtime.voiceSession != nil {
+		runtime.voiceSession.PrepareTurn(request, inputText, deliveredText)
+	}
 
-	return h.finalizeTurnResponse(ctx, runtime, peer, state, result.Trace, result.Response, result.AggregatedText)
+	return h.finalizeTurnResponse(ctx, runtime, peer, state, result.Trace, result.Response, deliveredText)
 }
 
 func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, trace turnTrace, response voice.TurnResponse, aggregatedText string) error {
@@ -598,6 +609,9 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 			},
 		},
 		BeforeNoAudio: func(_ turnTrace, _ voice.TurnResponse, aggregatedText string) error {
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.FinalizeTextResponse(aggregatedText)
+			}
 			if strings.TrimSpace(aggregatedText) == "" {
 				return nil
 			}
@@ -607,6 +621,9 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 			encoded, err := h.encodeAudioStream(ctx, audioStream)
 			if err != nil {
 				logTurnTraceError(h.logger, "gateway turn terminated", state.sessionID, trace, err, "error_code", "tts_encode_failed")
+				if runtime.voiceSession != nil {
+					runtime.voiceSession.InterruptPlayback()
+				}
 				if response.EndSession {
 					runtime.session.Reset()
 					return runtime.conn.Close()
@@ -616,6 +633,9 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 					_ = applyReadDeadline(runtime, active, h.runtimeProfile())
 				}
 				return h.emitServerError(peer, state.sessionID, "tts_encode_failed", err.Error())
+			}
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.StartPlayback(aggregatedText, time.Duration(maxInt(h.profile.OutputFrameDurationMs, 60))*time.Millisecond, plannedPlaybackDurationForResponse(response, outputFrameInterval))
 			}
 			h.startAudioStream(ctx, runtime, peer, state, trace, aggregatedText, encoded, response.EndSession, response.EndReason, response.EndMessage)
 			return nil
@@ -690,6 +710,9 @@ func (h *xiaozhiWSHandler) startAudioStream(
 			if err := peer.WriteCompatBinary(chunk, state.binaryProtocolVersion); err != nil {
 				return
 			}
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.ObservePlaybackChunk()
+			}
 			select {
 			case <-streamCtx.Done():
 				return
@@ -702,6 +725,9 @@ func (h *xiaozhiWSHandler) startAudioStream(
 		}
 
 		_ = peer.WriteJSON(xiaozhiTTSMessage{Type: "tts", State: "stop", SessionID: state.sessionID})
+		if runtime.voiceSession != nil {
+			runtime.voiceSession.CompletePlayback()
+		}
 		_ = completeTurnReturnOrClose(trace, endSession, endReason, endMessage, turnCompletionHooks{
 			Runtime:   runtime,
 			Profile:   h.runtimeProfile(),

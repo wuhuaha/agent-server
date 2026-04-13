@@ -58,7 +58,8 @@ func (s *InMemoryMemoryStore) LoadTurnContext(_ context.Context, query MemoryQue
 	}
 
 	latest := primary.records[len(primary.records)-1]
-	summary := fmt.Sprintf("remembered %d turn(s) for %s. most recent user text: %q. most recent response: %q.", len(primary.records), primary.scope.Label, latest.UserText, latest.ResponseText)
+	latestAssistant := memoryAssistantText(latest)
+	summary := fmt.Sprintf("remembered %d turn(s) for %s. most recent user text: %q. most recent heard response: %q.", len(primary.records), primary.scope.Label, latest.UserText, latestAssistant)
 	facts := []MemoryFact{
 		{Key: "recent_turn_count", Value: fmt.Sprintf("%d", len(primary.records)), Source: "in_memory"},
 		{Key: "memory_scope", Value: primary.scope.Label, Source: "in_memory"},
@@ -69,6 +70,9 @@ func (s *InMemoryMemoryStore) LoadTurnContext(_ context.Context, query MemoryQue
 	}
 	if strings.TrimSpace(latest.ResponseText) != "" {
 		facts = append(facts, MemoryFact{Key: "last_response_text", Value: latest.ResponseText, Source: "in_memory"})
+	}
+	if latestAssistant != "" {
+		facts = append(facts, MemoryFact{Key: "last_heard_text", Value: latestAssistant, Source: "in_memory"})
 	}
 
 	for _, scoped := range available {
@@ -85,8 +89,8 @@ func (s *InMemoryMemoryStore) LoadTurnContext(_ context.Context, query MemoryQue
 		if strings.TrimSpace(record.UserText) != "" {
 			facts = append(facts, MemoryFact{Key: fmt.Sprintf("recent_user_%d", ordinal), Value: record.UserText, Source: "in_memory"})
 		}
-		if strings.TrimSpace(record.ResponseText) != "" {
-			facts = append(facts, MemoryFact{Key: fmt.Sprintf("recent_response_%d", ordinal), Value: record.ResponseText, Source: "in_memory"})
+		if assistantText := memoryAssistantText(record); assistantText != "" {
+			facts = append(facts, MemoryFact{Key: fmt.Sprintf("recent_response_%d", ordinal), Value: assistantText, Source: "in_memory"})
 		}
 	}
 
@@ -109,11 +113,24 @@ func (s *InMemoryMemoryStore) SaveTurn(_ context.Context, record MemoryRecord) e
 	defer s.mu.Unlock()
 
 	for _, scope := range scopes {
-		records := append(s.recordsByScope[scope.Key], cloned)
-		if len(records) > s.maxTurns {
-			records = append([]MemoryRecord(nil), records[len(records)-s.maxTurns:]...)
+		existing := append([]MemoryRecord(nil), s.recordsByScope[scope.Key]...)
+		updated := false
+		if cloned.TurnID != "" {
+			for index := range existing {
+				if existing[index].TurnID == cloned.TurnID {
+					existing[index] = cloned
+					updated = true
+					break
+				}
+			}
 		}
-		s.recordsByScope[scope.Key] = records
+		if !updated {
+			existing = append(existing, cloned)
+		}
+		if len(existing) > s.maxTurns {
+			existing = append([]MemoryRecord(nil), existing[len(existing)-s.maxTurns:]...)
+		}
+		s.recordsByScope[scope.Key] = existing
 	}
 	return nil
 }
@@ -134,10 +151,10 @@ func (s *InMemoryMemoryStore) recentMessages(records []MemoryRecord) []ChatMessa
 				Content: record.UserText,
 			})
 		}
-		if strings.TrimSpace(record.ResponseText) != "" {
+		if assistantText := memoryAssistantText(record); assistantText != "" {
 			messages = append(messages, ChatMessage{
 				Role:    "assistant",
-				Content: record.ResponseText,
+				Content: assistantText,
 			})
 		}
 	}
@@ -152,7 +169,6 @@ type memoryScopedRecords struct {
 type BuiltinToolBackend struct {
 	MemoryStore MemoryStore
 	Now         func() time.Time
-	Skills      map[string]struct{}
 }
 
 func NewBuiltinToolBackend(memoryStore MemoryStore) *BuiltinToolBackend {
@@ -165,13 +181,8 @@ func NewBuiltinToolBackend(memoryStore MemoryStore) *BuiltinToolBackend {
 	}
 }
 
-func (b *BuiltinToolBackend) WithSkills(skills []string) *BuiltinToolBackend {
-	b.Skills = normalizedBuiltinSkills(skills)
-	return b
-}
-
 func (b *BuiltinToolBackend) ListTools(context.Context, ToolCatalogRequest) ([]ToolDefinition, error) {
-	tools := []ToolDefinition{
+	return []ToolDefinition{
 		{
 			Name:        "time.now",
 			Description: "Return the server's current local and UTC time.",
@@ -204,19 +215,7 @@ func (b *BuiltinToolBackend) ListTools(context.Context, ToolCatalogRequest) ([]T
 				"additionalProperties": false,
 			},
 		},
-	}
-	if b.hasSkill(builtinSkillHouseholdControl) {
-		tools = append(tools, householdControlToolDefinition())
-	}
-	return tools, nil
-}
-
-func (b *BuiltinToolBackend) ListPromptFragments(context.Context, SkillPromptRequest) ([]string, error) {
-	fragments := make([]string, 0, 1)
-	if b.hasSkill(builtinSkillHouseholdControl) {
-		fragments = append(fragments, householdControlSkillPrompt())
-	}
-	return fragments, nil
+	}, nil
 }
 
 func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -227,8 +226,6 @@ func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (Too
 		return b.invokeSessionDescribe(call)
 	case "memory.recall":
 		return b.invokeMemoryRecall(ctx, call)
-	case householdControlSimulationToolName:
-		return b.invokeHouseholdControl(call)
 	default:
 		return ToolResult{
 			CallID:     call.CallID,
@@ -237,14 +234,6 @@ func (b *BuiltinToolBackend) InvokeTool(ctx context.Context, call ToolCall) (Too
 			ToolOutput: encodeToolOutput(map[string]any{"error": fmt.Sprintf("tool %s is not available", call.ToolName)}),
 		}, nil
 	}
-}
-
-func (b *BuiltinToolBackend) hasSkill(name string) bool {
-	if len(b.Skills) == 0 {
-		return false
-	}
-	_, ok := b.Skills[canonicalBuiltinSkillName(name)]
-	return ok
 }
 
 func (b *BuiltinToolBackend) invokeTimeNow(call ToolCall) (ToolResult, error) {
@@ -316,6 +305,15 @@ func (b *BuiltinToolBackend) invokeMemoryRecall(ctx context.Context, call ToolCa
 	}, nil
 }
 
+func (b *BuiltinToolBackend) hasTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "time.now", "session.describe", "memory.recall":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractMemoryQuery(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "{}" {
@@ -348,6 +346,21 @@ func cloneMemoryRecord(record MemoryRecord) MemoryRecord {
 		}
 	}
 	return cloned
+}
+
+func memoryAssistantText(record MemoryRecord) string {
+	if heard := strings.TrimSpace(record.HeardText); heard != "" {
+		return heard
+	}
+	if record.PlaybackCompleted {
+		if delivered := strings.TrimSpace(record.DeliveredText); delivered != "" {
+			return delivered
+		}
+		if response := strings.TrimSpace(record.ResponseText); response != "" {
+			return response
+		}
+	}
+	return ""
 }
 
 type memoryScope struct {

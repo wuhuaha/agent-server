@@ -11,6 +11,16 @@ import (
 	"agent-server/internal/agent"
 )
 
+func mustNewServer(t *testing.T, cfg Config) *http.Server {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := NewServer(cfg, logger)
+	if err != nil {
+		t.Fatalf("NewServer returned error: %v", err)
+	}
+	return server
+}
+
 func TestHealthz(t *testing.T) {
 	cfg := Config{
 		ListenAddr:  ":0",
@@ -19,8 +29,7 @@ func TestHealthz(t *testing.T) {
 		Version:     "test",
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(cfg, logger)
+	server := mustNewServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	res := httptest.NewRecorder()
@@ -39,8 +48,7 @@ func TestInfo(t *testing.T) {
 		Version:     "test",
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(cfg, logger)
+	server := mustNewServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/info", nil)
 	res := httptest.NewRecorder()
@@ -63,8 +71,7 @@ func TestWebH5DebugRouteServesIndex(t *testing.T) {
 		Version:     "test",
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(cfg, logger)
+	server := mustNewServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/realtime-h5/", nil)
 	res := httptest.NewRecorder()
@@ -89,8 +96,7 @@ func TestXiaozhiCompatRoutesAreMountedWhenEnabled(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(cfg, logger)
+	server := mustNewServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/xiaozhi/ota/", strings.NewReader(`{"application":{"version":"test-fw"}}`))
 	req.Host = "compat.example.com"
@@ -120,10 +126,10 @@ func TestBuildTurnExecutorUsesRealRuntimeBackendsByDefault(t *testing.T) {
 	if _, ok := bootstrap.MemoryStore.(*agent.InMemoryMemoryStore); !ok {
 		t.Fatalf("expected in-memory memory store, got %T", bootstrap.MemoryStore)
 	}
-	if _, ok := bootstrap.ToolRegistry.(*agent.BuiltinToolBackend); !ok {
+	if _, ok := bootstrap.ToolRegistry.(*agent.RuntimeToolBackend); !ok {
 		t.Fatalf("expected builtin tool registry, got %T", bootstrap.ToolRegistry)
 	}
-	if _, ok := bootstrap.ToolInvoker.(*agent.BuiltinToolBackend); !ok {
+	if _, ok := bootstrap.ToolInvoker.(*agent.RuntimeToolBackend); !ok {
 		t.Fatalf("expected builtin tool invoker, got %T", bootstrap.ToolInvoker)
 	}
 }
@@ -190,12 +196,11 @@ func TestRealtimeDiscoveryReportsEffectiveLLMProvider(t *testing.T) {
 		Environment: "test",
 		Version:     "test",
 		Agent: AgentConfig{
-			LLMProvider: "deepseek_chat",
+			LLMProvider: "auto",
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := NewServer(cfg, logger)
+	server := mustNewServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
 	res := httptest.NewRecorder()
@@ -235,5 +240,59 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	}
 	if cfg.Agent.Skills != "household_control" {
 		t.Fatalf("expected household_control runtime skill default, got %q", cfg.Agent.Skills)
+	}
+}
+
+func TestConfigValidateRejectsExplicitDeepSeekWithoutAPIKey(t *testing.T) {
+	err := Config{
+		Agent: AgentConfig{
+			LLMProvider: "deepseek_chat",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "agent.deepseek api key is required") {
+		t.Fatalf("expected deepseek api key validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsXiaozhiWithoutPCM16LERealtimeOutput(t *testing.T) {
+	err := Config{
+		Xiaozhi: XiaozhiCompatConfig{
+			Enabled: true,
+		},
+		Realtime: RealtimeConfig{
+			OutputCodec: "opus",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "xiaozhi requires realtime.output_codec=pcm16le") {
+		t.Fatalf("expected xiaozhi realtime output validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsHiddenPreviewOnBootstrapVoice(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:              "bootstrap",
+			ServerEndpointEnabled: true,
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice.server_endpoint_enabled requires a streaming preview-capable transcriber") {
+		t.Fatalf("expected hidden preview validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateAllowsStreamingPreviewVoiceProviders(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:              "iflytek_rtasr",
+			ServerEndpointEnabled: true,
+			IflytekRTASR: IflytekRTASRProviderConfig{
+				AppID:           "test-app",
+				AccessKeyID:     "test-key-id",
+				AccessKeySecret: "test-key-secret",
+			},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("expected iflytek_rtasr preview config to validate, got %v", err)
 	}
 }

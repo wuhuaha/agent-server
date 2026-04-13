@@ -27,7 +27,7 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 		},
 	})
 
-	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), nil)
+	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), agent.NewInMemoryMemoryStore(4), nil)
 	asrResponder, ok := responder.(voice.ASRResponder)
 	if !ok {
 		t.Fatalf("expected ASRResponder, got %T", responder)
@@ -76,7 +76,7 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 		},
 	})
 
-	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), nil)
+	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), agent.NewInMemoryMemoryStore(4), nil)
 	asrResponder, ok := responder.(voice.ASRResponder)
 	if !ok {
 		t.Fatalf("expected ASRResponder, got %T", responder)

@@ -15,7 +15,11 @@ import (
 func main() {
 	cfg := app.LoadConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	server := app.NewServer(cfg, logger)
+	server, err := app.NewServer(cfg, logger)
+	if err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	go func() {
 		logger.Info("starting server", "addr", cfg.ListenAddr, "env", cfg.Environment, "version", cfg.Version)

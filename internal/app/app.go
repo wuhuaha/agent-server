@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,12 +13,15 @@ import (
 	"agent-server/internal/voice"
 )
 
-func NewServer(cfg Config, logger *slog.Logger) *http.Server {
+func NewServer(cfg Config, logger *slog.Logger) (*http.Server, error) {
 	cfg = withRealtimeDefaults(cfg)
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid app config: %w", err)
+	}
 	llmProvider := effectiveLLMProvider(cfg.Agent)
-	turnExecutor := buildTurnExecutor(cfg, logger)
+	runtime := buildAgentRuntime(cfg, logger)
 	synthesizer := buildSynthesizer(cfg, logger)
-	responder := buildResponder(cfg, logger, turnExecutor, synthesizer)
+	responder := buildResponder(cfg, logger, runtime.Executor, runtime.MemoryStore, synthesizer)
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", control.NewHealthHandler(cfg.ServiceName))
@@ -90,10 +94,17 @@ func NewServer(cfg Config, logger *slog.Logger) *http.Server {
 		Addr:              cfg.ListenAddr,
 		Handler:           requestLogger(logger, mux),
 		ReadHeaderTimeout: 5 * time.Second,
-	}
+	}, nil
 }
 
-func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
+type agentRuntime struct {
+	Executor     agent.TurnExecutor
+	MemoryStore  agent.MemoryStore
+	ToolRegistry agent.ToolRegistry
+	ToolInvoker  agent.ToolInvoker
+}
+
+func buildAgentRuntime(cfg Config, logger *slog.Logger) agentRuntime {
 	memoryStore := buildMemoryStore(cfg.Agent, logger)
 	toolRegistry, toolInvoker := buildToolBackend(cfg.Agent, memoryStore, logger)
 	bootstrap := agent.NewBootstrapTurnExecutor().
@@ -106,7 +117,7 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 	case "", "auto":
 		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) != "" {
 			cfg.Agent.LLMProvider = "deepseek_chat"
-			return buildTurnExecutor(cfg, logger)
+			return buildAgentRuntime(cfg, logger)
 		}
 		logger.Info("agent turn executor configured", "provider", "bootstrap", "requested", "auto")
 		executor = bootstrap
@@ -146,10 +157,19 @@ func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
 		logger.Warn("unknown agent llm provider, falling back to bootstrap executor", "provider", cfg.Agent.LLMProvider)
 		executor = bootstrap
 	}
-	return agent.LoggingTurnExecutor{
-		Inner:  executor,
-		Logger: logger,
+	return agentRuntime{
+		Executor: agent.LoggingTurnExecutor{
+			Inner:  executor,
+			Logger: logger,
+		},
+		MemoryStore:  memoryStore,
+		ToolRegistry: toolRegistry,
+		ToolInvoker:  toolInvoker,
 	}
+}
+
+func buildTurnExecutor(cfg Config, logger *slog.Logger) agent.TurnExecutor {
+	return buildAgentRuntime(cfg, logger).Executor
 }
 
 func buildMemoryStore(cfg AgentConfig, logger *slog.Logger) agent.MemoryStore {
@@ -179,7 +199,7 @@ func buildToolBackend(cfg AgentConfig, memoryStore agent.MemoryStore, logger *sl
 	case "", "builtin":
 		skills := splitAgentSkills(cfg.Skills)
 		logger.Info("agent tool backend configured", "provider", "builtin", "skills", strings.Join(skills, ","))
-		backend := agent.NewBuiltinToolBackend(memoryStore).WithSkills(skills)
+		backend := agent.NewRuntimeToolBackend(memoryStore, skills)
 		return backend, backend
 	case "noop":
 		logger.Info("agent tool backend configured", "provider", "noop")
@@ -187,7 +207,7 @@ func buildToolBackend(cfg AgentConfig, memoryStore agent.MemoryStore, logger *sl
 	default:
 		skills := splitAgentSkills(cfg.Skills)
 		logger.Warn("unknown agent tool provider, falling back to builtin", "provider", cfg.ToolProvider, "skills", strings.Join(skills, ","))
-		backend := agent.NewBuiltinToolBackend(memoryStore).WithSkills(skills)
+		backend := agent.NewRuntimeToolBackend(memoryStore, skills)
 		return backend, backend
 	}
 }
@@ -239,12 +259,12 @@ func buildTurnDetectionConfig(cfg Config) voice.SilenceTurnDetectorConfig {
 	}
 }
 
-func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, synthesizer voice.Synthesizer) voice.Responder {
+func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {
 	bootstrap := voice.NewBootstrapResponder(
 		cfg.Realtime.OutputCodec,
 		cfg.Realtime.OutputSampleRate,
 		cfg.Realtime.OutputChannels,
-	).WithTurnExecutor(turnExecutor).WithSynthesizer(synthesizer)
+	).WithTurnExecutor(turnExecutor).WithSynthesizer(synthesizer).WithMemoryStore(memoryStore)
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Voice.Provider)) {
 	case "", "bootstrap":
@@ -269,6 +289,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 		).
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
+			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	case "iflytek_rtasr":
 		if strings.TrimSpace(cfg.Voice.IflytekRTASR.AppID) == "" ||
@@ -308,6 +329,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 		).
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
+			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	default:
 		logger.Warn("unknown voice provider, falling back to bootstrap responder", "provider", cfg.Voice.Provider)

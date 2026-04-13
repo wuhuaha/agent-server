@@ -52,6 +52,8 @@ The latest `L2` hardening slice also keeps false-endpoint protection inside the 
 
 The latest `L2` hardening slice keeps that same ownership model while making provider endpoint signals stronger without widening the protocol: local worker preview hints may now come from the default tail-energy path or an optional worker-side `Silero VAD` path, but they still travel only through `StreamingTranscriber` deltas into the shared turn detector. Only the shared voice runtime decides whether those hints justify a shorter endpoint window.
 
+The latest orchestration slice also makes `internal/voice` the owner of hidden preview sessions, playback lifecycle callbacks, and "what the user actually heard" persistence. `SessionOrchestrator` now keeps preview polling, auto-commit suggestions, playback start or interrupt or completion, and heard-text truncation under one shared runtime boundary. Gateway adapters report transport events into that orchestrator instead of persisting preview or playout state on their own.
+
 ### 4. Device Adapters
 
 Own ingress and egress for RTOS devices, desktops, and browsers. They translate transport details into core events and shared turn inputs.
@@ -65,6 +67,13 @@ Inside `internal/gateway`, native realtime and `xiaozhi` compatibility adapters 
 ### 5. Channel Skills
 
 Own ingress and egress for external messaging platforms such as Feishu. A channel skill is a transport and message adapter, not a tool runner.
+
+The first shared `internal/channel` bridge now fixes the adapter shape as:
+
+- normalize inbound message, thread, attachment, and idempotency metadata
+- hand the resulting turn to the shared `Agent Runtime Core`
+- deliver the shared runtime response back through the channel adapter
+- report delivery outcome without teaching the adapter about providers or core runtime policy
 
 ### 6. Control Plane
 
@@ -82,10 +91,13 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One provider-selected voice runtime behind shared `Transcriber` and `Synthesizer` interfaces so local and cloud voice backends do not leak into device or channel adapters.
 - One provider-selected streaming ASR path behind shared `StreamingTranscriber` and `StreamingTranscriptionSession` interfaces so local preview workers and buffered compatibility adapters both terminate inside `internal/voice`.
 - One voice-runtime-owned input-preview path behind shared `InputPreviewer` and `InputPreviewSession` interfaces so server-side endpoint preview can evolve without pushing provider logic into websocket adapters.
+- One voice-runtime-owned session orchestrator behind shared preview and playback callbacks so auto-commit, interruption, playout completion, and heard-text persistence stop being split across multiple websocket handlers.
 - One runtime-owned hook layer for memory and tool orchestration.
 - One provider-selected LLM runtime behind shared `ChatModel`, `StreamingChatModel`, and `TurnExecutor` interfaces so model providers do not leak into device or channel adapters.
 - One additive observability path that keeps `turn_id` and `trace_id` in gateway phase logs, runtime logs, voice-provider logs, and archived runner artifacts without changing the public websocket event shapes again.
 - One runtime-skill path for domain behavior so smart-home semantics can be injected as prompt fragments plus tools without turning `internal/agent` into a pile of hardcoded vertical rules.
+- One channel-runtime bridge so external messaging adapters normalize input, hand it to the shared runtime, and deliver results back without learning provider-specific APIs.
+- One startup-time config validation layer split by runtime domain so invalid provider or credential combinations fail at process bring-up instead of later inside request handling.
 - One first in-process runtime backend set:
   - `InMemoryMemoryStore` for layered recent-message plus summary recall across `session`, `user`, `device`, `room`, and `household` scopes
   - `BuiltinToolBackend` for local runtime tools such as `time.now`, `session.describe`, and `memory.recall`
@@ -96,6 +108,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 
 - Session logic must not depend on Feishu, Slack, or any specific device.
 - Device and channel adapters must not own agent policy; they hand normalized turns to the `Agent Runtime Core`.
+- Channel adapters should prefer the shared `internal/channel` runtime bridge for normalize -> handoff -> deliver flow instead of open-coding runtime or provider calls in each adapter.
 - The `Agent Runtime Core` must not own transport framing or websocket lifecycle details.
 - Gateway websocket adapters must treat any websocket read failure, including deadline timeouts, as terminal for that connection. They may emit one final timeout-close signal, but they must not re-enter `ReadMessage()` on a failed connection.
 - Memory and tool backends must be injected into the `Agent Runtime Core`, not called directly from transports or channel adapters.
