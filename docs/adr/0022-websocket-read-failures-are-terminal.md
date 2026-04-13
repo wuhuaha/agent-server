@@ -1,4 +1,4 @@
-# ADR 0017: Websocket Read Failures Are Terminal
+# ADR 0022: Websocket Read Failures Are Terminal
 
 ## Status
 

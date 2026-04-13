@@ -600,3 +600,12 @@
   - added `scripts/web-h5-manual-capture.sh`
   - the helper now scaffolds `web-h5-manual` artifact roots with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and attachment directories
   - updated `docs/codex/live-validation-runbook.md`, `docs/protocols/web-h5-realtime-adaptation.md`, `README.md`, and `tools/web-client/README.md` to point at the same evidence flow
+- Hardened the Python validation entrypoints:
+  - added `scripts/require-python-3-11.sh`
+  - added `scripts/test-python-desktop.sh`
+  - added `scripts/test-python-workers.sh`
+  - updated `Makefile`, `scripts/codex-doctor.sh`, and `scripts/verify-fast.sh` so Python 3.11+ is checked explicitly and worker tests have a first-class `make test-py-workers` path
+- Reduced gateway lifecycle duplication between native realtime and `xiaozhi`:
+  - added shared gateway helpers in `internal/gateway/turn_flow.go` and `internal/gateway/output_flow.go`
+  - updated `internal/gateway/realtime_ws.go` and `internal/gateway/xiaozhi_ws.go` to share response execution, interruption, and active/end completion flow
+  - updated architecture docs plus ADRs to record the gateway-shared intermediate step before ownership moves further into `internal/voice`

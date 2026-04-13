@@ -11,6 +11,7 @@ Use the standard command surface first:
 make doctor
 make test-go
 make test-py
+make test-py-workers
 make docker-config
 make verify-fast
 ```
@@ -78,6 +79,10 @@ The current fast path includes:
 - `go test ./...`
 - Python desktop-client unit tests
 - layered Docker compose config expansion
+
+Additional Python worker coverage is available through:
+
+- `make test-py-workers`
 
 The richer manual and scripted validation assets live here:
 

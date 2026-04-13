@@ -1,4 +1,6 @@
-.PHONY: run test test-go test-py fmt doctor docker-config verify-fast bootstrap-linux
+.PHONY: run test test-go test-py test-py-workers fmt doctor docker-config verify-fast bootstrap-linux
+
+PYTHON ?= python3
 
 run:
 	go run ./cmd/agentd
@@ -9,19 +11,22 @@ test-go:
 	go test ./...
 
 test-py:
-	PYTHONPATH=clients/python-desktop-client/src python3 -m unittest discover -s clients/python-desktop-client/tests -v
+	PYTHON_BIN="$(PYTHON)" bash scripts/test-python-desktop.sh
+
+test-py-workers:
+	PYTHON_BIN="$(PYTHON)" bash scripts/test-python-workers.sh
 
 fmt:
 	gofmt -w cmd internal pkg
 
 doctor:
-	./scripts/codex-doctor.sh
+	PYTHON_BIN="$(PYTHON)" bash scripts/codex-doctor.sh
 
 docker-config:
-	./scripts/docker-config-check.sh
+	bash scripts/docker-config-check.sh
 
 verify-fast:
-	./scripts/verify-fast.sh
+	PYTHON_BIN="$(PYTHON)" bash scripts/verify-fast.sh
 
 bootstrap-linux:
-	./scripts/install-linux-stack.sh
+	bash scripts/install-linux-stack.sh

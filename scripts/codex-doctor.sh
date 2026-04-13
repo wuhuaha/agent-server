@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 status=0
+python_bin="${PYTHON_BIN:-python3}"
 
 print_section() {
   printf '\n==> %s\n' "$1"
@@ -33,7 +34,7 @@ optional_tool() {
 
 print_section "Core Tools"
 required_tool go "required for agentd build and Go test execution"
-required_tool python3 "required for desktop-client tests and local tooling"
+required_tool "${python_bin}" "required for Python test execution and local tooling"
 optional_tool docker "needed for compose validation and container workflows"
 optional_tool conda "needed for the local FunASR worker environment on this machine"
 
@@ -43,8 +44,11 @@ if command -v go >/dev/null 2>&1; then
   printf 'GOPROXY=%s\n' "$(go env GOPROXY)"
   printf 'GOSUMDB=%s\n' "$(go env GOSUMDB)"
 fi
-if command -v python3 >/dev/null 2>&1; then
-  python3 --version
+if command -v "${python_bin}" >/dev/null 2>&1; then
+  "${python_bin}" --version
+  if ! bash "${ROOT_DIR}/scripts/require-python-3-11.sh" "${python_bin}" "make doctor"; then
+    status=1
+  fi
 fi
 if command -v docker >/dev/null 2>&1; then
   docker compose version || printf '[warn] docker compose not available through the current docker install\n'
@@ -64,6 +68,7 @@ print_section "Suggested Next Commands"
 printf '%s\n' \
   "make test-go" \
   "make test-py" \
+  "make test-py-workers" \
   "make docker-config" \
   "make verify-fast"
 

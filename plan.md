@@ -129,6 +129,8 @@ Current planning note:
 - Linux-side archived-output live-smoke helpers now exist alongside the PowerShell scripts
 - the Codex harness now also has a Web/H5 manual-evidence scaffolding helper under `scripts/web-h5-manual-capture.sh`
 - the next Codex harness follow-up should decide whether browser console export and screenshot naming should stay manual or gain another lightweight helper layer
+- the next architecture refactor step after iteration 1 should move preview, interrupt arbitration, and playout ownership from gateway helpers into `internal/voice`
+- until that migration lands, native realtime and `xiaozhi` adapters should keep sharing one gateway-side turn flow instead of copying lifecycle logic again
 
 ## Current Execution Log
 
@@ -316,6 +318,54 @@ Recorded follow-through:
 - added `scripts/web-h5-manual-capture.sh`
 - updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone tool README, and durable repo records
 - updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
+
+### 2026-04-13 Iteration 1 Validation Surface And Gateway Shared Turn Flow Slice Complete
+
+- Scope:
+  - harden the shared command surface so Python version failures and worker-test scope are explicit
+  - stop relying on script execute bits from `Makefile`
+  - reduce duplicate realtime versus `xiaozhi` turn lifecycle code without changing published protocol shapes
+- Target files:
+  - `Makefile`
+  - `scripts/require-python-3-11.sh`
+  - `scripts/test-python-desktop.sh`
+  - `scripts/test-python-workers.sh`
+  - `scripts/codex-doctor.sh`
+  - `scripts/verify-fast.sh`
+  - `internal/gateway/turn_flow.go`
+  - `internal/gateway/output_flow.go`
+  - `internal/gateway/realtime_ws.go`
+  - `internal/gateway/xiaozhi_ws.go`
+  - `docs/architecture/overview.md`
+  - `docs/adr/0022-websocket-read-failures-are-terminal.md`
+  - `docs/adr/0023-gateway-adapters-share-turn-flow-before-voice-migration.md`
+  - `AGENTS.md`
+  - `README.md`
+  - `docs/codex/harness-workflow.md`
+  - `.claude/context.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - `make doctor`, `make test-py`, and `make test-py-workers` fail fast with clear Python 3.11+ requirements
+  - `make verify-fast` keeps the narrow fast path but no longer duplicates raw desktop test commands inline
+  - native realtime and `xiaozhi` adapters share the same turn-response and output-lifecycle helper path
+  - existing gateway websocket tests remain green with no protocol changes
+
+Validation recorded for this execution step:
+
+- `bash -n scripts/require-python-3-11.sh scripts/test-python-desktop.sh scripts/test-python-workers.sh scripts/codex-doctor.sh scripts/verify-fast.sh`
+- `go test ./...`
+- `make doctor`
+- `make test-py`
+- `make test-py-workers`
+- `make verify-fast`
+
+Observed outcome:
+
+- Python entrypoints now validate `3.11+` explicitly and worker tests have their own stable make target
+- the shared command surface no longer depends on script execute bits from `Makefile`
+- gateway turn execution, interruption return-to-active, and active/end completion logic now live in shared helpers instead of separate native and `xiaozhi` copies
 
 ### Recent Slices Still Relevant
 

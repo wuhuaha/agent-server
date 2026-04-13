@@ -178,12 +178,15 @@
   - `make doctor`
   - `make test-go`
   - `make test-py`
+  - `make test-py-workers`
   - `make docker-config`
   - `make verify-fast`
   - `make run`
 - `make verify-fast` is the preferred combined local check. It runs Go tests, Python desktop-client tests, and Docker compose config expansion only when the Docker daemon is reachable.
+- `make test-py-workers` is the explicit validation path for `workers/python`; keep it separate from `make verify-fast` unless the fast surface is intentionally widened.
 - `make docker-config` is the strict Docker validation entrypoint and may require the same unrestricted daemon-access context as other local Docker operations on this machine.
 - The fast CI surface should stay limited to stable repository checks: Go tests, Python desktop-client tests, and layered Docker compose config validation. Do not widen it into heavy live ASR/TTS/GPU checks by default.
+- Native realtime and `xiaozhi` adapters should share one gateway-side turn and output lifecycle path until preview, interrupt arbitration, and playout ownership move into `internal/voice`.
 - `plan.md` should remain a short active ledger. Older completed slices now belong in `docs/codex/execution-log-archive-2026-04.md` instead of accumulating indefinitely at the repository root.
 - The Codex-facing workflow docs should point agents to both files explicitly:
   - `plan.md` for current direction

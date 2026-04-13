@@ -405,3 +405,15 @@
 - Problem: desktop and RTOS validation already had replay-friendly artifact layouts, but browser-side validation still relied on ad hoc screenshots, temporary notes, and manually remembered URLs. That made Web/H5 checks harder to compare and harder to attach cleanly to roadmap or bug records.
 - Resolution: added `scripts/web-h5-manual-capture.sh`, which scaffolds a canonical `web-h5-manual` artifact root with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and prepared directories for screenshots, exports, and logs. Updated the browser docs and live-validation runbook to point at that helper.
 - Status: resolved.
+
+### Python Validation Entry Points Did Not Explain Version Or Scope Clearly
+
+- Problem: `Makefile` still called raw shell scripts and desktop Python tests directly, so Python-version mismatches or worker-test omissions were harder to diagnose than they should be.
+- Resolution: routed the command surface through `bash`, added `scripts/require-python-3-11.sh`, split worker tests into `make test-py-workers`, and made `make doctor`, `make test-py`, and `make verify-fast` validate Python 3.11+ explicitly before running.
+- Status: resolved.
+
+### Native Realtime And `xiaozhi` Gateway Lifecycles Were Drifting Apart
+
+- Problem: both websocket adapters still carried separate copies of response execution, interruption return-to-active, and active/end completion logic. That made fixes prone to drift before the next architecture step can move more ownership into `internal/voice`.
+- Resolution: added shared helper layers in `internal/gateway/turn_flow.go` and `internal/gateway/output_flow.go`, then rewired both adapters to use the same turn-response and output-lifecycle path without changing the published protocols.
+- Status: resolved for iteration 1; preview and playout ownership migration remains follow-up work.

@@ -62,6 +62,7 @@ The standard local validation and bring-up entrypoints are now:
 make doctor
 make test-go
 make test-py
+make test-py-workers
 make docker-config
 make verify-fast
 make run

@@ -60,6 +60,8 @@ The `xiaozhi` compatibility adapter still stays at the translation layer: even w
 
 The current browser or H5 direct path also stays on the native realtime contract. Browser-side PCM16 microphone and playback adaptation lives in the page itself, so the repository does not need a separate browser-only websocket protocol just to reach the same session core.
 
+Inside `internal/gateway`, native realtime and `xiaozhi` compatibility adapters now share one turn-response and output-lifecycle path instead of each carrying their own copy of `commit -> thinking -> response.start -> speaking -> active/end`. That shared helper layer is an intermediate refactor step before preview, interrupt arbitration, and playout ownership move deeper into `internal/voice`.
+
 ### 5. Channel Skills
 
 Own ingress and egress for external messaging platforms such as Feishu. A channel skill is a transport and message adapter, not a tool runner.
