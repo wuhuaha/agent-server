@@ -399,3 +399,9 @@
 - Problem: after the runbook and artifact naming conventions were standardized, Linux still did not have repository-local helper scripts that started the local worker and `agentd`, ran the desktop or RTOS smoke flow, and archived outputs under the canonical live-smoke roots. Windows had that path already through PowerShell scripts.
 - Resolution: added `scripts/smoke-funasr.sh` and `scripts/smoke-rtos-mock.sh`, both aligned with `artifacts/live-smoke/YYYYMMDD/<profile>/`, repository-local logging, and the existing desktop-runner or RTOS-mock archive formats.
 - Status: resolved.
+
+### Web/H5 Manual Validation Still Produced Unstructured Evidence
+
+- Problem: desktop and RTOS validation already had replay-friendly artifact layouts, but browser-side validation still relied on ad hoc screenshots, temporary notes, and manually remembered URLs. That made Web/H5 checks harder to compare and harder to attach cleanly to roadmap or bug records.
+- Resolution: added `scripts/web-h5-manual-capture.sh`, which scaffolds a canonical `web-h5-manual` artifact root with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and prepared directories for screenshots, exports, and logs. Updated the browser docs and live-validation runbook to point at that helper.
+- Status: resolved.

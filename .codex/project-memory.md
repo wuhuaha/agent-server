@@ -214,3 +214,16 @@
   - `scripts/smoke-rtos-mock.sh` -> `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
 - The Linux helpers start the local FunASR worker and `agentd`, run the desktop runner or RTOS mock, archive outputs, and stop the local stack afterward.
 - If no speech WAV is provided to the Linux helpers, they generate a silence `input.wav` so the end-to-end stack can still be exercised without an external sample file.
+- Web/H5 manual validation now has a repository-local scaffolding helper:
+  - `scripts/web-h5-manual-capture.sh` -> `artifacts/live-smoke/YYYYMMDD/web-h5-manual/`
+- The canonical Web/H5 manual evidence bundle should contain:
+  - `capture.json`
+  - `manual-checklist.md`
+  - `server/healthz.txt`
+  - `server/info.json`
+  - `server/realtime.json`
+  - `pages/`
+  - `screenshots/`
+  - `exports/`
+  - `logs/`
+- Browser screenshots, browser console exports, and exported WAV files are still manual steps, but they should now land under that canonical root instead of in ad hoc locations.

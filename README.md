@@ -89,6 +89,12 @@ For browser or H5 direct bring-up against the same native realtime websocket con
 - `http://127.0.0.1:8080/debug/realtime-h5/`
 - [Web/H5 direct realtime adaptation guide](docs/protocols/web-h5-realtime-adaptation.md)
 
+For archived manual browser-validation evidence, scaffold the artifact bundle first:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode built-in
+```
+
 For a standalone repository tool that you can serve separately and use for manual test/debug:
 
 ```bash
@@ -101,6 +107,12 @@ Then open:
 - `http://127.0.0.1:18081/settings.html`
 - `http://127.0.0.1:18081/`
 - [tools/web-client/README.md](tools/web-client/README.md)
+
+If you want one evidence bundle covering both the built-in page and the standalone tool:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode both --standalone-base http://127.0.0.1:18081
+```
 
 For directly usable local ASR bring-up with FunASR:
 

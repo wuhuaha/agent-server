@@ -596,3 +596,7 @@
   - updated `clients/python-desktop-client/README.md`
   - updated `docs/codex/live-validation-runbook.md`
   - updated `docs/codex/harness-workflow.md`
+- Standardized Web/H5 manual validation evidence:
+  - added `scripts/web-h5-manual-capture.sh`
+  - the helper now scaffolds `web-h5-manual` artifact roots with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and attachment directories
+  - updated `docs/codex/live-validation-runbook.md`, `docs/protocols/web-h5-realtime-adaptation.md`, `README.md`, and `tools/web-client/README.md` to point at the same evidence flow

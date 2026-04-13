@@ -63,6 +63,14 @@ Then use `Apply Discovery JSON`.
 
 This avoids requiring CORS on the server for standalone static hosting.
 
+For archived manual browser-validation evidence, scaffold a bundle before testing:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode standalone --standalone-base http://127.0.0.1:18081
+```
+
+That creates a `web-h5-manual` artifact root with server snapshots, page snapshots, and a manual checklist for screenshots, console logs, and exported WAV files.
+
 ## Features
 
 - dedicated settings page for profile save and discovery sync

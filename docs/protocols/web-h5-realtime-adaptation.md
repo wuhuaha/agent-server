@@ -28,6 +28,12 @@ Recommended flow:
 3. switch to `GET /debug/realtime-h5/`
 4. run live websocket debug turns
 
+If you want archived evidence for a manual browser session, scaffold it first with:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode built-in
+```
+
 The built-in pages perform:
 
 - settings page:
@@ -61,6 +67,12 @@ Because it is a separate static site, it does not assume same-origin discovery. 
 - `settings.html` for manual realtime profile entry and discovery sync
 - `index.html` for live websocket debug, microphone turns, and TTS playback
 - pasted discovery JSON from `GET /v1/realtime`
+
+For archived evidence covering the standalone tool too:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode standalone --standalone-base http://127.0.0.1:18081
+```
 
 ## Current Compatibility Boundaries
 

@@ -50,6 +50,18 @@ Keep these names stable when the run owns the full stack:
 - `worker.log`
 - `worker.err.log`
 
+For `web-h5-manual`, the profile root should also keep these manual-evidence files:
+
+- `capture.json`
+- `manual-checklist.md`
+- `server/healthz.txt`
+- `server/info.json`
+- `server/realtime.json`
+- `pages/`
+- `screenshots/`
+- `exports/`
+- `logs/`
+
 The runner and RTOS mock then create one `run_<id>/` directory below the profile root for replay-friendly artifacts.
 
 ## Runner Artifact Layout
@@ -128,6 +140,15 @@ Linux one-command smokes now default to the same profile roots:
   - `artifacts/live-smoke/YYYYMMDD/rtos-mock/`
 
 If no `--wav` is provided, the Linux helpers generate a local silence `input.wav` so the stack can still be exercised end to end without an external sample file.
+
+Web/H5 manual evidence scaffolding:
+
+```bash
+./scripts/web-h5-manual-capture.sh --mode built-in
+./scripts/web-h5-manual-capture.sh --mode both --standalone-base http://127.0.0.1:18081
+```
+
+That helper creates the canonical `web-h5-manual` artifact root, fetches server and page snapshots, and writes `manual-checklist.md` so screenshots, console exports, and WAV exports land in predictable locations.
 
 ## Runbook Selection
 

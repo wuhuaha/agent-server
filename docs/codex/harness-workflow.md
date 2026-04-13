@@ -98,6 +98,11 @@ The richer manual and scripted validation assets live here:
 - Use `.github/ISSUE_TEMPLATE/architecture-task.md` for planned feature, refactor, or migration slices.
 - Use `.github/pull_request_template.md` to keep boundary, protocol, docs, and validation follow-through aligned with the repo guardrails.
 
+## Web/H5 Evidence
+
+- Use `scripts/web-h5-manual-capture.sh` to scaffold a canonical browser-validation artifact bundle before manual testing.
+- Use `docs/codex/live-validation-runbook.md` for the expected `web-h5-manual` layout and attachment naming.
+
 ## Working Rules
 
 - Do not bypass `internal/agent` or `internal/voice` from adapters.
@@ -110,5 +115,5 @@ The richer manual and scripted validation assets live here:
 These are known next-step improvements:
 
 - GitHub Actions currently covers only fast checks; live ASR/TTS smokes are still manual.
-- Web/H5 manual capture is still less standardized than the current desktop and RTOS live-smoke helpers.
+- Browser screenshots, console exports, and exported WAV attachments are now scaffolded, but still require manual browser actions to complete.
 - CPU worker image builds still depend on stable access to large PyTorch wheels.

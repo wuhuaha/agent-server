@@ -127,7 +127,8 @@ Current planning note:
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context
 - the Codex harness now also has a canonical live-validation runbook plus artifact naming convention under `docs/codex/live-validation-runbook.md`
 - Linux-side archived-output live-smoke helpers now exist alongside the PowerShell scripts
-- the next Codex harness follow-up should standardize Web/H5 manual capture and artifact attachment so browser-side validation evidence is as structured as desktop and RTOS runs
+- the Codex harness now also has a Web/H5 manual-evidence scaffolding helper under `scripts/web-h5-manual-capture.sh`
+- the next Codex harness follow-up should decide whether browser console export and screenshot naming should stay manual or gain another lightweight helper layer
 
 ## Current Execution Log
 
@@ -270,6 +271,50 @@ Recorded follow-through:
 - added `scripts/smoke-funasr.sh`
 - added `scripts/smoke-rtos-mock.sh`
 - updated the runbook, harness docs, root README, desktop-client README, and durable repo records
+
+### 2026-04-13 Codex Web/H5 Manual Evidence Slice Complete
+
+- Scope:
+  - standardize browser-side manual validation evidence so Web/H5 checks stop depending on ad hoc screenshots and temporary notes
+  - create a repository-local helper that scaffolds the canonical `web-h5-manual` artifact root and captures server plus page snapshots before manual interaction
+  - wire the helper into the browser bring-up docs and Codex runbook instead of leaving it as an undocumented side path
+- Target files:
+  - `scripts/web-h5-manual-capture.sh`
+  - `docs/codex/live-validation-runbook.md`
+  - `docs/codex/harness-workflow.md`
+  - `docs/protocols/web-h5-realtime-adaptation.md`
+  - `README.md`
+  - `tools/web-client/README.md`
+  - `plan.md`
+  - `.claude/context.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - the repository has one helper that scaffolds a `web-h5-manual` artifact root with server snapshots and manual checklist files
+  - the live-validation runbook documents the expected Web/H5 evidence layout explicitly
+  - built-in and standalone browser docs both point at the same helper and artifact convention
+  - helper script syntax, `--help`, and the standard fast command surface all validate cleanly
+
+Validation recorded for this execution step:
+
+- `bash -n scripts/web-h5-manual-capture.sh`
+- `./scripts/web-h5-manual-capture.sh --help`
+- `./scripts/web-h5-manual-capture.sh --skip-fetch --output-dir /tmp/agent-server-web-h5-manual`
+- `git diff --check`
+- `make doctor`
+- `make verify-fast`
+
+Observed outcome:
+
+- Web/H5 manual validation now has a canonical evidence bundle with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and prepared attachment directories
+- built-in and standalone browser bring-up docs now point at the same evidence flow instead of relying on historical notes
+- browser-side screenshots, console exports, and WAV exports remain manual actions, but they now land in a predictable artifact structure
+
+Recorded follow-through:
+
+- added `scripts/web-h5-manual-capture.sh`
+- updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone tool README, and durable repo records
 - updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
 
 ### Recent Slices Still Relevant
@@ -286,6 +331,9 @@ Recorded follow-through:
 - `2026-04-13 Codex Linux Live-Smoke Helpers`
   - added Linux one-command archived-output smoke helpers for desktop runner and RTOS mock flows
   - validation: `bash -n`, `--help`, `make doctor`, and `make verify-fast`
+- `2026-04-13 Codex Web/H5 Manual Evidence`
+  - added a helper for canonical browser-validation artifact bundles covering server snapshots, page snapshots, and manual checklists
+  - validation: `bash -n`, `--help`, `--skip-fetch`, `make doctor`, and `make verify-fast`
 - `2026-04-13 Linux Dependency Install Consolidation`
   - standardized Linux bring-up under `scripts/install-linux-stack.sh` and validated `silero-vad` plus `onnxruntime` in the worker env
   - validation: `./scripts/install-linux-stack.sh --with-stream-vad`
