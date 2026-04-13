@@ -12,17 +12,19 @@ import (
 const defaultASRStreamingChunkMs = 40
 
 type ASRResponder struct {
-	Transcriber             Transcriber
-	Executor                agent.TurnExecutor
-	Synthesizer             Synthesizer
-	Language                string
-	TurnDetectionSilenceMs  int
-	TurnDetectionMinAudioMs int
-	OutputCodec             string
-	OutputSampleRate        int
-	OutputChannels          int
-	EmitPlaceholderAudio    bool
-	TextInputResponseStyle  string
+	Transcriber                   Transcriber
+	Executor                      agent.TurnExecutor
+	Synthesizer                   Synthesizer
+	Language                      string
+	TurnDetectionSilenceMs        int
+	TurnDetectionMinAudioMs       int
+	TurnDetectionLexicalMode      string
+	TurnDetectionIncompleteHoldMs int
+	OutputCodec                   string
+	OutputSampleRate              int
+	OutputChannels                int
+	EmitPlaceholderAudio          bool
+	TextInputResponseStyle        string
 }
 
 func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewRequest) (InputPreviewSession, error) {
@@ -34,10 +36,7 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		return nil, fmt.Errorf("asr transcriber does not support streaming preview")
 	}
 	detector := NewSilenceTurnDetector(
-		SilenceTurnDetectorConfig{
-			MinAudioMs: r.TurnDetectionMinAudioMs,
-			SilenceMs:  r.TurnDetectionSilenceMs,
-		},
+		r.turnDetectionConfig(),
 		req.SampleRateHz,
 		req.Channels,
 	)
@@ -170,10 +169,26 @@ func (r ASRResponder) WithSynthesizer(s Synthesizer) ASRResponder {
 	return r
 }
 
-func (r ASRResponder) WithTurnDetection(minAudioMs, silenceMs int) ASRResponder {
-	r.TurnDetectionMinAudioMs = minAudioMs
-	r.TurnDetectionSilenceMs = silenceMs
+func (r ASRResponder) WithTurnDetectionConfig(cfg SilenceTurnDetectorConfig) ASRResponder {
+	r.TurnDetectionMinAudioMs = cfg.MinAudioMs
+	r.TurnDetectionSilenceMs = cfg.SilenceMs
+	r.TurnDetectionLexicalMode = cfg.LexicalEndpointMode
+	r.TurnDetectionIncompleteHoldMs = cfg.IncompleteHoldMs
 	return r
+}
+
+func (r ASRResponder) WithTurnDetection(minAudioMs, silenceMs int) ASRResponder {
+	cfg := r.turnDetectionConfig()
+	cfg.MinAudioMs = minAudioMs
+	cfg.SilenceMs = silenceMs
+	return r.WithTurnDetectionConfig(cfg)
+}
+
+func (r ASRResponder) WithTurnDetectionLexicalGuard(mode string, incompleteHoldMs int) ASRResponder {
+	cfg := r.turnDetectionConfig()
+	cfg.LexicalEndpointMode = mode
+	cfg.IncompleteHoldMs = incompleteHoldMs
+	return r.WithTurnDetectionConfig(cfg)
 }
 
 func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {
@@ -241,6 +256,15 @@ func (r ASRResponder) audioOutput(ctx context.Context, req TurnRequest, userText
 		return nil, nil
 	}
 	return bootstrapAudio(r.OutputCodec, r.OutputSampleRate, r.OutputChannels), nil
+}
+
+func (r ASRResponder) turnDetectionConfig() SilenceTurnDetectorConfig {
+	return SilenceTurnDetectorConfig{
+		MinAudioMs:          r.TurnDetectionMinAudioMs,
+		SilenceMs:           r.TurnDetectionSilenceMs,
+		LexicalEndpointMode: r.TurnDetectionLexicalMode,
+		IncompleteHoldMs:    r.TurnDetectionIncompleteHoldMs,
+	}
 }
 
 type asrInputPreviewSession struct {

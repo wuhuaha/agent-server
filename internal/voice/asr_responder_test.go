@@ -68,19 +68,22 @@ func (s *fakeStreamingTranscriptionSession) Close() error {
 	return nil
 }
 
-type previewStreamingTranscriber struct{}
+type previewStreamingTranscriber struct {
+	text string
+}
 
 func (previewStreamingTranscriber) Transcribe(context.Context, TranscriptionRequest) (TranscriptionResult, error) {
 	return TranscriptionResult{}, nil
 }
 
-func (previewStreamingTranscriber) StartStream(_ context.Context, _ TranscriptionRequest, sink TranscriptionDeltaSink) (StreamingTranscriptionSession, error) {
-	return &previewStreamingSession{sink: sink}, nil
+func (p previewStreamingTranscriber) StartStream(_ context.Context, _ TranscriptionRequest, sink TranscriptionDeltaSink) (StreamingTranscriptionSession, error) {
+	return &previewStreamingSession{sink: sink, partialText: firstNonEmpty(p.text, "打开客厅灯")}, nil
 }
 
 type previewStreamingSession struct {
-	sink    TranscriptionDeltaSink
-	started bool
+	sink        TranscriptionDeltaSink
+	started     bool
+	partialText string
 }
 
 func (s *previewStreamingSession) PushAudio(ctx context.Context, chunk []byte) error {
@@ -90,7 +93,7 @@ func (s *previewStreamingSession) PushAudio(ctx context.Context, chunk []byte) e
 			return err
 		}
 	}
-	return emitTranscriptionDelta(ctx, s.sink, TranscriptionDelta{Kind: TranscriptionDeltaKindPartial, Text: "打开客厅灯"})
+	return emitTranscriptionDelta(ctx, s.sink, TranscriptionDelta{Kind: TranscriptionDeltaKindPartial, Text: s.partialText})
 }
 
 func (s *previewStreamingSession) Finish(context.Context) (TranscriptionResult, error) {
@@ -371,5 +374,41 @@ func TestASRResponderInputPreviewHonorsCustomTurnDetectionThresholds(t *testing.
 	}
 	if snapshot := preview.Poll(time.Now().Add(1400 * time.Millisecond)); !snapshot.CommitSuggested {
 		t.Fatal("expected preview to suggest commit after custom silence window elapses")
+	}
+}
+
+func TestASRResponderInputPreviewAddsLexicalHoldForIncompletePartial(t *testing.T) {
+	responder := NewASRResponder(
+		previewStreamingTranscriber{text: "帮我把"},
+		"auto",
+		"pcm16le",
+		16000,
+		1,
+		false,
+	).WithTurnDetection(100, 300).WithTurnDetectionLexicalGuard(turnDetectorLexicalModeConservative, 600)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_preview_lexical_hold",
+		DeviceID:     "rtos-001",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+		Language:     "zh",
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 6400)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+	if snapshot := preview.Poll(time.Now().Add(500 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("preview should keep holding incomplete lexical partial")
+	}
+	snapshot := preview.Poll(time.Now().Add(950 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected preview to suggest commit after lexical hold elapses")
+	}
+	if snapshot.EndpointReason != lexicalHoldServerEndpointReason {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
 	}
 }

@@ -482,3 +482,16 @@
   - custom preview-threshold behavior inside `ASRResponder`
   - app-level responder wiring preserving configured preview thresholds
   - runner dispatch coverage for the new `server-endpoint-preview` scenario
+
+## 2026-04-13
+
+- Completed the next `L2` hardening slice for false-endpoint protection inside the hidden preview mode:
+  - extended `SilenceTurnDetector` with a conservative lexical guard so obviously unfinished partials do not auto-commit on the base silence timeout
+  - added `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE` and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`
+  - wired those new guard settings through shared `ASRResponder` construction for both `funasr_http` and `iflytek_rtasr`
+  - kept the behavior inside `internal/voice`, with adapters still consuming only preview snapshots and commit suggestions
+- Added or updated regression coverage for:
+  - lexically complete partials committing on the base silence window
+  - incomplete partials waiting for the additional hold window
+  - lexical guard disable mode falling back to the original silence-only behavior
+  - app-level responder wiring preserving lexical-mode and hold settings

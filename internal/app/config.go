@@ -42,15 +42,17 @@ type AgentConfig struct {
 }
 
 type VoiceConfig struct {
-	Provider                 string
-	ASRURL                   string
-	ASRTimeoutMs             int
-	ASRLanguage              string
-	ServerEndpointEnabled    bool
-	ServerEndpointMinAudioMs int
-	ServerEndpointSilenceMs  int
-	EmitPlaceholderAudio     bool
-	IflytekRTASR             IflytekRTASRProviderConfig
+	Provider                       string
+	ASRURL                         string
+	ASRTimeoutMs                   int
+	ASRLanguage                    string
+	ServerEndpointEnabled          bool
+	ServerEndpointMinAudioMs       int
+	ServerEndpointSilenceMs        int
+	ServerEndpointLexicalMode      string
+	ServerEndpointIncompleteHoldMs int
+	EmitPlaceholderAudio           bool
+	IflytekRTASR                   IflytekRTASRProviderConfig
 }
 
 type TTSConfig struct {
@@ -213,14 +215,16 @@ func LoadConfig() Config {
 			},
 		},
 		Voice: VoiceConfig{
-			Provider:                 getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
-			ASRURL:                   getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
-			ASRTimeoutMs:             getenvInt("AGENT_SERVER_VOICE_ASR_TIMEOUT_MS", 30000),
-			ASRLanguage:              getenv("AGENT_SERVER_VOICE_ASR_LANGUAGE", "auto"),
-			ServerEndpointEnabled:    getenvBool("AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED", false),
-			ServerEndpointMinAudioMs: getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS", 320),
-			ServerEndpointSilenceMs:  getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS", 480),
-			EmitPlaceholderAudio:     getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
+			Provider:                       getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
+			ASRURL:                         getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
+			ASRTimeoutMs:                   getenvInt("AGENT_SERVER_VOICE_ASR_TIMEOUT_MS", 30000),
+			ASRLanguage:                    getenv("AGENT_SERVER_VOICE_ASR_LANGUAGE", "auto"),
+			ServerEndpointEnabled:          getenvBool("AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED", false),
+			ServerEndpointMinAudioMs:       getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS", 320),
+			ServerEndpointSilenceMs:        getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS", 480),
+			ServerEndpointLexicalMode:      getenv("AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE", "conservative"),
+			ServerEndpointIncompleteHoldMs: getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS", 720),
+			EmitPlaceholderAudio:           getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID", ""),
 				AccessKeyID:     getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID", ""),
@@ -470,6 +474,12 @@ func withRealtimeDefaults(cfg Config) Config {
 	}
 	if cfg.Voice.ASRLanguage == "" {
 		cfg.Voice.ASRLanguage = "auto"
+	}
+	if strings.TrimSpace(cfg.Voice.ServerEndpointLexicalMode) == "" {
+		cfg.Voice.ServerEndpointLexicalMode = "conservative"
+	}
+	if cfg.Voice.ServerEndpointIncompleteHoldMs <= 0 {
+		cfg.Voice.ServerEndpointIncompleteHoldMs = 720
 	}
 	if cfg.TTS.Provider == "" {
 		cfg.TTS.Provider = "none"

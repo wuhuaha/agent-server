@@ -48,6 +48,8 @@ The next turn-detection slice also stays inside the same layer: `internal/voice`
 
 That hidden preview path is now explicitly runtime-configurable through shared voice-runtime thresholds instead of adapter-local constants, and bring-up validation is expected to happen through an explicit non-default runner scenario rather than by widening the public discovery contract early.
 
+The latest `L2` hardening slice also keeps false-endpoint protection inside the same shared layer: the hidden preview path can now hold back auto-commit when the most recent partial still looks lexically unfinished, then fall back to a longer timeout instead of splitting the turn on every short pause.
+
 ### 4. Device Adapters
 
 Own ingress and egress for RTOS devices, desktops, and browsers. They translate transport details into core events and shared turn inputs.

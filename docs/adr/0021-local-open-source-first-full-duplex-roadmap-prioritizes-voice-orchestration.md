@@ -52,6 +52,7 @@ The first server-endpoint execution slices should also preserve the current publ
 - keep the advertised public `turn_mode` on `client_wakeup_client_commit`
 - add any preview or endpoint logic first as internal `internal/voice` capabilities plus hidden runtime switches
 - let adapters consume preview suggestions instead of embedding provider-specific turn rules
+- keep early hidden endpoint policies conservative, including voice-runtime-owned false-endpoint guards, before any public protocol rollout
 
 ## Consequences
 

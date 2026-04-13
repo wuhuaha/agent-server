@@ -143,5 +143,9 @@
 - The hidden preview mode is tuned through shared voice-runtime config, not adapter-local constants:
   - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`
   - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`
+- The hidden preview mode now also has conservative false-endpoint guard controls under the same shared voice-runtime boundary:
+  - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`
+  - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`
+- The default hidden endpoint policy is now: base silence window for lexically complete partials, plus an extra hold window for obviously unfinished partials.
 - Hidden preview validation should use the explicit desktop-runner scenario `server-endpoint-preview`; keep it out of default `full` and `regression` suites until the feature graduates into a public contract.
 - Duplicate late client commit after a server auto-commit now needs guarding at the adapter layer; native realtime rejects `audio.in.commit` unless the session is currently `active`, and `xiaozhi` ignores late `listen.stop` once the turn has already advanced.

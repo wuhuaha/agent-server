@@ -13,9 +13,11 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := withRealtimeDefaults(Config{
 		Voice: VoiceConfig{
-			Provider:                 "iflytek_rtasr",
-			ServerEndpointMinAudioMs: 640,
-			ServerEndpointSilenceMs:  960,
+			Provider:                       "iflytek_rtasr",
+			ServerEndpointMinAudioMs:       640,
+			ServerEndpointSilenceMs:        960,
+			ServerEndpointLexicalMode:      "off",
+			ServerEndpointIncompleteHoldMs: 1500,
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           "app-id",
 				AccessKeyID:     "key-id",
@@ -46,18 +48,26 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 	if asrResponder.TurnDetectionSilenceMs != 960 {
 		t.Fatalf("expected silence threshold 960ms, got %d", asrResponder.TurnDetectionSilenceMs)
 	}
+	if asrResponder.TurnDetectionLexicalMode != "off" {
+		t.Fatalf("expected lexical mode off, got %q", asrResponder.TurnDetectionLexicalMode)
+	}
+	if asrResponder.TurnDetectionIncompleteHoldMs != 1500 {
+		t.Fatalf("expected incomplete hold 1500ms, got %d", asrResponder.TurnDetectionIncompleteHoldMs)
+	}
 }
 
 func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := withRealtimeDefaults(Config{
 		Voice: VoiceConfig{
-			Provider:                 "funasr_http",
-			ASRURL:                   "http://127.0.0.1:8091/v1/asr/transcribe",
-			ASRLanguage:              "zh",
-			ServerEndpointMinAudioMs: 400,
-			ServerEndpointSilenceMs:  700,
-			EmitPlaceholderAudio:     true,
+			Provider:                       "funasr_http",
+			ASRURL:                         "http://127.0.0.1:8091/v1/asr/transcribe",
+			ASRLanguage:                    "zh",
+			ServerEndpointMinAudioMs:       400,
+			ServerEndpointSilenceMs:        700,
+			ServerEndpointLexicalMode:      "conservative",
+			ServerEndpointIncompleteHoldMs: 900,
+			EmitPlaceholderAudio:           true,
 		},
 	})
 
@@ -71,6 +81,12 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.TurnDetectionSilenceMs != 700 {
 		t.Fatalf("expected silence threshold 700ms, got %d", asrResponder.TurnDetectionSilenceMs)
+	}
+	if asrResponder.TurnDetectionLexicalMode != "conservative" {
+		t.Fatalf("expected lexical mode conservative, got %q", asrResponder.TurnDetectionLexicalMode)
+	}
+	if asrResponder.TurnDetectionIncompleteHoldMs != 900 {
+		t.Fatalf("expected incomplete hold 900ms, got %d", asrResponder.TurnDetectionIncompleteHoldMs)
 	}
 }
 

@@ -297,3 +297,9 @@
 - Problem: after the first internal `L2` slice landed, the hidden server-endpoint path still relied on implicit detector defaults and there was no dedicated scripted validation scenario for “send audio but do not send commit”. That made tuning harder and increased the chance that people would infer a public protocol change from ad hoc tests.
 - Resolution: exposed `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS` and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS` as shared voice-runtime config, wired them through both `funasr_http` and `iflytek_rtasr` responder bootstrap paths, and added an opt-in desktop runner scenario `server-endpoint-preview` for explicit hidden-mode validation. The default public discovery mode and default runner suites remain unchanged.
 - Status: resolved for the current hidden-preview stage.
+
+### Hidden Endpoint Preview Still Risked False Turn Ends On Short Pauses
+
+- Problem: after the first hidden preview slices, auto-commit still depended only on “enough audio + silence window + at least one partial”. That meant a partial like `帮我把` or `还有` could still be cut into a turn if the speaker paused briefly, even though the phrase was obviously unfinished.
+- Resolution: kept the fix inside `internal/voice` by extending the shared turn detector with a conservative lexical false-endpoint guard plus a configurable extra hold window. The hidden preview mode now delays auto-commit for obviously unfinished partials, while still falling back to a longer timeout so turns are not held forever.
+- Status: resolved for the current hidden-preview stage.

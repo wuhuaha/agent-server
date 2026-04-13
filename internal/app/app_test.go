@@ -218,6 +218,12 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	if cfg.Voice.ServerEndpointEnabled {
 		t.Fatal("expected server endpoint preview to stay disabled by default")
 	}
+	if cfg.Voice.ServerEndpointLexicalMode != "conservative" {
+		t.Fatalf("expected default lexical mode conservative, got %q", cfg.Voice.ServerEndpointLexicalMode)
+	}
+	if cfg.Voice.ServerEndpointIncompleteHoldMs != 720 {
+		t.Fatalf("expected default incomplete hold 720ms, got %d", cfg.Voice.ServerEndpointIncompleteHoldMs)
+	}
 	if cfg.Agent.Persona != "household_control_screen" {
 		t.Fatalf("expected household_control_screen persona default, got %q", cfg.Agent.Persona)
 	}

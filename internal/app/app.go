@@ -229,6 +229,15 @@ func buildXiaozhiProfile(cfg Config, logger *slog.Logger) gateway.XiaozhiCompatP
 	}
 }
 
+func buildTurnDetectionConfig(cfg Config) voice.SilenceTurnDetectorConfig {
+	return voice.SilenceTurnDetectorConfig{
+		MinAudioMs:          cfg.Voice.ServerEndpointMinAudioMs,
+		SilenceMs:           cfg.Voice.ServerEndpointSilenceMs,
+		LexicalEndpointMode: cfg.Voice.ServerEndpointLexicalMode,
+		IncompleteHoldMs:    cfg.Voice.ServerEndpointIncompleteHoldMs,
+	}
+}
+
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, synthesizer voice.Synthesizer) voice.Responder {
 	bootstrap := voice.NewBootstrapResponder(
 		cfg.Realtime.OutputCodec,
@@ -257,7 +266,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Realtime.OutputChannels,
 			cfg.Voice.EmitPlaceholderAudio,
 		).
-			WithTurnDetection(cfg.Voice.ServerEndpointMinAudioMs, cfg.Voice.ServerEndpointSilenceMs).
+			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSynthesizer(synthesizer)
 	case "iflytek_rtasr":
@@ -296,7 +305,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Realtime.OutputChannels,
 			cfg.Voice.EmitPlaceholderAudio,
 		).
-			WithTurnDetection(cfg.Voice.ServerEndpointMinAudioMs, cfg.Voice.ServerEndpointSilenceMs).
+			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSynthesizer(synthesizer)
 	default:

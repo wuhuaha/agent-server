@@ -267,6 +267,34 @@ Validation recorded for this execution step:
 - `go test ./internal/voice ./internal/app`
 - `env PYTHONPATH=clients/python-desktop-client/src python3 -m unittest discover -s clients/python-desktop-client/tests -v`
 
+### 2026-04-13 L2 Lexical False-Endpoint Guard Slice Complete
+
+- Scope:
+  - keep the hidden `L2` server-endpoint preview path conservative by default instead of relying only on a fixed silence window
+  - add a first lexical false-endpoint guard inside shared `internal/voice` so obviously unfinished partials do not auto-commit on every short pause
+  - preserve the existing hidden-preview rollout shape: no public discovery change and no provider-specific turn rules in adapters
+- Target files:
+  - `internal/voice/turn_detector.go`
+  - `internal/voice/turn_detector_test.go`
+  - `internal/voice/asr_responder.go`
+  - `internal/voice/asr_responder_test.go`
+  - `internal/app/config.go`
+  - `internal/app/app.go`
+  - `internal/app/app_test.go`
+  - `internal/app/voice_runtime_test.go`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/architecture/overview.md`
+  - `docs/adr/0021-local-open-source-first-full-duplex-roadmap-prioritizes-voice-orchestration.md`
+- Acceptance for this execution step:
+  - hidden preview mode can distinguish between lexically complete and obviously unfinished partials
+  - incomplete partials wait an additional hold window before auto-commit, instead of using the base silence timeout immediately
+  - the guard remains configurable from shared voice runtime config and applies uniformly to both `funasr_http` and `iflytek_rtasr`
+  - public discovery and public protocol docs remain unchanged
+
+Validation recorded for this execution step:
+
+- `go test ./internal/voice ./internal/app`
+
 - Scope:
   - upgrade the desktop scripted runner output into a comparable end-to-end quality report
   - add baseline latency and audio counters per scenario without changing the device-facing realtime protocol
