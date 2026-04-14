@@ -20,6 +20,7 @@
   - keeping playback-progress heard-text updates in memory until stable interrupt or completion boundaries
   - removing unnecessary slice cloning inside `InMemoryMemoryStore.SaveTurn`
 - Added regression tests for websocket write deadline behavior, recoverable pre-start audio, and playback persistence boundaries.
+- Pruned the imported root `agents/` and `skills/` reference directories down to the current `agent-server` stack, removing unrelated cross-language, database-specific, and office-workflow references and cleaning stale references from kept skill docs.
 
 ## 2026-03-25
 

@@ -422,6 +422,9 @@ Recorded follow-through:
 
 ### Recent Slices Still Relevant
 
+- `2026-04-14 Root Agent And Skill Directory Pruning`
+  - reviewed the imported ECC reference pack under root `agents/` and `skills/`, removed items unrelated to the current Go or Python or voice-agent or deployment stack, and cleaned broken residual references from the kept skill docs
+  - validation: `rg` reference sweep across `agents/`, `skills/`, `AGENTS.md`, `.codex/`, `.claude/`, and docs
 - `2026-04-14 Gateway Write-Path Hardening And Audio Hot-Path Trim`
   - added websocket write deadlines and close-on-write-error behavior for native realtime and `xiaozhi` peers, fixed the recoverable `session_not_started` audio error to actually keep the connection alive, and trimmed the first hot-path copy/write amplifiers in session ingest, buffered streaming ASR chunking, voice playback persistence, and in-memory turn upserts
   - validation: `go test ./internal/gateway ./internal/session ./internal/voice ./internal/agent`

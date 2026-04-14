@@ -107,7 +107,7 @@ from the prompt description alone and mark the estimate as uncertain.
 | LOW | Single component or module | Single command or skill |
 | MEDIUM | Multiple components, same domain | Command chain + /verify |
 | HIGH | Cross-domain, 5+ files | /plan first, then phased execution |
-| EPIC | Multi-session, multi-PR, architectural shift | Use blueprint skill for multi-session plan |
+| EPIC | Multi-session, multi-PR, architectural shift | Start with planner + architect and a phased execution plan |
 
 ### Phase 3: ECC Component Matching
 
@@ -121,12 +121,12 @@ Map intent + scope + tech stack (from Phase 0) to specific ECC components.
 | Bug Fix | /tdd, /build-fix, /verify | tdd-workflow | tdd-guide, build-error-resolver |
 | Refactor | /refactor-clean, /code-review, /verify | verification-loop | refactor-cleaner, code-reviewer |
 | Research | /plan | search-first, iterative-retrieval | — |
-| Testing | /tdd, /e2e, /test-coverage | tdd-workflow, e2e-testing | tdd-guide, e2e-runner |
+| Testing | /tdd, /test-coverage | tdd-workflow, verification-loop | tdd-guide, code-reviewer |
 | Review | /code-review | security-review | code-reviewer, security-reviewer |
 | Documentation | /update-docs, /update-codemaps | — | doc-updater |
-| Infrastructure | /plan, /verify | docker-patterns, deployment-patterns, database-migrations | architect |
+| Infrastructure | /plan, /verify | docker-patterns, deployment-patterns | architect |
 | Design (MEDIUM-HIGH) | /plan | — | planner, architect |
-| Design (EPIC) | — | blueprint (invoke as skill) | planner, architect |
+| Design (EPIC) | /plan | verification-loop | planner, architect |
 
 #### By Tech Stack
 
@@ -135,12 +135,7 @@ Map intent + scope + tech stack (from Phase 0) to specific ECC components.
 | Python / Django | django-patterns, django-tdd, django-security, django-verification, python-patterns, python-testing | python-reviewer |
 | Go | golang-patterns, golang-testing | go-reviewer, go-build-resolver |
 | Spring Boot / Java | springboot-patterns, springboot-tdd, springboot-security, springboot-verification, java-coding-standards, jpa-patterns | code-reviewer |
-| Kotlin / Android | kotlin-coroutines-flows, compose-multiplatform-patterns, android-clean-architecture | kotlin-reviewer |
-| TypeScript / React | frontend-patterns, backend-patterns, coding-standards | code-reviewer |
-| Swift / iOS | swiftui-patterns, swift-concurrency-6-2, swift-actor-persistence, swift-protocol-di-testing | code-reviewer |
-| PostgreSQL | postgres-patterns, database-migrations | database-reviewer |
-| Perl | perl-patterns, perl-testing, perl-security | code-reviewer |
-| C++ | cpp-coding-standards, cpp-testing | code-reviewer |
+| TypeScript / React | backend-patterns, coding-standards | code-reviewer |
 | Other / Unlisted | coding-standards (universal) | code-reviewer |
 
 ### Phase 4: Missing Context Detection
@@ -172,7 +167,7 @@ Determine where this prompt sits in the development lifecycle:
 Research → Plan → Implement (TDD) → Review → Verify → Commit
 ```
 
-For MEDIUM+ tasks, always start with /plan. For EPIC tasks, use blueprint skill.
+For MEDIUM+ tasks, always start with /plan. For EPIC tasks, split the work into explicit phases with planner + architect first.
 
 **Model recommendation** (include in output):
 
@@ -181,7 +176,7 @@ For MEDIUM+ tasks, always start with /plan. For EPIC tasks, use blueprint skill.
 | TRIVIAL-LOW | Sonnet 4.6 | Fast, cost-efficient for simple tasks |
 | MEDIUM | Sonnet 4.6 | Best coding model for standard work |
 | HIGH | Sonnet 4.6 (main) + Opus 4.6 (planning) | Opus for architecture, Sonnet for implementation |
-| EPIC | Opus 4.6 (blueprint) + Sonnet 4.6 (execution) | Deep reasoning for multi-session planning |
+| EPIC | Opus 4.6 (planning) + Sonnet 4.6 (execution) | Deep reasoning for multi-session planning |
 
 **Multi-prompt splitting** (for HIGH/EPIC scope):
 
@@ -231,8 +226,7 @@ The prompt must be self-contained and ready to copy-paste. Include:
 - Verification steps
 - Scope boundaries (what NOT to do)
 
-For items that reference blueprint, write: "Use the blueprint skill to..."
-(not `/blueprint`, since blueprint is a skill, not a command).
+For EPIC items, write explicit phased-planning guidance using planner + architect rather than referencing missing external skills.
 
 ### Section 4: Optimized Prompt — Quick Version
 
@@ -247,7 +241,7 @@ A compact version for experienced ECC users. Vary by intent type:
 | Testing | `/tdd [module]. /e2e for critical flows. /test-coverage.` |
 | Review | `/code-review. Then use security-reviewer agent.` |
 | Docs | `/update-docs. /update-codemaps.` |
-| EPIC | `Use blueprint skill for "[objective]". Execute phases with /verify gates.` |
+| EPIC | `/plan "[objective]" as phases. Use planner + architect first. Execute each phase with /verify gates.` |
 
 ### Section 5: Enhancement Rationale
 
@@ -360,16 +354,16 @@ Migrate our monolith to microservices
 
 **Optimized Prompt (Full):**
 ```
-Use the blueprint skill to plan: "Migrate monolith to microservices architecture"
+Use planner + architect to plan: "Migrate monolith to microservices architecture"
 
-Before executing, answer these questions in the blueprint:
+Before executing, answer these questions in the phased plan:
 1. Which domain boundaries exist in the current monolith?
 2. Which service should be extracted first (lowest coupling)?
 3. Communication pattern: REST APIs, gRPC, or event-driven (Kafka/RabbitMQ)?
 4. Database strategy: shared DB initially or database-per-service from start?
 5. Deployment target: Kubernetes, Docker Compose, or serverless?
 
-The blueprint should produce phases like:
+The phased plan should produce stages like:
 - Phase 1: Identify service boundaries and create domain map
 - Phase 2: Set up infrastructure (API gateway, service mesh, CI/CD per service)
 - Phase 3: Extract first service (strangler fig pattern)
@@ -380,7 +374,7 @@ Each phase = 1 PR, with /verify gates between phases.
 Use /save-session between phases. Use /resume-session to continue.
 Use git worktrees for parallel service extraction when dependencies allow.
 
-Recommended: Opus 4.6 for blueprint planning, Sonnet 4.6 for phase execution.
+Recommended: Opus 4.6 for planning, Sonnet 4.6 for phase execution.
 ```
 
 ---
@@ -392,6 +386,6 @@ Recommended: Opus 4.6 for blueprint planning, Sonnet 4.6 for phase execution.
 | `configure-ecc` | User hasn't set up ECC yet |
 | `skill-stocktake` | Audit which components are installed (use instead of hardcoded catalog) |
 | `search-first` | Research phase in optimized prompts |
-| `blueprint` | EPIC-scope optimized prompts (invoke as skill, not command) |
+| `planner + architect` | EPIC-scope phased planning before execution |
 | `strategic-compact` | Long session context management |
 | `cost-aware-llm-pipeline` | Token optimization recommendations |

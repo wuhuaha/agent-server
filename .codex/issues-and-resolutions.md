@@ -40,6 +40,12 @@
 - Resolution: introduced owned-frame ingest for gateway paths, flatten turn audio only at commit boundaries, stream buffered ASR through subslices instead of copied chunks, defer playback persistence to stable interrupt or completion boundaries, and stop cloning existing memory-store slices on every upsert.
 - Status: resolved for the first hot-path trim slice.
 
+### Imported Root Agent And Skill Packs Still Carried Irrelevant Upstream Noise
+
+- Problem: the root `agents/` and `skills/` directories still contained many upstream ECC references for unrelated language stacks or workflows, such as C++, Java, Kotlin, Rust, Flutter, PostgreSQL, and office-communication roles. That made the repository context heavier and left stale references in kept skill docs.
+- Resolution: trimmed those directories to the current `agent-server` stack, kept only Go or Python or voice-agent or deployment or security or harness-relevant references, and cleaned broken references from `skills/README.md` and `skills/prompt-optimizer/SKILL.md`.
+- Status: resolved.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace

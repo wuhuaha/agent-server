@@ -17,6 +17,7 @@
 - Prefer the shared `Makefile` and repository scripts over ad hoc shell sequences when a repeatable command surface exists.
 - Use `make test-py-workers` when a change affects `workers/python`; `make verify-fast` intentionally stays narrower.
 - Keep repository issue and PR templates aligned with the shared command surface and required protocol or ADR follow-through.
+- Treat root `agents/` and `skills/` as curated references for the current Go or Python or voice-agent stack only, not as a generic upstream role dump.
 
 ## Current Constraints
 

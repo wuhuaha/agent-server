@@ -7,8 +7,8 @@
 - Channel integrations such as Feishu are modeled as `channel skills`.
 - First transport target is `WebSocket + binary audio + JSON control events`.
 - Authentication is deferred, not ignored; reserved fields stay in the protocol.
-- The repository now carries an imported root `agents/` pack inspired by `everything-claude-code`, while `agent-server` specific guardrails remain the top-priority section in root `AGENTS.md`.
-- The repository also carries a curated subset of upstream ECC skills in root `skills/`, while project-specific execution skills continue to live under `.codex/skills/`.
+- The repository now carries a trimmed root `agents/` reference pack inspired by `everything-claude-code`, limited to roles that still match the current `agent-server` stack; project guardrails in root `AGENTS.md` remain the higher-priority source of truth.
+- The repository also carries a trimmed curated subset of upstream ECC skills in root `skills/`, limited to Go or Python or voice-agent or deployment or security or harness-relevant workflows, while project-specific execution skills continue to live under `.codex/skills/`.
 - The first concrete device profile is now frozen as `rtos-ws-v0`: one active session per socket, text frames for control, binary frames for audio, baseline codec `pcm16le/16k/mono`.
 - `GET /v1/realtime` is the discovery contract for device teams and must stay aligned with the protocol docs and runtime config defaults.
 - The first bootstrap implementation now supports: WebSocket upgrade, `session.start`, binary audio uplink, `audio.in.commit`, placeholder streamed response events, and bidirectional `session.end`.
