@@ -20,6 +20,26 @@
 - Resolution: added `internal/channel.RuntimeBridge`, extended the channel contract with message or thread or idempotency metadata, and added delivery-status reporting primitives so future adapters stay on normalize -> runtime -> deliver instead of learning provider APIs.
 - Status: resolved.
 
+## 2026-04-14
+
+### Websocket Write Paths Could Block Indefinitely Behind One Shared Mutex
+
+- Problem: both native realtime and `xiaozhi` websocket peers wrote JSON and binary frames without a write deadline. A slow or stalled client could therefore block one write forever while holding the shared write mutex, which in turn would stall audio downlink, interruption feedback, and session-close events.
+- Resolution: added a shared websocket write helper that applies a per-write deadline and closes the connection on write failure. Both peer implementations now route JSON and binary writes through that helper.
+- Status: resolved.
+
+### Recoverable `session_not_started` Audio Error Still Closed The Native Socket
+
+- Problem: native realtime treated binary audio before `session.start` as `Recoverable: true`, but `handleBinary` still returned the underlying `ErrNoActiveSession`, so `ServeHTTP` exited and closed the socket immediately afterward.
+- Resolution: keep the error event, but swallow `ErrNoActiveSession` after the recoverable error is emitted so the connection remains usable for a later `session.start`.
+- Status: resolved.
+
+### Audio Hot Path Still Did Extra Copies And Playback-Progress Writes
+
+- Problem: gateway audio still paid for repeated session-buffer growth copies, commit-time full-buffer copy, buffered streaming ASR chunk copies, and per-playback-chunk memory-store writes.
+- Resolution: introduced owned-frame ingest for gateway paths, flatten turn audio only at commit boundaries, stream buffered ASR through subslices instead of copied chunks, defer playback persistence to stable interrupt or completion boundaries, and stop cloning existing memory-store slices on every upsert.
+- Status: resolved for the first hot-path trim slice.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace

@@ -48,6 +48,9 @@
 - Runtime skills are now registry-backed under `internal/agent`; core builtin tools stay separate from skill-contributed prompt fragments and tools.
 - App startup config is now split by domain (`realtime`, `agent`, `voice`, `tts`, `xiaozhi`) and must fail fast through `Config.Validate()` when provider or credential combinations are invalid.
 - External channel adapters should now use `internal/channel.RuntimeBridge` for normalize -> runtime handoff -> deliver; channel code must not open-code provider access or its own agent orchestration.
+- Gateway websocket writes now always go through a shared deadline-enforced helper; write failure should tear down the socket rather than leave one stalled write holding the peer mutex indefinitely.
+- Native realtime pre-start binary audio is a genuinely recoverable protocol error: the server emits `session_not_started` and keeps the connection alive for a later `session.start`.
+- The current first hot-path trim uses owned-frame ingest in `internal/session`, subslice-based buffered ASR streaming, deferred playback persistence, and in-place memory-store upserts to reduce copy pressure and lock traffic without changing the published protocol.
 - The Python desktop runner report is now the first baseline quality artifact for end-to-end comparison: it records discovery metadata, per-scenario latency metrics, and a top-level `quality_summary` in archived JSON output.
 - The shared agent runtime now owns the full cloud-model tool loop: streamed text deltas, tool-call handling, tool invocation, tool-result reinjection, and loop step budgets stay inside `internal/agent`.
 - Provider-specific tool-name constraints must be absorbed inside `internal/agent`; runtime tool identities such as `session.describe` and `memory.recall` stay stable even when a model provider requires sanitized function names.

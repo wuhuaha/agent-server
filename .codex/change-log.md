@@ -10,6 +10,17 @@
 - Added `internal/channel.RuntimeBridge`, extended the channel contracts with message or thread or idempotency metadata, and added bridge tests that cover normalize -> runtime handoff -> deliver plus delivery-status reporting.
 - Updated `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/channel-skill-contract-v0.md`, and new ADRs `0024` and `0025` to record the new ownership boundaries.
 
+## 2026-04-14
+
+- Hardened native realtime and `xiaozhi` websocket write paths with per-write deadlines and close-on-write-error handling so slow or stalled readers do not block the shared write mutex indefinitely.
+- Fixed native realtime binary-audio handling so `session_not_started` remains a truly recoverable error instead of sending a recoverable event and then tearing down the socket anyway.
+- Reduced the first audio hot-path costs by:
+  - adding owned-frame ingest in `internal/session` so gateway audio does not grow through repeated buffer copies
+  - chunking buffered streaming ASR by subslice instead of copying every chunk again
+  - keeping playback-progress heard-text updates in memory until stable interrupt or completion boundaries
+  - removing unnecessary slice cloning inside `InMemoryMemoryStore.SaveTurn`
+- Added regression tests for websocket write deadline behavior, recoverable pre-start audio, and playback persistence boundaries.
+
 ## 2026-03-25
 
 - Created the `agent-server` repository on `E:\agent-server`.

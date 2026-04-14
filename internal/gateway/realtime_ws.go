@@ -110,7 +110,7 @@ type errorPayload struct {
 }
 
 type wsPeer struct {
-	conn      *websocket.Conn
+	conn      websocketWriteConn
 	serverSeq int64
 	writeMu   sync.Mutex
 }
@@ -123,14 +123,14 @@ func (p *wsPeer) WriteEvent(eventType events.Type, sessionID string, payload any
 
 	p.serverSeq++
 	envelope := events.New(eventType, sessionID, p.serverSeq, payload)
-	return p.conn.WriteJSON(envelope)
+	return writeWebsocketJSON(p.conn, envelope)
 }
 
 func (p *wsPeer) WriteBinary(payload []byte) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 
-	return p.conn.WriteMessage(websocket.BinaryMessage, payload)
+	return writeWebsocketBinary(p.conn, payload)
 }
 
 type realtimeWSHandler struct {
@@ -329,14 +329,17 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 		normalizedPayload = decodedPayload
 	}
 
-	current, err := runtime.session.IngestAudioFrame(normalizedPayload)
+	current, err := runtime.session.IngestOwnedAudioFrame(normalizedPayload)
 	if err != nil {
-		if sendErr := runtime.peer.WriteEvent(events.TypeError, "", errorPayload{
-			Code:        "session_not_started",
-			Message:     "session.start must be sent before binary audio frames",
-			Recoverable: true,
-		}); sendErr != nil {
-			return sendErr
+		if errors.Is(err, session.ErrNoActiveSession) {
+			if sendErr := runtime.peer.WriteEvent(events.TypeError, "", errorPayload{
+				Code:        "session_not_started",
+				Message:     "session.start must be sent before binary audio frames",
+				Recoverable: true,
+			}); sendErr != nil {
+				return sendErr
+			}
+			return nil
 		}
 		return err
 	}

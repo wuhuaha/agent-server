@@ -322,6 +322,32 @@ func TestRealtimeWSStreamingResponderFlushesDeltasBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestRealtimeWSBinaryBeforeSessionStartIsRecoverable(t *testing.T) {
+	profile := testRealtimeProfile()
+	conn := openRealtimeWS(t, profile, nil)
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x01, 0x02, 0x03, 0x04}); err != nil {
+		t.Fatalf("write binary before session.start failed: %v", err)
+	}
+
+	event := readNextJSONEvent(t, conn, 2*time.Second)
+	if event.Type != "error" {
+		t.Fatalf("expected error event, got %s", event.Type)
+	}
+	if got := stringValue(event.Payload["code"]); got != "session_not_started" {
+		t.Fatalf("expected session_not_started error, got %q", got)
+	}
+	if recoverable, ok := event.Payload["recoverable"].(bool); !ok || !recoverable {
+		t.Fatalf("expected recoverable=true, got %+v", event.Payload)
+	}
+
+	sessionID := startTestSession(t, conn, profile)
+	if sessionID == "" {
+		t.Fatal("expected websocket to remain usable after recoverable error")
+	}
+}
+
 func TestRealtimeWSTurnTraceMetadataFlowsThroughResponseStartAndResponder(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.IdleTimeoutMs = 5000

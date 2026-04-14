@@ -422,6 +422,9 @@ Recorded follow-through:
 
 ### Recent Slices Still Relevant
 
+- `2026-04-14 Gateway Write-Path Hardening And Audio Hot-Path Trim`
+  - added websocket write deadlines and close-on-write-error behavior for native realtime and `xiaozhi` peers, fixed the recoverable `session_not_started` audio error to actually keep the connection alive, and trimmed the first hot-path copy/write amplifiers in session ingest, buffered streaming ASR chunking, voice playback persistence, and in-memory turn upserts
+  - validation: `go test ./internal/gateway ./internal/session ./internal/voice ./internal/agent`
 - `2026-04-13 Codex Harness P0`
   - shortened `AGENTS.md`, introduced `docs/codex/harness-workflow.md`, standardized `Makefile` and `scripts` entrypoints, and added fast CI
   - validation: `make test-go`, `make test-py`, `make doctor`, `make docker-config`, `make verify-fast`
