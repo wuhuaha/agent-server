@@ -115,8 +115,6 @@ type wsPeer struct {
 	writeMu   sync.Mutex
 }
 
-var errContinueReadLoop = errors.New("continue websocket read loop")
-
 func (p *wsPeer) WriteEvent(eventType events.Type, sessionID string, payload any) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
@@ -185,51 +183,87 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	defer runtime.interruptOutput(50 * time.Millisecond)
+	inboundCh := startWebsocketReadPump(ctx, conn)
+	var previewTicker *time.Ticker
+	if h.profile.ServerEndpointEnabled {
+		previewTicker = time.NewTicker(voice.InputPreviewPollInterval)
+		defer previewTicker.Stop()
+	}
 
 	if err := applyReadDeadline(runtime, runtime.session.Snapshot(), h.profile); err != nil {
 		return
 	}
 
 	for {
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			if handled, handleErr := h.handleReadError(ctx, runtime, err); handled {
-				if errors.Is(handleErr, errContinueReadLoop) {
-					continue
-				}
-				if handleErr != nil {
-					return
-				}
+		select {
+		case inbound, ok := <-inboundCh:
+			if !ok {
 				return
 			}
-			return
-		}
-
-		switch messageType {
-		case websocket.TextMessage:
-			if err := h.handleControl(ctx, runtime, payload); err != nil {
-				if errors.Is(err, session.ErrNoActiveSession) || errors.Is(err, session.ErrSessionAlreadyActive) {
-					continue
+			if err := h.handleInboundMessage(ctx, runtime, peer, inbound); err != nil {
+				return
+			}
+		case <-previewTickerC(previewTicker):
+			drainedInbound := false
+		drainInbound:
+			for {
+				select {
+				case inbound, ok := <-inboundCh:
+					if !ok {
+						return
+					}
+					drainedInbound = true
+					if err := h.handleInboundMessage(ctx, runtime, peer, inbound); err != nil {
+						return
+					}
+				default:
+					break drainInbound
 				}
-				return
 			}
-		case websocket.BinaryMessage:
-			if err := h.handleBinary(runtime, payload); err != nil {
-				return
+			if drainedInbound {
+				continue
 			}
-		default:
-			if err := peer.WriteEvent(events.TypeError, runtime.session.Snapshot().SessionID, errorPayload{
-				Code:        "unsupported_message_type",
-				Message:     "only text and binary websocket frames are supported",
-				Recoverable: true,
-			}); err != nil {
+			if err := h.handleServerEndpointTick(ctx, runtime, time.Now().UTC()); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (h *realtimeWSHandler) handleReadError(ctx context.Context, runtime *connectionRuntime, err error) (bool, error) {
+func (h *realtimeWSHandler) handleInboundMessage(ctx context.Context, runtime *connectionRuntime, peer *wsPeer, inbound websocketInboundMessage) error {
+	if inbound.err != nil {
+		if handled, handleErr := h.handleReadError(runtime, inbound.err); handled {
+			return handleErr
+		}
+		return inbound.err
+	}
+
+	switch inbound.messageType {
+	case websocket.TextMessage:
+		if err := h.handleControl(ctx, runtime, inbound.payload); err != nil {
+			if errors.Is(err, session.ErrNoActiveSession) || errors.Is(err, session.ErrSessionAlreadyActive) {
+				return nil
+			}
+			return err
+		}
+	case websocket.BinaryMessage:
+		if err := h.handleBinary(runtime, inbound.payload); err != nil {
+			return err
+		}
+	default:
+		if err := peer.WriteEvent(events.TypeError, runtime.session.Snapshot().SessionID, errorPayload{
+			Code:        "unsupported_message_type",
+			Message:     "only text and binary websocket frames are supported",
+			Recoverable: true,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (h *realtimeWSHandler) handleReadError(runtime *connectionRuntime, err error) (bool, error) {
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		return false, nil
@@ -237,10 +271,6 @@ func (h *realtimeWSHandler) handleReadError(ctx context.Context, runtime *connec
 
 	snapshot := runtime.session.Snapshot()
 	now := time.Now().UTC()
-	if handled, handleErr := h.maybeHandleServerEndpointTimeout(ctx, runtime, snapshot, now); handled {
-		return true, handleErr
-	}
-
 	reason, shouldClose := deadlineCloseReason(snapshot, h.profile, now)
 	if !shouldClose {
 		if snapshot.SessionID == "" {
@@ -255,13 +285,14 @@ func (h *realtimeWSHandler) handleReadError(ctx context.Context, runtime *connec
 	return true, h.endSession(runtime, reason, closeMessageForReason(reason))
 }
 
-func (h *realtimeWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, now time.Time) (bool, error) {
+func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtime *connectionRuntime, now time.Time) error {
+	snapshot := runtime.session.Snapshot()
 	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive {
-		return false, nil
+		return nil
 	}
 	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
 	if !active {
-		return false, nil
+		return nil
 	}
 	if partialChanged {
 		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
@@ -273,10 +304,10 @@ func (h *realtimeWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context
 		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
-			return true, err
+			return err
 		}
 		if err := applyReadDeadline(runtime, turn.Snapshot, h.profile); err != nil {
-			return true, err
+			return err
 		}
 		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
 		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
@@ -293,21 +324,14 @@ func (h *realtimeWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context
 			BargeInEnabled: true,
 			TurnID:         trace.TurnID,
 		}); err != nil {
-			return true, err
+			return err
 		}
 		if err := h.emitTurnResponse(ctx, runtime, turn, trace, ""); err != nil {
-			return true, err
+			return err
 		}
-		return true, errContinueReadLoop
+		return nil
 	}
-	if deadlineReason, shouldClose := deadlineCloseReason(snapshot, h.profile, now); shouldClose {
-		runtime.interruptOutput(100 * time.Millisecond)
-		return true, h.endSession(runtime, deadlineReason, closeMessageForReason(deadlineReason))
-	}
-	if err := applyReadDeadline(runtime, snapshot, h.profile); err != nil {
-		return true, err
-	}
-	return true, errContinueReadLoop
+	return nil
 }
 
 func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []byte) error {
@@ -316,10 +340,6 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 	}
 
 	previous := runtime.session.Snapshot()
-	if previous.State == session.StateSpeaking {
-		runtime.interruptOutput(100 * time.Millisecond)
-	}
-
 	normalizedPayload := payload
 	if runtime.inputNormalizer != nil {
 		decodedPayload, err := runtime.inputNormalizer.Decode(payload)
@@ -327,6 +347,36 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 			return h.terminateWithError(runtime, "audio_decode_failed", err.Error())
 		}
 		normalizedPayload = decodedPayload
+	}
+
+	if previous.State == session.StateSpeaking {
+		runtime.stagePendingBargeInAudio(normalizedPayload)
+		preview := runtime.previewForBargeIn(context.Background(), h.responder, previous, normalizedPayload)
+		if !voice.ShouldAcceptBargeIn(preview, previous.InputSampleRate, previous.InputChannels, voice.BargeInConfig{
+			MinAudioMs:       h.profile.BargeInMinAudioMs,
+			IncompleteHoldMs: h.profile.BargeInHoldAudioMs,
+		}) {
+			if err := applyReadDeadline(runtime, previous, h.profile); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
+			ClearPreview: false,
+			ClearPending: false,
+		}, nil, func(trace turnTrace, active session.Snapshot) error {
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
+				State:          active.State,
+				BargeInEnabled: true,
+				TurnID:         trace.TurnID,
+			})
+		}); err != nil {
+			return err
+		}
+		if _, err := runtime.flushPendingBargeInAudio(); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	current, err := runtime.session.IngestOwnedAudioFrame(normalizedPayload)
@@ -473,6 +523,25 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 	}
 
 	snapshot := runtime.session.Snapshot()
+	if snapshot.State == session.StateSpeaking && runtime.hasPendingBargeInAudio() {
+		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
+			ClearPreview: false,
+			ClearPending: false,
+		}, nil, func(trace turnTrace, active session.Snapshot) error {
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
+				State:          active.State,
+				BargeInEnabled: true,
+				TurnID:         trace.TurnID,
+			})
+		}); err != nil {
+			return err
+		}
+		flushedSnapshot, err := runtime.flushPendingBargeInAudio()
+		if err != nil {
+			return err
+		}
+		snapshot = flushedSnapshot
+	}
 	if snapshot.State != session.StateActive {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
 			Code:        "turn_not_ready",
@@ -489,6 +558,7 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 			Recoverable: true,
 		})
 	}
+	runtime.resetPendingBargeInAudio()
 
 	if err := applyReadDeadline(runtime, turn.Snapshot, h.profile); err != nil {
 		return err
@@ -822,11 +892,15 @@ func (h *realtimeWSHandler) startAudioStream(
 
 		current := runtime.session.Snapshot()
 		if current.SessionID != sessionID || current.State != session.StateSpeaking {
+			runtime.resetPendingBargeInAudio()
+			runtime.clearInputPreview()
 			return
 		}
 		if runtime.voiceSession != nil {
 			runtime.voiceSession.CompletePlayback()
 		}
+		runtime.resetPendingBargeInAudio()
+		runtime.clearInputPreview()
 
 		if endSession {
 			_ = completeTurnReturnOrClose(trace, true, endReason, endMessage, turnCompletionHooks{

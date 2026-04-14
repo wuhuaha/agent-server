@@ -8,7 +8,10 @@ This package hosts Python-side workers for `agent-server`.
   - local HTTP ASR worker
   - designed for the existing `xiaozhi-esp32-server` conda environment
   - accepts normalized PCM16LE audio from the Go server and returns text transcription
-  - supports both batch `/v1/asr/transcribe` and the local streaming preview lifecycle under `/v1/asr/stream/*`
+  - supports batch `/v1/asr/transcribe` plus the local streaming lifecycle under `/v1/asr/stream/*`
+  - keeps backward-compatible `stream_preview_batch` as the default stream mode
+  - can switch to an internal 2pass path with `online preview + final ASR correction`
+  - can optionally run KWS inside the worker, but `KWS` stays disabled by default and does not widen the public websocket contract
 
 ## Linux Install
 
@@ -53,16 +56,80 @@ conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service 
 
 For GPU validation on this machine, switch the device argument to `cuda:0`.
 
-## Stream Preview Tuning
+## 2pass / Preview / KWS Tuning
 
-The worker can emit local preview partials by repeatedly re-running FunASR on the buffered audio during an active stream.
+The worker now supports two internal stream modes:
 
+- default `stream_preview_batch`
+  - keeps the previous compatibility behavior
+  - worker preview comes from re-running the final ASR model on the buffered audio
+- optional `stream_2pass_online_final`
+  - enabled when `AGENT_SERVER_FUNASR_ONLINE_MODEL` is non-empty
+  - worker preview comes from a true streaming online ASR model
+  - turn-final text still comes from the configured final ASR model
+
+### Online Preview / 2pass
+
+- `AGENT_SERVER_FUNASR_ONLINE_MODEL`
+  - empty by default, which keeps `stream_preview_batch`
+  - set this to an online ASR model such as `paraformer-zh-streaming` to enable `stream_2pass_online_final`
+- `AGENT_SERVER_FUNASR_STREAM_CHUNK_SIZE`
+  - FunASR online chunk tuple, default `0,10,5`
+- `AGENT_SERVER_FUNASR_STREAM_ENCODER_CHUNK_LOOK_BACK`
+  - default `4`
+- `AGENT_SERVER_FUNASR_STREAM_DECODER_CHUNK_LOOK_BACK`
+  - default `1`
 - `AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_AUDIO_MS`
-  - minimum buffered audio before the worker attempts the first preview
+  - minimum buffered audio before the worker emits the first preview attempt
   - default: `320`
 - `AGENT_SERVER_FUNASR_STREAM_PREVIEW_MIN_INTERVAL_MS`
-  - minimum interval between preview attempts on the same stream
+  - batch-preview only; minimum interval between repeated buffered preview attempts
   - default: `240`
+
+### Final ASR / Final VAD / Final Punctuation
+
+- `AGENT_SERVER_FUNASR_MODEL`
+  - final-ASR model, default `iic/SenseVoiceSmall`
+- `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL`
+  - optional final-path FunASR VAD model, default empty
+- `AGENT_SERVER_FUNASR_FINAL_PUNC_MODEL`
+  - optional final-path punctuation model, default empty
+- `AGENT_SERVER_FUNASR_FINAL_MERGE_VAD`
+  - whether to merge adjacent VAD clips before final ASR when a final VAD model is configured
+  - default: `true`
+- `AGENT_SERVER_FUNASR_FINAL_MERGE_LENGTH_S`
+  - final VAD merge window in seconds
+  - default: `15`
+
+### KWS
+
+- `AGENT_SERVER_FUNASR_KWS_ENABLED`
+  - whether to enable KWS inside the worker
+  - default: `false`
+- `AGENT_SERVER_FUNASR_KWS_MODEL`
+  - KWS model id used only when `KWS` is enabled
+  - default: `fsmn-kws`
+- `AGENT_SERVER_FUNASR_KWS_KEYWORDS`
+  - comma-separated keyword list
+  - default: empty
+- `AGENT_SERVER_FUNASR_KWS_STRIP_MATCHED_PREFIX`
+  - when `true`, strips the detected wake-word prefix from preview/final transcript text
+  - default: `true`
+- `AGENT_SERVER_FUNASR_KWS_MIN_AUDIO_MS`
+  - minimum buffered audio before the worker attempts KWS
+  - default: `480`
+- `AGENT_SERVER_FUNASR_KWS_MIN_INTERVAL_MS`
+  - minimum interval between repeated KWS checks on one stream
+  - default: `400`
+
+KWS remains worker-internal:
+
+- it is off by default
+- it only annotates worker results with `audio_events` and optional prefix stripping
+- it does not change the public realtime or `xiaozhi` protocol shapes
+
+### Endpoint Hints / VAD
+
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_TAIL_MS`
   - tail-audio window used for the worker's lightweight preview endpoint hint
   - default: `160`
@@ -72,35 +139,46 @@ The worker can emit local preview partials by repeatedly re-running FunASR on th
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`
   - preview endpoint hint provider selection
   - `energy`: default lightweight tail-energy hint
+  - `fsmn_vad`: use the configured `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL` as the worker-side endpoint hint source
   - `silero`: prefer `Silero VAD`; if the runtime is unavailable or the audio format is unsupported, fall back to `energy`
-  - `auto`: try `Silero VAD` first, otherwise fall back to `energy`
+  - `auto`: prefer `fsmn_vad` when `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL` is configured, otherwise try `Silero VAD`, then fall back to `energy`
   - `none`: disable worker-side preview endpoint hints
   - default: `energy`
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_THRESHOLD`
   - VAD threshold passed to `Silero VAD`
   - default: `0.5`
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_MIN_SILENCE_MS`
-  - minimum trailing silence required before the worker emits `preview_silero_vad_silence`
+  - minimum trailing silence required before the worker emits `preview_fsmn_vad_silence` or `preview_silero_vad_silence`
   - default: `160`
 - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS`
   - speech padding passed to `Silero VAD`
   - default: `30`
 
-Optional local/open-source VAD install:
+Optional local/open-source `Silero VAD` install:
 
 ```bash
 ./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
 ```
 
-The current stream preview path stays conservative by default:
+The current stream path stays conservative by default:
 
+- `AGENT_SERVER_FUNASR_ONLINE_MODEL` stays empty, so existing bring-up still uses `stream_preview_batch`
+- `AGENT_SERVER_FUNASR_KWS_ENABLED=false`, so wake-word detection is opt-in
 - `energy` remains the default endpoint-hint source, so existing bring-up behavior does not change unexpectedly
-- `Silero VAD` only strengthens worker-side hinting; it does not widen the public websocket or `xiaozhi` compatibility protocol
-- `/healthz` and `/v1/asr/info` now expose the configured VAD provider plus lazy runtime status and any fallback error string
+- worker-side `fsmn-vad`, `Silero VAD`, and `KWS` all stay behind the same HTTP worker boundary; they do not widen the public websocket or `xiaozhi` compatibility protocol
+- `/healthz` and `/v1/asr/info` now expose the active pipeline mode plus online/final/KWS/VAD config and runtime status
 
 ## Health Check
 
 - `GET http://127.0.0.1:8091/healthz`
 - `GET http://127.0.0.1:8091/v1/asr/info`
 
-`/v1/asr/info` now advertises the currently enabled batch and streaming routes.
+`/v1/asr/info` now advertises the currently enabled batch and streaming routes together with:
+
+- `pipeline_mode`
+- `online_model`
+- `final_vad_model`
+- `final_punc_model`
+- `kws_enabled`
+- `kws_keywords`
+- worker-side endpoint-hint provider and lazy runtime status

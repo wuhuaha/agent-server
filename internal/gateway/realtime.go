@@ -27,6 +27,8 @@ type RealtimeProfile struct {
 	VoiceProvider         string
 	TTSProvider           string
 	ServerEndpointEnabled bool
+	BargeInMinAudioMs     int
+	BargeInHoldAudioMs    int
 	AuthMode              string
 	TurnMode              string
 	IdleTimeoutMs         int
@@ -116,6 +118,7 @@ func NewRealtimeHandler(profile RealtimeProfile) http.Handler {
 				"bootstrap websocket handler is available at the advertised ws_path",
 				"idle timeout is enforced only while the session is active",
 				"new inbound audio or session.update interrupt=true can barge into speaking state",
+				"inbound audio barge-in now uses a shared adaptive threshold instead of interrupting on the very first frame",
 			},
 		})
 	})

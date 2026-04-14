@@ -5,6 +5,24 @@
 - Added `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`, a Chinese research note focused on the current phase-1 voice-agent demo goal of improving realtime fluency, naturalness, and vividness.
 - Indexed that new note from `docs/architecture/overview.md` and `plan.md` so the current optimization priority is discoverable from the main architecture and planning entrypoints.
 - Updated `AGENTS.md`, `docs/architecture/agent-server-guardrails.md`, `docs/codex/harness-workflow.md`, `.claude/context.md`, and `.codex/project-memory.md` to make deep-analysis and research conclusions land in `docs/` by default instead of remaining only in chat.
+- Hardened the shared voice turn detector so standalone hesitation and backchannel-like partials now stay on the lexical-hold path instead of auto-ending too aggressively, and added unit plus integration coverage for that behavior in `internal/voice/turn_detector.go` and `internal/voice/turn_detector_test.go`.
+
+- Completed the requested first phase-1 voice-demo implementation loop in order:
+  - added shared adaptive barge-in staging and thresholds in `internal/voice/barge_in.go`
+  - wired `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS` and `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS` through app config and realtime discovery notes
+  - added shared clause-level incremental TTS planning in `internal/voice/speech_planner.go`
+  - wired `AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED`, `AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES`, and `AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES`
+  - moved hidden preview polling for native realtime and `xiaozhi` off websocket read-timeout recovery into a ticker + read-pump path so auto-commit sessions stay reusable
+- Added or updated regression coverage for:
+  - short incomplete barge-in audio continuing the first response until an explicit `audio.in.commit`
+  - shared speech-planner clause segmentation and early synthesis start before streamed turn completion
+  - app-level speech-planner config wiring
+  - native realtime hidden preview remaining open for a later client `session.end`
+- Completed live validation for the hidden preview path with real speech samples:
+  - normalized real samples under `artifacts/live-baseline/20260414/samples/`
+  - recorded the final command-only success run at `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-command-only-final/report.json`
+  - recorded the wake-word-prefixed comparison run at `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-wake-command-v1/report.json`
+  - kept `agentd` restored on `:8080` and a preview-enabled validation stack on `:8081`, both backed by the local FunASR worker on `:8091`
 
 ## 2026-04-13
 
@@ -655,3 +673,38 @@
   - added shared gateway helpers in `internal/gateway/turn_flow.go` and `internal/gateway/output_flow.go`
   - updated `internal/gateway/realtime_ws.go` and `internal/gateway/xiaozhi_ws.go` to share response execution, interruption, and active/end completion flow
   - updated architecture docs plus ADRs to record the gateway-shared intermediate step before ownership moves further into `internal/voice`
+
+- Added a durable FunASR model-selection research note for the phase-1 voice demo:
+  - recorded the repository's current actual FunASR usage and gaps
+  - compared the most relevant official model options across ASR, online streaming, VAD, punctuation, KWS, speaker, emotion, and CosyVoice TTS
+  - recommended a project-fit priority order centered on `fsmn-kws` + `fsmn-vad` + true online ASR preview + final-ASR correction instead of keeping one `SenseVoiceSmall` worker responsible for every speech task
+  - note: `docs/architecture/funasr-model-selection-zh-2026-04-14.md`
+- Landed the first modular local FunASR worker path behind the existing HTTP boundary:
+  - `workers/python/src/agent_server_workers/funasr_service.py` now supports optional online preview, separate final-ASR, optional final-path VAD/punctuation, and optional KWS with default `off`
+  - `/healthz` and `/v1/asr/info` now surface pipeline mode plus online/final/KWS/VAD runtime status
+- Added targeted Python worker coverage for the new path in `workers/python/tests/test_funasr_service.py`:
+  - default config parsing
+  - 2pass preview/final lifecycle
+  - KWS prefix stripping and audio-event annotation
+  - `fsmn_vad` / `silero` / `energy` endpoint-hint behavior
+- Wrote the durable follow-through for the new worker slice:
+  - `workers/python/README.md`
+  - `docs/architecture/local-funasr-asr.md`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/architecture/overview.md`
+  - `docs/architecture/funasr-model-selection-zh-2026-04-14.md`
+  - `docs/adr/0028-local-funasr-worker-keeps-2pass-asr-and-kws-internal.md`
+  - `.env.example`
+  - `deploy/docker/.env.docker.example`
+- Added a reusable machine-local long-running service surface for the current server:
+  - `scripts/run-agentd-local.sh`
+  - `scripts/run-funasr-worker-local.sh`
+  - `scripts/install-local-systemd-stack.sh`
+  - `deploy/systemd/agent-server-agentd.service`
+  - `deploy/systemd/agent-server-funasr-worker.service`
+  - matching env examples under `deploy/systemd/`
+- Added a reusable local edge-exposure path:
+  - `scripts/install-local-nginx-proxy.sh`
+  - `deploy/nginx/agent-server.conf`
+  - `README.md` and `docs/architecture/runtime-configuration.md` now document the systemd + nginx path
+- The current machine now runs `agentd` and the local FunASR worker under `systemd`, and `nginx` exposes the stack on `80/443` while preserving direct `8080` access

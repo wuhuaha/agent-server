@@ -16,6 +16,11 @@ type VoiceConfig struct {
 	ServerEndpointLexicalMode      string
 	ServerEndpointIncompleteHoldMs int
 	ServerEndpointHintSilenceMs    int
+	BargeInMinAudioMs              int
+	BargeInHoldAudioMs             int
+	SpeechPlannerEnabled           bool
+	SpeechPlannerMinChunkRunes     int
+	SpeechPlannerTargetChunkRunes  int
 	EmitPlaceholderAudio           bool
 	IflytekRTASR                   IflytekRTASRProviderConfig
 }
@@ -47,6 +52,11 @@ func loadVoiceConfig() VoiceConfig {
 		ServerEndpointLexicalMode:      getenv("AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE", "conservative"),
 		ServerEndpointIncompleteHoldMs: getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS", 720),
 		ServerEndpointHintSilenceMs:    getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS", 160),
+		BargeInMinAudioMs:              getenvInt("AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS", 120),
+		BargeInHoldAudioMs:             getenvInt("AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS", 240),
+		SpeechPlannerEnabled:           getenvBool("AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED", true),
+		SpeechPlannerMinChunkRunes:     getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES", 6),
+		SpeechPlannerTargetChunkRunes:  getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES", 24),
 		EmitPlaceholderAudio:           getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
 		IflytekRTASR: IflytekRTASRProviderConfig{
 			AppID:           getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID", ""),
@@ -92,6 +102,21 @@ func applyVoiceDefaults(cfg *Config) {
 	}
 	if cfg.Voice.ServerEndpointHintSilenceMs <= 0 {
 		cfg.Voice.ServerEndpointHintSilenceMs = 160
+	}
+	if cfg.Voice.BargeInMinAudioMs <= 0 {
+		cfg.Voice.BargeInMinAudioMs = 120
+	}
+	if cfg.Voice.BargeInHoldAudioMs <= 0 {
+		cfg.Voice.BargeInHoldAudioMs = 240
+	}
+	if cfg.Voice.SpeechPlannerMinChunkRunes <= 0 {
+		cfg.Voice.SpeechPlannerMinChunkRunes = 6
+	}
+	if cfg.Voice.SpeechPlannerTargetChunkRunes <= 0 {
+		cfg.Voice.SpeechPlannerTargetChunkRunes = 24
+	}
+	if cfg.Voice.SpeechPlannerTargetChunkRunes < cfg.Voice.SpeechPlannerMinChunkRunes {
+		cfg.Voice.SpeechPlannerTargetChunkRunes = cfg.Voice.SpeechPlannerMinChunkRunes
 	}
 }
 

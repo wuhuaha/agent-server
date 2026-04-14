@@ -8,19 +8,25 @@ import (
 )
 
 type BootstrapResponder struct {
-	OutputCodec      string
-	OutputSampleRate int
-	OutputChannels   int
-	Executor         agent.TurnExecutor
-	Synthesizer      Synthesizer
-	MemoryStore      agent.MemoryStore
+	OutputCodec                   string
+	OutputSampleRate              int
+	OutputChannels                int
+	Executor                      agent.TurnExecutor
+	Synthesizer                   Synthesizer
+	MemoryStore                   agent.MemoryStore
+	SpeechPlannerEnabled          bool
+	SpeechPlannerMinChunkRunes    int
+	SpeechPlannerTargetChunkRunes int
 }
 
 func NewBootstrapResponder(outputCodec string, outputSampleRate, outputChannels int) BootstrapResponder {
 	return BootstrapResponder{
-		OutputCodec:      outputCodec,
-		OutputSampleRate: outputSampleRate,
-		OutputChannels:   outputChannels,
+		OutputCodec:                   outputCodec,
+		OutputSampleRate:              outputSampleRate,
+		OutputChannels:                outputChannels,
+		SpeechPlannerEnabled:          true,
+		SpeechPlannerMinChunkRunes:    defaultSpeechPlannerMinChunkRunes,
+		SpeechPlannerTargetChunkRunes: defaultSpeechPlannerTargetChunkRunes,
 	}
 }
 
@@ -29,14 +35,43 @@ func (r BootstrapResponder) Respond(ctx context.Context, req TurnRequest) (TurnR
 }
 
 func (r BootstrapResponder) RespondStream(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponse, error) {
-	turn, err := executeTurnStream(ctx, r.Executor, req, req.Text, sink)
+	userText := strings.TrimSpace(req.Text)
+	planner := newPlannedSpeechSynthesis(ctx, r.Synthesizer, SynthesisRequest{
+		SessionID: req.SessionID,
+		TurnID:    req.TurnID,
+		TraceID:   req.TraceID,
+		DeviceID:  req.DeviceID,
+		UserText:  userText,
+	}, r.speechPlannerConfig())
+
+	emitSink := sink
+	if planner != nil {
+		emitSink = ResponseDeltaSinkFunc(func(ctx context.Context, delta ResponseDelta) error {
+			if err := emitResponseDelta(ctx, sink, delta); err != nil {
+				return err
+			}
+			planner.ObserveDelta(delta)
+			return nil
+		})
+	}
+
+	turn, err := executeTurnStream(ctx, r.Executor, req, req.Text, emitSink)
 	if err != nil {
+		if planner != nil {
+			planner.Close()
+		}
 		return TurnResponse{}, err
 	}
 
-	audioChunks, audioStream := r.audioOutput(ctx, req, req.Text, turn.Text)
+	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
+	if planner != nil {
+		if plannedStream := planner.Finalize(turn.Text); plannedStream != nil {
+			audioChunks = nil
+			audioStream = plannedStream
+		}
+	}
 	response := TurnResponse{
-		InputText:   strings.TrimSpace(req.Text),
+		InputText:   userText,
 		Text:        turn.Text,
 		AudioChunks: audioChunks,
 		AudioStream: audioStream,
@@ -65,8 +100,24 @@ func (r BootstrapResponder) WithMemoryStore(store agent.MemoryStore) BootstrapRe
 	return r
 }
 
+func (r BootstrapResponder) WithSpeechPlannerConfig(cfg SpeechPlannerConfig) BootstrapResponder {
+	cfg = NormalizeSpeechPlannerConfig(cfg)
+	r.SpeechPlannerEnabled = cfg.Enabled
+	r.SpeechPlannerMinChunkRunes = cfg.MinChunkRunes
+	r.SpeechPlannerTargetChunkRunes = cfg.TargetChunkRunes
+	return r
+}
+
 func (r BootstrapResponder) NewSessionOrchestrator() *SessionOrchestrator {
 	return NewSessionOrchestrator(r.MemoryStore)
+}
+
+func (r BootstrapResponder) speechPlannerConfig() SpeechPlannerConfig {
+	return NormalizeSpeechPlannerConfig(SpeechPlannerConfig{
+		Enabled:          r.SpeechPlannerEnabled,
+		MinChunkRunes:    r.SpeechPlannerMinChunkRunes,
+		TargetChunkRunes: r.SpeechPlannerTargetChunkRunes,
+	})
 }
 
 func bootstrapAudio(codec string, sampleRate, channels int) [][]byte {

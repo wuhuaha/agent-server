@@ -128,6 +128,11 @@ Current runtime note:
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`: hidden lexical false-endpoint guard mode, default `conservative`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`: extra hold window applied when the latest partial still looks unfinished, default `720`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`: shortened silence window used when a provider preview carries an explicit endpoint hint and the latest partial already looks complete, default `160`
+- `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`: minimum staged interrupt audio before lexically complete barge-in is accepted, default `120`
+- `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS`: extra staged audio hold applied when the current interrupt preview still looks incomplete, default `240`
+- `AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED`: enable shared clause-level incremental TTS planning when a synthesizer is configured, default `true`
+- `AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES`: minimum stable clause size before the speech planner emits an early segment, default `6`
+- `AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES`: preferred clause size for early speech-planner chunking, default `24`
 - `AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO`: whether to keep emitting silent audio chunks until real TTS is added
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID`
 - `AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID`
@@ -148,6 +153,12 @@ Current directly usable local setup:
 2. start the server with `scripts/dev-funasr.ps1` or `scripts/dev-funasr-mimo.ps1`
 3. connect with the Python desktop client or the scripted runner
 
+Current directly usable machine-local long-running setup:
+
+1. install and enable the worker plus `agentd` services with `sudo env PATH="$PATH" bash scripts/install-local-systemd-stack.sh`
+2. optionally expose `80/443` through `nginx` with `sudo PUBLIC_IP=<your-public-ip> bash scripts/install-local-nginx-proxy.sh`
+3. adjust `/etc/agent-server/funasr-worker.env` or `/etc/agent-server/agentd.env` when local runtime defaults need to persist across reboots
+
 For `opus` device uplink, the current server path supports mono speech-oriented `SILK-only` packets and normalizes them in Go before calling the worker. The Python worker still receives `pcm16le` JSON payloads.
 
 Current internal endpoint-preview note:
@@ -157,17 +168,43 @@ Current internal endpoint-preview note:
 - the first hidden endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
 - the current default hidden policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
+- preview polling no longer relies on websocket read timeouts for the non-terminal preview loop; native realtime and `xiaozhi` now keep the socket reusable after hidden auto-commit and a later client-driven close
+- inbound audio barge-in now stages candidate interrupt audio and applies one shared adaptive threshold instead of interrupting on the first frame:
+  - lexically complete interrupt previews may cut in after `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`
+  - incomplete interrupt previews must clear an additional `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS`
+  - explicit `audio.in.commit` while speaking can still accept a short but intentional interruption if staged interrupt audio already exists
+- the local FunASR worker now supports two internal stream modes behind the same shared `StreamingTranscriber` boundary:
+  - `stream_preview_batch`: backward-compatible buffered preview, still the default while `AGENT_SERVER_FUNASR_ONLINE_MODEL` stays empty
+  - `stream_2pass_online_final`: optional 2pass mode enabled by `AGENT_SERVER_FUNASR_ONLINE_MODEL`, where preview comes from a true online ASR model and turn-final text still comes from the configured final-ASR model
+- the worker-side 2pass knobs are:
+  - `AGENT_SERVER_FUNASR_ONLINE_MODEL`
+  - `AGENT_SERVER_FUNASR_STREAM_CHUNK_SIZE`
+  - `AGENT_SERVER_FUNASR_STREAM_ENCODER_CHUNK_LOOK_BACK`
+  - `AGENT_SERVER_FUNASR_STREAM_DECODER_CHUNK_LOOK_BACK`
+  - `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL`
+  - `AGENT_SERVER_FUNASR_FINAL_PUNC_MODEL`
+  - `AGENT_SERVER_FUNASR_FINAL_MERGE_VAD`
+  - `AGENT_SERVER_FUNASR_FINAL_MERGE_LENGTH_S`
 - the local FunASR worker now also emits a lightweight preview endpoint hint (`preview_tail_silence`) based on tail-audio energy, and the shared voice runtime consumes that hint without widening the public protocol
 - the local FunASR worker can now optionally strengthen that internal hint path through `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`:
   - `energy`: keep the existing lightweight tail-energy hint as the default behavior
+  - `fsmn_vad`: use the configured `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL` as the worker-side endpoint hint source
   - `silero`: try `Silero VAD` inside the worker and emit `preview_silero_vad_silence` when the buffered speech already ends in enough local silence
-  - `auto`: prefer `Silero VAD` when its runtime is available, otherwise fall back to `energy`
+  - `auto`: prefer `fsmn_vad` when `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL` is configured, otherwise try `Silero VAD`, then fall back to `energy`
   - `none`: disable worker-side preview endpoint hints entirely
 - additional worker-side VAD knobs are `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_THRESHOLD`, `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_MIN_SILENCE_MS`, and `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS`
-- even when `silero` is configured, unsupported sample rates or missing local VAD dependencies still fall back to the existing `preview_tail_silence` path instead of changing the shared contract or breaking stream preview
+- even when `silero` or `fsmn_vad` is configured, unsupported sample rates, missing local VAD dependencies, or an absent final VAD model still fall back to the existing `preview_tail_silence` path instead of changing the shared contract or breaking stream preview
+- the worker can now also run optional KWS ahead of final transcript normalization:
+  - `AGENT_SERVER_FUNASR_KWS_ENABLED=false` keeps KWS off by default
+  - `AGENT_SERVER_FUNASR_KWS_MODEL` selects the KWS model when enabled
+  - `AGENT_SERVER_FUNASR_KWS_KEYWORDS` provides a comma-separated keyword list
+  - `AGENT_SERVER_FUNASR_KWS_STRIP_MATCHED_PREFIX=true` lets the worker strip a matched wake-word prefix from preview/final transcript text after KWS succeeds
+  - `AGENT_SERVER_FUNASR_KWS_MIN_AUDIO_MS` and `AGENT_SERVER_FUNASR_KWS_MIN_INTERVAL_MS` gate repeated KWS checks on one stream
+- KWS stays internal to the worker/runtime path: it may surface as worker `audio_events` such as `kws_detected:<keyword>`, but it does not widen the public realtime or `xiaozhi` contracts
 - this path currently stays intentionally undisclosed at the public discovery layer, so `turn_mode` still advertises `client_wakeup_client_commit`
 - the first implementation slice uses a silence-based detector on top of streaming ASR partials; it is a stepping stone toward fuller server-side endpointing, not the final policy
 - the Python desktop runner now exposes a non-default `server-endpoint-preview` scenario for this hidden mode; it intentionally stays out of `full` and `regression`, and it should be used together with `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` plus a speech-like `--wav` sample
+- when a TTS provider is configured, the shared voice runtime can now pre-synthesize stable clauses incrementally behind `AGENT_SERVER_VOICE_SPEECH_PLANNER_*`; the public websocket contract still stays unchanged and playback ownership remains inside `internal/voice`
 
 Current note on this machine:
 

@@ -101,7 +101,13 @@ func TestLooksLexicallyComplete(t *testing.T) {
 		{text: "打开客厅灯。", expected: true},
 		{text: "帮我把", expected: false},
 		{text: "还有", expected: false},
+		{text: "然后呢", expected: false},
+		{text: "嗯", expected: false},
+		{text: "那个", expected: false},
 		{text: "and", expected: false},
+		{text: "uh", expected: false},
+		{text: "um", expected: false},
+		{text: "turn on the light...", expected: false},
 		{text: "turn on the kitchen light", expected: true},
 	}
 	for _, tc := range tests {
@@ -197,6 +203,37 @@ func TestSilenceTurnDetectorDoesNotLetHintBypassIncompleteLexicalHold(t *testing
 
 	if snapshot := detector.Snapshot(startedAt.Add(400 * time.Millisecond)); snapshot.CommitSuggested {
 		t.Fatal("incomplete lexical partial should still be held even with provider hint")
+	}
+	snapshot := detector.Snapshot(startedAt.Add(950 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected commit suggestion after lexical hold window")
+	}
+	if snapshot.EndpointReason != lexicalHoldServerEndpointReason {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
+	}
+}
+
+func TestSilenceTurnDetectorHoldsStandaloneHesitationUtterance(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "嗯",
+	})
+
+	if snapshot := detector.Snapshot(startedAt.Add(500 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("standalone hesitation should stay on the lexical hold path")
 	}
 	snapshot := detector.Snapshot(startedAt.Add(950 * time.Millisecond))
 	if !snapshot.CommitSuggested {

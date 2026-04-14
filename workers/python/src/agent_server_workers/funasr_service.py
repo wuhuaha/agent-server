@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from array import array
 import base64
 from dataclasses import asdict, dataclass, field
@@ -20,18 +21,34 @@ from typing import Any
 from uuid import uuid4
 import wave
 
+KWS_PREFIX_SEPARATORS = " \t,.;:!?/\\-_\u3001\u3002\uff0c\uff01\uff1f\uff1a"
+
 
 @dataclass(slots=True)
 class WorkerConfig:
     host: str
     port: int
     model: str
+    online_model: str
+    final_vad_model: str
+    final_punc_model: str
+    stream_chunk_size: tuple[int, int, int]
+    stream_encoder_chunk_look_back: int
+    stream_decoder_chunk_look_back: int
     device: str
     language: str
     trust_remote_code: bool
     disable_update: bool
     batch_size_s: int
     use_itn: bool
+    final_merge_vad: bool
+    final_merge_length_s: int
+    kws_enabled: bool
+    kws_model: str
+    kws_keywords: tuple[str, ...]
+    kws_strip_matched_prefix: bool
+    kws_min_audio_ms: int
+    kws_min_interval_ms: int
     stream_preview_min_audio_ms: int
     stream_preview_min_interval_ms: int
     stream_endpoint_tail_ms: int
@@ -55,9 +72,15 @@ class StreamState:
     language: str
     created_at_monotonic: float
     buffer: bytearray = field(default_factory=bytearray)
+    online_pending: bytearray = field(default_factory=bytearray)
+    online_cache: dict[str, Any] = field(default_factory=dict)
     partials: list[str] = field(default_factory=list)
     last_partial_text: str = ""
     last_preview_at_monotonic: float = 0.0
+    last_kws_at_monotonic: float = 0.0
+    kws_detected: bool = False
+    kws_keyword: str = ""
+    kws_score: float = 0.0
 
 
 class FunASREngine:
@@ -65,9 +88,20 @@ class FunASREngine:
 
     def __init__(self, config: WorkerConfig) -> None:
         self.config = config
-        self._lock = threading.Lock()
-        self._model: Any | None = None
-        self._postprocess = None
+        self._final_lock = threading.Lock()
+        self._final_model: Any | None = None
+        self._final_postprocess = None
+        self._online_lock = threading.Lock()
+        self._online_model: Any | None = None
+        self._online_postprocess = None
+        self._kws_lock = threading.Lock()
+        self._kws_model: Any | None = None
+        self._kws_postprocess = None
+        self._fsmn_vad_lock = threading.Lock()
+        self._fsmn_vad_model: Any | None = None
+        self._fsmn_vad_postprocess = None
+        self._fsmn_vad_attempted = False
+        self._fsmn_vad_error = ""
         self._last_error = ""
         self._vad_lock = threading.Lock()
         self._silero_vad_runtime: tuple[Any, Any] | None = None
@@ -81,24 +115,33 @@ class FunASREngine:
         return self._last_error
 
     def health(self) -> dict[str, Any]:
+        endpoint_provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
         return {
-            "status": "ok" if self._model is not None else "starting",
-            "model_loaded": self._model is not None,
+            "status": "ok" if self._final_model is not None else "starting",
+            "model_loaded": self._final_model is not None,
             "model": self.config.model,
+            "pipeline_mode": self._stream_mode(),
+            "online_model": self.config.online_model,
+            "final_vad_model": self.config.final_vad_model,
+            "final_punc_model": self.config.final_punc_model,
+            "kws_enabled": self.config.kws_enabled,
+            "kws_model": self.config.kws_model if self.config.kws_enabled else "",
+            "kws_keywords": list(self.config.kws_keywords),
             "device": self.config.device,
             "language": self.config.language,
+            "stream_chunk_size": list(self.config.stream_chunk_size),
+            "stream_encoder_chunk_look_back": self.config.stream_encoder_chunk_look_back,
+            "stream_decoder_chunk_look_back": self.config.stream_decoder_chunk_look_back,
             "stream_preview_min_audio_ms": self.config.stream_preview_min_audio_ms,
             "stream_preview_min_interval_ms": self.config.stream_preview_min_interval_ms,
             "stream_endpoint_tail_ms": self.config.stream_endpoint_tail_ms,
             "stream_endpoint_mean_abs_threshold": self.config.stream_endpoint_mean_abs_threshold,
-            "stream_endpoint_vad_provider": _normalize_stream_endpoint_vad_provider(
-                self.config.stream_endpoint_vad_provider
-            ),
-            "stream_endpoint_vad_runtime_status": self._stream_endpoint_vad_status(),
+            "stream_endpoint_vad_provider": endpoint_provider,
+            "stream_endpoint_vad_runtime_status": self._stream_endpoint_vad_status(endpoint_provider),
             "stream_endpoint_vad_threshold": self.config.stream_endpoint_vad_threshold,
             "stream_endpoint_vad_min_silence_ms": self.config.stream_endpoint_vad_min_silence_ms,
             "stream_endpoint_vad_speech_pad_ms": self.config.stream_endpoint_vad_speech_pad_ms,
-            "stream_endpoint_vad_last_error": self._silero_vad_error,
+            "stream_endpoint_vad_last_error": self._stream_endpoint_vad_last_error(endpoint_provider),
             "last_error": self._last_error,
         }
 
@@ -117,43 +160,37 @@ class FunASREngine:
                 "raw_text": "",
                 "segments": [],
                 "duration_ms": 0,
+                "elapsed_ms": 0,
                 "session_id": session_id,
                 "model": self.config.model,
                 "device": self.config.device,
                 "language": effective_language,
+                "mode": "batch",
             }
-        model, postprocess = self._ensure_model()
-        duration_ms = int(len(audio_bytes) / max(channels, 1) / 2 / sample_rate_hz * 1000)
-        wav_path = self._write_temp_wav(audio_bytes, sample_rate_hz, channels)
-        try:
-            with self._lock:
-                started_at = time.perf_counter()
-                result = model.generate(
-                    input=wav_path,
-                    cache={},
-                    language=effective_language,
-                    use_itn=self.config.use_itn,
-                    batch_size_s=self.config.batch_size_s,
-                )
-                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        finally:
-            Path(wav_path).unlink(missing_ok=True)
-
-        raw_text = self._extract_raw_text(result)
-        text = postprocess(raw_text) if raw_text and postprocess is not None else raw_text
-        segments = [text] if text else []
-        return {
-            "text": text,
-            "raw_text": raw_text,
-            "segments": segments,
-            "duration_ms": duration_ms,
-            "elapsed_ms": elapsed_ms,
-            "session_id": session_id,
-            "model": self.config.model,
-            "device": self.config.device,
-            "language": effective_language,
-            "mode": "batch",
-        }
+        duration_ms = self._audio_duration_ms(audio_bytes, sample_rate_hz, channels)
+        kws_detection = self._run_kws_detection(
+            audio_bytes,
+            sample_rate_hz,
+            channels,
+            state=None,
+        )
+        result = self._run_final_transcription(
+            audio_bytes=audio_bytes,
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+            session_id=session_id,
+            language=effective_language,
+        )
+        text = self._apply_kws_text_policy(str(result.get("text", "")).strip(), kws_detection)
+        result["text"] = text
+        result["segments"] = [text] if text else []
+        result["duration_ms"] = duration_ms
+        if kws_event := self._kws_audio_event(kws_detection):
+            result["audio_events"] = self._append_audio_events(result.get("audio_events"), kws_event)
+            result["kws_detected"] = True
+            result["kws_keyword"] = kws_detection["keyword"]
+            result["kws_score"] = kws_detection["score"]
+        return result
 
     def start_stream(
         self,
@@ -190,7 +227,7 @@ class FunASREngine:
             "turn_id": turn_id,
             "trace_id": trace_id,
             "device_id": device_id,
-            "mode": "stream_preview_batch",
+            "mode": self._stream_mode(),
             "status": "started",
         }
 
@@ -202,41 +239,76 @@ class FunASREngine:
         with self._streams_lock:
             state = self._must_get_stream_locked(stream_id)
             state.buffer.extend(audio_bytes)
+            state.online_pending.extend(audio_bytes)
             preview_snapshot = self._preview_snapshot_locked(state)
 
-        preview_payload = self._maybe_preview_stream(preview_snapshot)
+        self._maybe_update_kws_state(state, preview_snapshot)
+        preview_payload = self._maybe_preview_stream(state, preview_snapshot)
         preview_changed = False
+
         with self._streams_lock:
             state = self._must_get_stream_locked(stream_id)
             if preview_payload is not None:
-                latest_partial = preview_payload.get("text", "").strip()
+                latest_partial = self._apply_kws_text_policy(
+                    str(preview_payload.get("text", "")).strip(),
+                    self._kws_snapshot(state),
+                )
+                preview_payload["text"] = latest_partial
                 preview_endpoint_reason = self._preview_endpoint_reason(preview_snapshot, preview_payload)
                 if preview_endpoint_reason:
                     preview_payload["preview_endpoint_reason"] = preview_endpoint_reason
                 state.last_preview_at_monotonic = time.monotonic()
-                if latest_partial and latest_partial != state.last_partial_text:
+                if latest_partial != state.last_partial_text:
                     state.last_partial_text = latest_partial
-                    state.partials.append(latest_partial)
+                    if latest_partial:
+                        state.partials.append(latest_partial)
                     preview_changed = True
             return self._stream_status_payload(state, preview_payload, preview_changed)
 
     def finish_stream(self, stream_id: str) -> dict[str, Any]:
+        state = self._get_stream(stream_id)
+        final_preview = self._flush_online_preview(state)
+
         with self._streams_lock:
             state = self._must_get_stream_locked(stream_id)
+            if final_preview is not None:
+                latest_partial = self._apply_kws_text_policy(
+                    str(final_preview.get("text", "")).strip(),
+                    self._kws_snapshot(state),
+                )
+                if latest_partial != state.last_partial_text:
+                    state.last_partial_text = latest_partial
+                    if latest_partial:
+                        state.partials.append(latest_partial)
             payload = self._stream_snapshot_payload(state)
             self._streams.pop(stream_id, None)
 
-        result = self.transcribe_pcm(
+        result = self._run_final_transcription(
             audio_bytes=payload["audio_bytes"],
             sample_rate_hz=payload["sample_rate_hz"],
             channels=payload["channels"],
             session_id=payload["session_id"],
             language=payload["language"],
         )
-        final_text = result.get("text", "").strip()
+        kws_detection = payload["kws"]
+        if not kws_detection["detected"]:
+            kws_detection = self._run_kws_detection(
+                payload["audio_bytes"],
+                payload["sample_rate_hz"],
+                payload["channels"],
+                state=None,
+            )
+        final_text = self._apply_kws_text_policy(str(result.get("text", "")).strip(), kws_detection)
+        result["text"] = final_text
+        result["segments"] = [final_text] if final_text else []
         partials = list(payload["partials"])
         if final_text and (not partials or partials[-1] != final_text):
             partials.append(final_text)
+        if kws_event := self._kws_audio_event(kws_detection):
+            result["audio_events"] = self._append_audio_events(result.get("audio_events"), kws_event)
+            result["kws_detected"] = True
+            result["kws_keyword"] = kws_detection["keyword"]
+            result["kws_score"] = kws_detection["score"]
         result.update(
             {
                 "stream_id": stream_id,
@@ -245,7 +317,7 @@ class FunASREngine:
                 "latest_partial": partials[-1] if partials else "",
                 "partials": partials,
                 "endpoint_reason": "stream_finish",
-                "mode": "stream_preview_batch",
+                "mode": self._stream_mode(),
             }
         )
         return result
@@ -263,20 +335,25 @@ class FunASREngine:
             "status": "closed",
         }
 
-    def _maybe_preview_stream(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    def _maybe_preview_stream(self, state: StreamState, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        if self._online_preview_enabled():
+            return self._maybe_preview_stream_online(state, snapshot)
+        return self._maybe_preview_stream_batch(snapshot)
+
+    def _maybe_preview_stream_batch(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if snapshot["duration_ms"] < self.config.stream_preview_min_audio_ms:
             return None
         since_last_preview_ms = int((time.monotonic() - snapshot["last_preview_at_monotonic"]) * 1000)
         if snapshot["last_preview_at_monotonic"] > 0 and since_last_preview_ms < self.config.stream_preview_min_interval_ms:
             return None
-        result = self.transcribe_pcm(
+        result = self._run_final_transcription(
             audio_bytes=snapshot["audio_bytes"],
             sample_rate_hz=snapshot["sample_rate_hz"],
             channels=snapshot["channels"],
             session_id=snapshot["session_id"],
             language=snapshot["language"],
         )
-        result["mode"] = "stream_preview_batch"
+        result["mode"] = self._stream_mode()
         return result
 
     def _stream_status_payload(
@@ -285,18 +362,20 @@ class FunASREngine:
         preview_payload: dict[str, Any] | None = None,
         preview_changed: bool = False,
     ) -> dict[str, Any]:
-        duration_ms = int(len(state.buffer) / max(state.channels, 1) / 2 / state.sample_rate_hz * 1000)
         payload = {
             "stream_id": state.stream_id,
             "session_id": state.session_id,
             "turn_id": state.turn_id,
             "trace_id": state.trace_id,
             "audio_bytes_total": len(state.buffer),
-            "duration_ms": duration_ms,
+            "duration_ms": self._audio_duration_ms(bytes(state.buffer), state.sample_rate_hz, state.channels),
             "latest_partial": state.last_partial_text,
             "partials": list(state.partials),
-            "mode": "stream_preview_batch",
+            "mode": self._stream_mode(),
             "language": state.language,
+            "kws_detected": state.kws_detected,
+            "kws_keyword": state.kws_keyword,
+            "kws_score": state.kws_score,
         }
         if preview_payload is not None:
             payload["preview_elapsed_ms"] = int(preview_payload.get("elapsed_ms", 0))
@@ -305,6 +384,230 @@ class FunASREngine:
             payload["preview_endpoint_reason"] = str(preview_payload.get("preview_endpoint_reason", "")).strip()
         return payload
 
+    def _stream_mode(self) -> str:
+        if self._online_preview_enabled():
+            return "stream_2pass_online_final"
+        return "stream_preview_batch"
+
+    def _online_preview_enabled(self) -> bool:
+        return bool(self.config.online_model.strip())
+
+    def _maybe_preview_stream_online(self, state: StreamState, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        if snapshot["duration_ms"] < self.config.stream_preview_min_audio_ms:
+            return None
+        chunk_bytes = self._stream_chunk_bytes(state.sample_rate_hz, state.channels)
+        if chunk_bytes <= 0:
+            return None
+
+        preview_payload: dict[str, Any] | None = None
+        while True:
+            with self._streams_lock:
+                if len(state.online_pending) < chunk_bytes:
+                    break
+                chunk = bytes(state.online_pending[:chunk_bytes])
+                del state.online_pending[:chunk_bytes]
+            candidate = self._run_online_preview(
+                chunk,
+                sample_rate_hz=state.sample_rate_hz,
+                channels=state.channels,
+                language=state.language,
+                cache=state.online_cache,
+                is_final=False,
+            )
+            if candidate is not None:
+                preview_payload = candidate
+        return preview_payload
+
+    def _flush_online_preview(self, state: StreamState) -> dict[str, Any] | None:
+        if not self._online_preview_enabled():
+            return None
+        with self._streams_lock:
+            pending = bytes(state.online_pending)
+            state.online_pending.clear()
+            cache_was_used = bool(state.online_cache)
+        if not pending and not cache_was_used:
+            return None
+        return self._run_online_preview(
+            pending,
+            sample_rate_hz=state.sample_rate_hz,
+            channels=state.channels,
+            language=state.language,
+            cache=state.online_cache,
+            is_final=True,
+        )
+
+    def _stream_chunk_bytes(self, sample_rate_hz: int, channels: int) -> int:
+        chunk_ms = max(self.config.stream_chunk_size[1], 1) * 60
+        frames = max(int(sample_rate_hz * chunk_ms / 1000), 1)
+        return frames * max(channels, 1) * 2
+
+    def _run_online_preview(
+        self,
+        audio_bytes: bytes,
+        *,
+        sample_rate_hz: int,
+        channels: int,
+        language: str,
+        cache: dict[str, Any],
+        is_final: bool,
+    ) -> dict[str, Any] | None:
+        if not self._online_preview_enabled():
+            return None
+        audio_input = self._pcm16le_bytes_to_mono_float_array(audio_bytes, channels)
+        if audio_input is None:
+            return None
+        if getattr(audio_input, "size", len(audio_input)) == 0 and not is_final:
+            return None
+
+        model, postprocess = self._ensure_online_model()
+        started_at = time.perf_counter()
+        with self._online_lock:
+            result = model.generate(
+                input=audio_input,
+                cache=cache,
+                language=language or self.config.language,
+                use_itn=self.config.use_itn,
+                chunk_size=list(self.config.stream_chunk_size),
+                encoder_chunk_look_back=self.config.stream_encoder_chunk_look_back,
+                decoder_chunk_look_back=self.config.stream_decoder_chunk_look_back,
+                is_final=is_final,
+            )
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        raw_text = self._extract_raw_text(result)
+        text = postprocess(raw_text) if raw_text and postprocess is not None else raw_text
+        return {
+            "text": text,
+            "raw_text": raw_text,
+            "elapsed_ms": elapsed_ms,
+            "language": language or self.config.language,
+            "mode": self._stream_mode(),
+        }
+
+    def _maybe_update_kws_state(self, state: StreamState, snapshot: dict[str, Any]) -> None:
+        if not self.config.kws_enabled or state.kws_detected:
+            return
+        if not self.config.kws_keywords or snapshot["duration_ms"] < self.config.kws_min_audio_ms:
+            return
+        since_last_ms = int((time.monotonic() - state.last_kws_at_monotonic) * 1000)
+        if state.last_kws_at_monotonic > 0 and since_last_ms < self.config.kws_min_interval_ms:
+            return
+        detection = self._run_kws_detection(
+            snapshot["audio_bytes"],
+            snapshot["sample_rate_hz"],
+            snapshot["channels"],
+            state=state,
+        )
+        state.last_kws_at_monotonic = time.monotonic()
+        if detection["detected"]:
+            state.kws_detected = True
+            state.kws_keyword = detection["keyword"]
+            state.kws_score = detection["score"]
+
+    def _kws_snapshot(self, state: StreamState) -> dict[str, Any]:
+        return {
+            "detected": state.kws_detected,
+            "keyword": state.kws_keyword,
+            "score": state.kws_score,
+        }
+
+    def _run_kws_detection(
+        self,
+        audio_bytes: bytes,
+        sample_rate_hz: int,
+        channels: int,
+        *,
+        state: StreamState | None,
+    ) -> dict[str, Any]:
+        _ = state
+        detected = {"detected": False, "keyword": "", "score": 0.0}
+        if not self.config.kws_enabled or not self.config.kws_keywords or not audio_bytes:
+            return detected
+        model, _ = self._ensure_kws_model()
+        wav_path = self._write_temp_wav(audio_bytes, sample_rate_hz, channels)
+        try:
+            with self._kws_lock:
+                result = model.generate(
+                    input=wav_path,
+                    cache={},
+                    keywords=",".join(self.config.kws_keywords),
+                )
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+        return self._parse_kws_result(result)
+
+    def _parse_kws_result(self, result: Any) -> dict[str, Any]:
+        payloads: list[dict[str, Any]] = []
+        if isinstance(result, list):
+            payloads = [item for item in result if isinstance(item, dict)]
+        elif isinstance(result, dict):
+            payloads = [result]
+        for payload in payloads:
+            for key in ("text", "text2"):
+                parsed = self._parse_kws_text(str(payload.get(key, "")).strip())
+                if parsed["detected"]:
+                    return parsed
+        return {"detected": False, "keyword": "", "score": 0.0}
+
+    def _parse_kws_text(self, text: str) -> dict[str, Any]:
+        if not text:
+            return {"detected": False, "keyword": "", "score": 0.0}
+        if text.lower() == "rejected":
+            return {"detected": False, "keyword": "", "score": 0.0}
+        if not text.lower().startswith("detected "):
+            return {"detected": False, "keyword": "", "score": 0.0}
+        parts = text.split()
+        keyword = parts[1] if len(parts) > 1 else ""
+        score = 0.0
+        if len(parts) > 2:
+            try:
+                score = float(parts[2])
+            except ValueError:
+                score = 0.0
+        return {"detected": keyword != "", "keyword": keyword, "score": score}
+
+    def _apply_kws_text_policy(self, text: str, kws: dict[str, Any] | None) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return ""
+        if not self.config.kws_enabled or not self.config.kws_strip_matched_prefix:
+            return cleaned
+
+        candidates: list[str] = []
+        if kws is not None:
+            keyword = str(kws.get("keyword", "")).strip()
+            if keyword:
+                candidates.append(keyword)
+        candidates.extend(self.config.kws_keywords)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            folded = candidate.casefold()
+            if folded in seen:
+                continue
+            seen.add(folded)
+            if cleaned.casefold().startswith(folded):
+                return cleaned[len(candidate) :].lstrip(KWS_PREFIX_SEPARATORS)
+        return cleaned
+
+    def _kws_audio_event(self, kws: dict[str, Any]) -> str:
+        if not kws.get("detected", False):
+            return ""
+        keyword = str(kws.get("keyword", "")).strip()
+        if keyword == "":
+            return "kws_detected"
+        return f"kws_detected:{keyword}"
+
+    def _append_audio_events(self, base: Any, event: str) -> list[str]:
+        values: list[str] = []
+        if isinstance(base, list):
+            values = [str(item).strip() for item in base if str(item).strip()]
+        if event and event not in values:
+            values.append(event)
+        return values
+
     def _preview_endpoint_reason(self, snapshot: dict[str, Any], preview_payload: dict[str, Any]) -> str:
         preview_text = str(preview_payload.get("text", "")).strip()
         if not preview_text:
@@ -312,13 +615,65 @@ class FunASREngine:
         provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
         if provider == "none":
             return ""
-        if provider in {"auto", "silero"}:
+        if provider == "auto":
+            if self.config.final_vad_model.strip():
+                fsmn_reason = self._preview_endpoint_reason_fsmn(snapshot)
+                if fsmn_reason:
+                    return fsmn_reason
             silero_reason, silero_handled = self._preview_endpoint_reason_silero(snapshot)
             if silero_handled:
                 return silero_reason
-        if provider in {"auto", "silero", "energy"}:
+            return self._preview_endpoint_reason_energy(snapshot)
+        if provider == "fsmn_vad":
+            if not self.config.final_vad_model.strip():
+                return self._preview_endpoint_reason_energy(snapshot)
+            return self._preview_endpoint_reason_fsmn(snapshot)
+        if provider == "silero":
+            silero_reason, silero_handled = self._preview_endpoint_reason_silero(snapshot)
+            if silero_handled:
+                return silero_reason
+            return self._preview_endpoint_reason_energy(snapshot)
+        if provider == "energy":
             return self._preview_endpoint_reason_energy(snapshot)
         return ""
+
+    def _preview_endpoint_reason_fsmn(self, snapshot: dict[str, Any]) -> str:
+        if not self.config.final_vad_model.strip():
+            return ""
+        try:
+            result = self._run_fsmn_vad(snapshot["audio_bytes"], snapshot["sample_rate_hz"], snapshot["channels"])
+        except Exception as exc:  # noqa: BLE001
+            self._fsmn_vad_error = str(exc)
+            return self._preview_endpoint_reason_energy(snapshot)
+        segments = self._extract_vad_segments(result)
+        if not segments:
+            return ""
+        last_segment = segments[-1]
+        if not isinstance(last_segment, (list, tuple)) or len(last_segment) < 2:
+            return ""
+        total_duration_ms = int(snapshot["duration_ms"])
+        trailing_silence_ms = total_duration_ms - int(last_segment[1])
+        if trailing_silence_ms >= self.config.stream_endpoint_vad_min_silence_ms:
+            return "preview_fsmn_vad_silence"
+        return ""
+
+    def _extract_vad_segments(self, result: Any) -> list[Any]:
+        payload: dict[str, Any] | None = None
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            payload = result[0]
+        elif isinstance(result, dict):
+            payload = result
+        if payload is None:
+            return []
+        value = payload.get("value")
+        if isinstance(value, str):
+            try:
+                value = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                return []
+        if isinstance(value, list):
+            return value
+        return []
 
     def _preview_endpoint_reason_energy(self, snapshot: dict[str, Any]) -> str:
         mean_abs = self._tail_mean_abs_pcm16(
@@ -398,15 +753,65 @@ class FunASREngine:
                 self._silero_vad_error = str(exc)
             return self._silero_vad_runtime
 
-    def _stream_endpoint_vad_status(self) -> str:
-        provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
-        if provider not in {"auto", "silero"}:
+    def _stream_endpoint_vad_status(self, provider: str | None = None) -> str:
+        provider = _normalize_stream_endpoint_vad_provider(provider or self.config.stream_endpoint_vad_provider)
+        if provider in {"none", "energy"}:
             return "not_requested"
+        if provider == "fsmn_vad":
+            return self._fsmn_vad_status()
+        if provider == "silero":
+            return self._silero_vad_status()
+        if provider == "auto":
+            if self.config.final_vad_model.strip():
+                return f"fsmn_vad_{self._fsmn_vad_status()}"
+            silero_status = self._silero_vad_status()
+            if silero_status == "ready":
+                return "silero_ready"
+            if silero_status == "fallback_energy":
+                return "fallback_energy"
+            return "lazy"
+        return "not_requested"
+
+    def _stream_endpoint_vad_last_error(self, provider: str | None = None) -> str:
+        provider = _normalize_stream_endpoint_vad_provider(provider or self.config.stream_endpoint_vad_provider)
+        if provider in {"auto", "fsmn_vad"} and self._fsmn_vad_error:
+            return self._fsmn_vad_error
+        return self._silero_vad_error
+
+    def _fsmn_vad_status(self) -> str:
+        if not self.config.final_vad_model.strip():
+            return "not_configured"
+        if self._fsmn_vad_model is not None:
+            return "ready"
+        if self._fsmn_vad_attempted and self._fsmn_vad_error:
+            return "fallback_energy"
+        return "lazy"
+
+    def _silero_vad_status(self) -> str:
         if self._silero_vad_runtime is not None:
             return "ready"
         if self._silero_vad_attempted:
             return "fallback_energy"
         return "lazy"
+
+    def _pcm16le_bytes_to_mono_float_array(self, audio_bytes: bytes, channels: int) -> Any | None:
+        if channels <= 0:
+            return None
+        try:
+            import numpy as np
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = str(exc)
+            return None
+        usable = len(audio_bytes) - (len(audio_bytes) % 2)
+        if usable <= 0:
+            return np.zeros((0,), dtype=np.float32)
+        samples = np.frombuffer(audio_bytes[:usable], dtype="<i2").astype(np.float32)
+        if channels > 1:
+            frame_count = len(samples) // channels
+            if frame_count <= 0:
+                return np.zeros((0,), dtype=np.float32)
+            samples = samples[: frame_count * channels].reshape(frame_count, channels).mean(axis=1)
+        return samples / 32768.0
 
     def _pcm16le_bytes_to_mono_float_tensor(self, audio_bytes: bytes, channels: int) -> Any | None:
         usable = len(audio_bytes) - (len(audio_bytes) % 2)
@@ -474,7 +879,7 @@ class FunASREngine:
             "channels": state.channels,
             "language": state.language,
             "audio_bytes": bytes(state.buffer),
-            "duration_ms": int(len(state.buffer) / max(state.channels, 1) / 2 / state.sample_rate_hz * 1000),
+            "duration_ms": self._audio_duration_ms(bytes(state.buffer), state.sample_rate_hz, state.channels),
             "last_preview_at_monotonic": state.last_preview_at_monotonic,
         }
 
@@ -488,6 +893,7 @@ class FunASREngine:
             "language": state.language,
             "audio_bytes": bytes(state.buffer),
             "partials": list(state.partials),
+            "kws": self._kws_snapshot(state),
         }
 
     def _get_stream(self, stream_id: str) -> StreamState:
@@ -500,26 +906,169 @@ class FunASREngine:
             raise ValueError(f"stream {stream_id} not found")
         return state
 
-    def _ensure_model(self) -> tuple[Any, Any]:
-        if self._model is not None:
-            return self._model, self._postprocess
+    def _run_final_transcription(
+        self,
+        *,
+        audio_bytes: bytes,
+        sample_rate_hz: int,
+        channels: int,
+        session_id: str,
+        language: str,
+    ) -> dict[str, Any]:
+        effective_language = language or self.config.language
+        duration_ms = self._audio_duration_ms(audio_bytes, sample_rate_hz, channels)
+        if not audio_bytes:
+            return {
+                "text": "",
+                "raw_text": "",
+                "segments": [],
+                "duration_ms": duration_ms,
+                "elapsed_ms": 0,
+                "session_id": session_id,
+                "model": self.config.model,
+                "device": self.config.device,
+                "language": effective_language,
+                "mode": "batch",
+            }
+        model, postprocess = self._ensure_final_model()
+        wav_path = self._write_temp_wav(audio_bytes, sample_rate_hz, channels)
+        generate_kwargs: dict[str, Any] = {
+            "input": wav_path,
+            "cache": {},
+            "language": effective_language,
+            "use_itn": self.config.use_itn,
+            "batch_size_s": self.config.batch_size_s,
+        }
+        if self.config.final_vad_model.strip():
+            generate_kwargs["merge_vad"] = self.config.final_merge_vad
+            generate_kwargs["merge_length_s"] = self.config.final_merge_length_s
+        try:
+            started_at = time.perf_counter()
+            with self._final_lock:
+                result = model.generate(**generate_kwargs)
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+        raw_text = self._extract_raw_text(result)
+        text = postprocess(raw_text) if raw_text and postprocess is not None else raw_text
+        return {
+            "text": text,
+            "raw_text": raw_text,
+            "segments": [text] if text else [],
+            "duration_ms": duration_ms,
+            "elapsed_ms": elapsed_ms,
+            "session_id": session_id,
+            "model": self.config.model,
+            "device": self.config.device,
+            "language": effective_language,
+            "mode": "batch",
+        }
 
-        with self._lock:
-            if self._model is not None:
-                return self._model, self._postprocess
+    def _run_fsmn_vad(self, audio_bytes: bytes, sample_rate_hz: int, channels: int) -> Any:
+        if not self.config.final_vad_model.strip() or not audio_bytes:
+            return []
+        model, _ = self._ensure_fsmn_vad_model()
+        wav_path = self._write_temp_wav(audio_bytes, sample_rate_hz, channels)
+        try:
+            with self._fsmn_vad_lock:
+                return model.generate(input=wav_path, cache={})
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
 
+    def _ensure_final_model(self) -> tuple[Any, Any]:
+        if self._final_model is not None:
+            return self._final_model, self._final_postprocess
+        with self._final_lock:
+            if self._final_model is not None:
+                return self._final_model, self._final_postprocess
             from funasr import AutoModel
             from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
-            self._model = AutoModel(
-                model=self.config.model,
-                trust_remote_code=self.config.trust_remote_code,
-                device=self.config.device,
-                disable_update=self.config.disable_update,
-            )
-            self._postprocess = rich_transcription_postprocess
-            self._last_error = ""
-            return self._model, self._postprocess
+            kwargs = self._base_model_kwargs(self.config.model)
+            if self.config.final_vad_model.strip():
+                kwargs["vad_model"] = self.config.final_vad_model.strip()
+            if self.config.final_punc_model.strip():
+                kwargs["punc_model"] = self.config.final_punc_model.strip()
+            try:
+                self._final_model = AutoModel(**kwargs)
+                self._final_postprocess = rich_transcription_postprocess
+                self._last_error = ""
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = str(exc)
+                raise
+            return self._final_model, self._final_postprocess
+
+    def _ensure_online_model(self) -> tuple[Any, Any]:
+        if self._online_model is not None:
+            return self._online_model, self._online_postprocess
+        model_name = self.config.online_model.strip()
+        if model_name == "":
+            raise ValueError("online preview requested but AGENT_SERVER_FUNASR_ONLINE_MODEL is empty")
+        with self._online_lock:
+            if self._online_model is not None:
+                return self._online_model, self._online_postprocess
+            from funasr import AutoModel
+            from funasr.utils.postprocess_utils import rich_transcription_postprocess
+
+            try:
+                self._online_model = AutoModel(**self._base_model_kwargs(model_name))
+                self._online_postprocess = rich_transcription_postprocess
+                self._last_error = ""
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = str(exc)
+                raise
+            return self._online_model, self._online_postprocess
+
+    def _ensure_kws_model(self) -> tuple[Any, Any]:
+        if self._kws_model is not None:
+            return self._kws_model, self._kws_postprocess
+        model_name = self.config.kws_model.strip()
+        if model_name == "":
+            raise ValueError("KWS is enabled but AGENT_SERVER_FUNASR_KWS_MODEL is empty")
+        with self._kws_lock:
+            if self._kws_model is not None:
+                return self._kws_model, self._kws_postprocess
+            from funasr import AutoModel
+
+            try:
+                self._kws_model = AutoModel(**self._base_model_kwargs(model_name))
+                self._kws_postprocess = None
+                self._last_error = ""
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = str(exc)
+                raise
+            return self._kws_model, self._kws_postprocess
+
+    def _ensure_fsmn_vad_model(self) -> tuple[Any, Any]:
+        if self._fsmn_vad_model is not None:
+            return self._fsmn_vad_model, self._fsmn_vad_postprocess
+        model_name = self.config.final_vad_model.strip()
+        if model_name == "":
+            raise ValueError("FSMN VAD requested but AGENT_SERVER_FUNASR_FINAL_VAD_MODEL is empty")
+        with self._fsmn_vad_lock:
+            if self._fsmn_vad_model is not None:
+                return self._fsmn_vad_model, self._fsmn_vad_postprocess
+            from funasr import AutoModel
+
+            self._fsmn_vad_attempted = True
+            try:
+                self._fsmn_vad_model = AutoModel(**self._base_model_kwargs(model_name))
+                self._fsmn_vad_postprocess = None
+                self._fsmn_vad_error = ""
+                self._last_error = ""
+            except Exception as exc:  # noqa: BLE001
+                self._fsmn_vad_error = str(exc)
+                self._last_error = str(exc)
+                raise
+            return self._fsmn_vad_model, self._fsmn_vad_postprocess
+
+    def _base_model_kwargs(self, model_name: str) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "trust_remote_code": self.config.trust_remote_code,
+            "device": self.config.device,
+            "disable_update": self.config.disable_update,
+        }
 
     def _write_temp_wav(self, audio_bytes: bytes, sample_rate_hz: int, channels: int) -> str:
         temp = tempfile.NamedTemporaryFile(prefix="agent-server-funasr-", suffix=".wav", delete=False)
@@ -539,6 +1088,11 @@ class FunASREngine:
         if isinstance(result, dict):
             return str(result.get("text", "")).strip()
         return ""
+
+    def _audio_duration_ms(self, audio_bytes: bytes, sample_rate_hz: int, channels: int) -> int:
+        if sample_rate_hz <= 0 or channels <= 0:
+            return 0
+        return int(len(audio_bytes) / channels / 2 / sample_rate_hz * 1000)
 
 
 class FunASRRequestHandler(BaseHTTPRequestHandler):
@@ -652,9 +1206,49 @@ def build_config() -> WorkerConfig:
     parser.add_argument("--host", default=os.getenv("AGENT_SERVER_FUNASR_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("AGENT_SERVER_FUNASR_PORT", "8091")))
     parser.add_argument("--model", default=os.getenv("AGENT_SERVER_FUNASR_MODEL", "iic/SenseVoiceSmall"))
+    parser.add_argument("--online-model", default=os.getenv("AGENT_SERVER_FUNASR_ONLINE_MODEL", ""))
+    parser.add_argument("--final-vad-model", default=os.getenv("AGENT_SERVER_FUNASR_FINAL_VAD_MODEL", ""))
+    parser.add_argument("--final-punc-model", default=os.getenv("AGENT_SERVER_FUNASR_FINAL_PUNC_MODEL", ""))
+    parser.add_argument(
+        "--stream-chunk-size",
+        default=os.getenv("AGENT_SERVER_FUNASR_STREAM_CHUNK_SIZE", "0,10,5"),
+    )
+    parser.add_argument(
+        "--stream-encoder-chunk-look-back",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENCODER_CHUNK_LOOK_BACK", "4")),
+    )
+    parser.add_argument(
+        "--stream-decoder-chunk-look-back",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_DECODER_CHUNK_LOOK_BACK", "1")),
+    )
     parser.add_argument("--device", default=os.getenv("AGENT_SERVER_FUNASR_DEVICE", "cpu"))
     parser.add_argument("--language", default=os.getenv("AGENT_SERVER_FUNASR_LANGUAGE", "auto"))
     parser.add_argument("--batch-size-s", type=int, default=int(os.getenv("AGENT_SERVER_FUNASR_BATCH_SIZE_S", "60")))
+    parser.add_argument(
+        "--final-merge-length-s",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_FINAL_MERGE_LENGTH_S", "15")),
+    )
+    parser.add_argument(
+        "--kws-model",
+        default=os.getenv("AGENT_SERVER_FUNASR_KWS_MODEL", "fsmn-kws"),
+    )
+    parser.add_argument(
+        "--kws-keywords",
+        default=os.getenv("AGENT_SERVER_FUNASR_KWS_KEYWORDS", ""),
+    )
+    parser.add_argument(
+        "--kws-min-audio-ms",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_KWS_MIN_AUDIO_MS", "480")),
+    )
+    parser.add_argument(
+        "--kws-min-interval-ms",
+        type=int,
+        default=int(os.getenv("AGENT_SERVER_FUNASR_KWS_MIN_INTERVAL_MS", "400")),
+    )
     parser.add_argument(
         "--stream-preview-min-audio-ms",
         type=int,
@@ -694,36 +1288,50 @@ def build_config() -> WorkerConfig:
         type=int,
         default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS", "30")),
     )
-    parser.add_argument("--use-itn", action="store_true", default=_env_bool("AGENT_SERVER_FUNASR_USE_ITN", True))
-    parser.add_argument(
-        "--trust-remote-code",
-        action="store_true",
-        default=_env_bool("AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE", False),
-    )
-    parser.add_argument(
-        "--disable-update",
-        action="store_true",
-        default=_env_bool("AGENT_SERVER_FUNASR_DISABLE_UPDATE", True),
+    _add_bool_argument(parser, "use-itn", "AGENT_SERVER_FUNASR_USE_ITN", True)
+    _add_bool_argument(parser, "trust-remote-code", "AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE", False)
+    _add_bool_argument(parser, "disable-update", "AGENT_SERVER_FUNASR_DISABLE_UPDATE", True)
+    _add_bool_argument(parser, "final-merge-vad", "AGENT_SERVER_FUNASR_FINAL_MERGE_VAD", True)
+    _add_bool_argument(parser, "kws-enabled", "AGENT_SERVER_FUNASR_KWS_ENABLED", False)
+    _add_bool_argument(
+        parser,
+        "kws-strip-matched-prefix",
+        "AGENT_SERVER_FUNASR_KWS_STRIP_MATCHED_PREFIX",
+        True,
     )
     args = parser.parse_args()
     return WorkerConfig(
         host=args.host,
         port=args.port,
-        model=args.model,
+        model=str(args.model).strip(),
+        online_model=str(args.online_model).strip(),
+        final_vad_model=str(args.final_vad_model).strip(),
+        final_punc_model=str(args.final_punc_model).strip(),
+        stream_chunk_size=_parse_chunk_size(args.stream_chunk_size),
+        stream_encoder_chunk_look_back=max(int(args.stream_encoder_chunk_look_back), 0),
+        stream_decoder_chunk_look_back=max(int(args.stream_decoder_chunk_look_back), 0),
         device=args.device,
         language=args.language,
         trust_remote_code=bool(args.trust_remote_code),
         disable_update=bool(args.disable_update),
-        batch_size_s=args.batch_size_s,
+        batch_size_s=max(int(args.batch_size_s), 1),
         use_itn=bool(args.use_itn),
-        stream_preview_min_audio_ms=args.stream_preview_min_audio_ms,
-        stream_preview_min_interval_ms=args.stream_preview_min_interval_ms,
-        stream_endpoint_tail_ms=args.stream_endpoint_tail_ms,
-        stream_endpoint_mean_abs_threshold=args.stream_endpoint_mean_abs_threshold,
+        final_merge_vad=bool(args.final_merge_vad),
+        final_merge_length_s=max(int(args.final_merge_length_s), 1),
+        kws_enabled=bool(args.kws_enabled),
+        kws_model=str(args.kws_model).strip(),
+        kws_keywords=_parse_keywords(args.kws_keywords),
+        kws_strip_matched_prefix=bool(args.kws_strip_matched_prefix),
+        kws_min_audio_ms=max(int(args.kws_min_audio_ms), 0),
+        kws_min_interval_ms=max(int(args.kws_min_interval_ms), 0),
+        stream_preview_min_audio_ms=max(int(args.stream_preview_min_audio_ms), 0),
+        stream_preview_min_interval_ms=max(int(args.stream_preview_min_interval_ms), 0),
+        stream_endpoint_tail_ms=max(int(args.stream_endpoint_tail_ms), 0),
+        stream_endpoint_mean_abs_threshold=max(int(args.stream_endpoint_mean_abs_threshold), 0),
         stream_endpoint_vad_provider=_normalize_stream_endpoint_vad_provider(args.stream_endpoint_vad_provider),
-        stream_endpoint_vad_threshold=args.stream_endpoint_vad_threshold,
-        stream_endpoint_vad_min_silence_ms=args.stream_endpoint_vad_min_silence_ms,
-        stream_endpoint_vad_speech_pad_ms=args.stream_endpoint_vad_speech_pad_ms,
+        stream_endpoint_vad_threshold=float(args.stream_endpoint_vad_threshold),
+        stream_endpoint_vad_min_silence_ms=max(int(args.stream_endpoint_vad_min_silence_ms), 0),
+        stream_endpoint_vad_speech_pad_ms=max(int(args.stream_endpoint_vad_speech_pad_ms), 0),
     )
 
 
@@ -744,11 +1352,53 @@ def _env_bool(name: str, fallback: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _add_bool_argument(parser: argparse.ArgumentParser, name: str, env_name: str, fallback: bool) -> None:
+    default = _env_bool(env_name, fallback)
+    action = getattr(argparse, "BooleanOptionalAction", None)
+    if action is not None:
+        parser.add_argument(f"--{name}", default=default, action=action)
+        return
+    dest = name.replace("-", "_")
+    parser.add_argument(f"--{name}", dest=dest, action="store_true", default=default)
+    parser.add_argument(f"--no-{name}", dest=dest, action="store_false")
+
+
+def _parse_chunk_size(value: Any) -> tuple[int, int, int]:
+    if isinstance(value, (list, tuple)):
+        parts = [int(part) for part in value]
+    else:
+        text = str(value).strip().strip("[]()")
+        normalized = text.replace("/", ",").replace(" ", ",")
+        parts = [int(part) for part in normalized.split(",") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError("stream chunk size must contain exactly 3 integers")
+    return tuple(max(int(part), 0) for part in parts)  # type: ignore[return-value]
+
+
+def _parse_keywords(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = str(value).replace("\u3001", ",").replace("\uff0c", ",").split(",")
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        keyword = item.strip()
+        if keyword == "":
+            continue
+        folded = keyword.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        values.append(keyword)
+    return tuple(values)
+
+
 def _normalize_stream_endpoint_vad_provider(value: str) -> str:
-    candidate = value.strip().lower()
+    candidate = value.strip().lower().replace("-", "_")
     if candidate in {"", "energy"}:
         return "energy"
-    if candidate in {"auto", "silero", "none"}:
+    if candidate in {"auto", "silero", "none", "fsmn_vad"}:
         return candidate
     return "energy"
 

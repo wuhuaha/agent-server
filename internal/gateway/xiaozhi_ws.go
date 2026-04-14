@@ -185,44 +185,80 @@ func (h *xiaozhiWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	defer runtime.interruptOutput(50 * time.Millisecond)
+	inboundCh := startWebsocketReadPump(ctx, conn)
+	var previewTicker *time.Ticker
+	if h.profile.ServerEndpointEnabled {
+		previewTicker = time.NewTicker(voice.InputPreviewPollInterval)
+		defer previewTicker.Stop()
+	}
 
 	if err := applyReadDeadline(runtime, runtime.session.Snapshot(), h.runtimeProfile()); err != nil {
 		return
 	}
 
 	for {
-		messageType, payload, err := conn.ReadMessage()
-		if err != nil {
-			if handled, handleErr := h.handleReadError(ctx, runtime, peer, &state, err); handled {
-				if errors.Is(handleErr, errContinueReadLoop) {
-					continue
+		select {
+		case inbound, ok := <-inboundCh:
+			if !ok {
+				return
+			}
+			if err := h.handleInboundMessage(ctx, runtime, peer, &state, inbound); err != nil {
+				return
+			}
+		case <-previewTickerC(previewTicker):
+			drainedInbound := false
+		drainInbound:
+			for {
+				select {
+				case inbound, ok := <-inboundCh:
+					if !ok {
+						return
+					}
+					drainedInbound = true
+					if err := h.handleInboundMessage(ctx, runtime, peer, &state, inbound); err != nil {
+						return
+					}
+				default:
+					break drainInbound
 				}
-				if handleErr != nil {
-					return
-				}
-				return
 			}
-			return
-		}
-
-		switch messageType {
-		case websocket.TextMessage:
-			if err := h.handleControl(ctx, runtime, peer, &state, payload); err != nil {
-				return
+			if drainedInbound {
+				continue
 			}
-		case websocket.BinaryMessage:
-			if err := h.handleBinary(runtime, peer, &state, payload); err != nil {
-				return
-			}
-		default:
-			if err := h.emitServerError(peer, state.sessionID, "unsupported_message_type", "only text and binary websocket frames are supported"); err != nil {
+			if err := h.handleServerEndpointTick(ctx, runtime, peer, &state, time.Now().UTC()); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (h *xiaozhiWSHandler) handleReadError(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, err error) (bool, error) {
+func (h *xiaozhiWSHandler) handleInboundMessage(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, inbound websocketInboundMessage) error {
+	if inbound.err != nil {
+		if handled, handleErr := h.handleReadError(runtime, peer, state, inbound.err); handled {
+			return handleErr
+		}
+		return inbound.err
+	}
+
+	switch inbound.messageType {
+	case websocket.TextMessage:
+		if err := h.handleControl(ctx, runtime, peer, state, inbound.payload); err != nil {
+			return err
+		}
+	case websocket.BinaryMessage:
+		if err := h.handleBinary(runtime, peer, state, inbound.payload); err != nil {
+			return err
+		}
+	default:
+		if err := h.emitServerError(peer, state.sessionID, "unsupported_message_type", "only text and binary websocket frames are supported"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (h *xiaozhiWSHandler) handleReadError(runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, err error) (bool, error) {
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		return false, nil
@@ -230,10 +266,6 @@ func (h *xiaozhiWSHandler) handleReadError(ctx context.Context, runtime *connect
 
 	snapshot := runtime.session.Snapshot()
 	now := time.Now().UTC()
-	if handled, handleErr := h.maybeHandleServerEndpointTimeout(ctx, runtime, peer, state, snapshot, now); handled {
-		return true, handleErr
-	}
-
 	reason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), now)
 	if !shouldClose && snapshot.SessionID != "" {
 		reason = session.CloseReasonError
@@ -249,13 +281,14 @@ func (h *xiaozhiWSHandler) handleReadError(ctx context.Context, runtime *connect
 	return true, runtime.conn.Close()
 }
 
-func (h *xiaozhiWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, snapshot session.Snapshot, now time.Time) (bool, error) {
+func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, now time.Time) error {
+	snapshot := runtime.session.Snapshot()
 	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive || !state.audioTurnOpen {
-		return false, nil
+		return nil
 	}
 	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
 	if !active {
-		return false, nil
+		return nil
 	}
 	if partialChanged {
 		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
@@ -268,10 +301,10 @@ func (h *xiaozhiWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context,
 		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
-			return true, err
+			return err
 		}
 		if err := applyReadDeadline(runtime, turn.Snapshot, h.runtimeProfile()); err != nil {
-			return true, err
+			return err
 		}
 		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
 		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
@@ -284,22 +317,11 @@ func (h *xiaozhiWSHandler) maybeHandleServerEndpointTimeout(ctx context.Context,
 			"endpoint_reason", preview.EndpointReason,
 		)
 		if err := h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, ""); err != nil {
-			return true, err
+			return err
 		}
-		return true, errContinueReadLoop
+		return nil
 	}
-	if deadlineReason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), now); shouldClose {
-		runtime.interruptOutput(100 * time.Millisecond)
-		_ = peer.WriteJSON(xiaozhiTTSMessage{Type: "tts", State: "stop", SessionID: state.sessionID})
-		_, _ = runtime.session.End(deadlineReason)
-		runtime.clearInputPreview()
-		runtime.session.Reset()
-		return true, runtime.conn.Close()
-	}
-	if err := applyReadDeadline(runtime, snapshot, h.runtimeProfile()); err != nil {
-		return true, err
-	}
-	return true, errContinueReadLoop
+	return nil
 }
 
 func (h *xiaozhiWSHandler) handleControl(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, raw []byte) error {
@@ -728,6 +750,8 @@ func (h *xiaozhiWSHandler) startAudioStream(
 		if runtime.voiceSession != nil {
 			runtime.voiceSession.CompletePlayback()
 		}
+		runtime.resetPendingBargeInAudio()
+		runtime.clearInputPreview()
 		_ = completeTurnReturnOrClose(trace, endSession, endReason, endMessage, turnCompletionHooks{
 			Runtime:   runtime,
 			Profile:   h.runtimeProfile(),

@@ -27,6 +27,9 @@ type ASRResponder struct {
 	OutputChannels                int
 	EmitPlaceholderAudio          bool
 	TextInputResponseStyle        string
+	SpeechPlannerEnabled          bool
+	SpeechPlannerMinChunkRunes    int
+	SpeechPlannerTargetChunkRunes int
 }
 
 func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewRequest) (InputPreviewSession, error) {
@@ -70,12 +73,15 @@ func NewASRResponder(
 	emitPlaceholderAudio bool,
 ) ASRResponder {
 	return ASRResponder{
-		Transcriber:          transcriber,
-		Language:             strings.TrimSpace(language),
-		OutputCodec:          outputCodec,
-		OutputSampleRate:     outputSampleRate,
-		OutputChannels:       outputChannels,
-		EmitPlaceholderAudio: emitPlaceholderAudio,
+		Transcriber:                   transcriber,
+		Language:                      strings.TrimSpace(language),
+		OutputCodec:                   outputCodec,
+		OutputSampleRate:              outputSampleRate,
+		OutputChannels:                outputChannels,
+		EmitPlaceholderAudio:          emitPlaceholderAudio,
+		SpeechPlannerEnabled:          true,
+		SpeechPlannerMinChunkRunes:    defaultSpeechPlannerMinChunkRunes,
+		SpeechPlannerTargetChunkRunes: defaultSpeechPlannerTargetChunkRunes,
 	}
 }
 
@@ -87,11 +93,10 @@ func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink R
 	switch {
 	case strings.TrimSpace(req.Text) != "":
 		userText := strings.TrimSpace(req.Text)
-		turn, err := executeTurnStream(ctx, r.Executor, req, userText, sink)
+		turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink)
 		if err != nil {
 			return TurnResponse{}, err
 		}
-		audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
 		response := TurnResponse{
 			InputText:   userText,
 			Text:        turn.Text,
@@ -122,12 +127,10 @@ func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink R
 	}
 
 	req.Metadata = turnMetadataWithTranscription(req.Metadata, result)
-	turn, err := executeTurnStream(ctx, r.Executor, req, userText, sink)
+	turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink)
 	if err != nil {
 		return TurnResponse{}, err
 	}
-
-	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
 	response := TurnResponse{
 		InputText:   userText,
 		Text:        turn.Text,
@@ -171,6 +174,14 @@ func (r ASRResponder) WithSynthesizer(s Synthesizer) ASRResponder {
 	return r
 }
 
+func (r ASRResponder) WithSpeechPlannerConfig(cfg SpeechPlannerConfig) ASRResponder {
+	cfg = NormalizeSpeechPlannerConfig(cfg)
+	r.SpeechPlannerEnabled = cfg.Enabled
+	r.SpeechPlannerMinChunkRunes = cfg.MinChunkRunes
+	r.SpeechPlannerTargetChunkRunes = cfg.TargetChunkRunes
+	return r
+}
+
 func (r ASRResponder) WithMemoryStore(store agent.MemoryStore) ASRResponder {
 	r.MemoryStore = store
 	return r
@@ -201,6 +212,52 @@ func (r ASRResponder) WithTurnDetectionLexicalGuard(mode string, incompleteHoldM
 
 func (r ASRResponder) NewSessionOrchestrator() *SessionOrchestrator {
 	return NewSessionOrchestrator(r.MemoryStore)
+}
+
+func (r ASRResponder) speechPlannerConfig() SpeechPlannerConfig {
+	return NormalizeSpeechPlannerConfig(SpeechPlannerConfig{
+		Enabled:          r.SpeechPlannerEnabled,
+		MinChunkRunes:    r.SpeechPlannerMinChunkRunes,
+		TargetChunkRunes: r.SpeechPlannerTargetChunkRunes,
+	})
+}
+
+func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req TurnRequest, userText string, sink ResponseDeltaSink) (agent.TurnOutput, [][]byte, AudioStream, error) {
+	planner := newPlannedSpeechSynthesis(ctx, r.Synthesizer, SynthesisRequest{
+		SessionID: req.SessionID,
+		TurnID:    req.TurnID,
+		TraceID:   req.TraceID,
+		DeviceID:  req.DeviceID,
+		UserText:  strings.TrimSpace(userText),
+	}, r.speechPlannerConfig())
+
+	emitSink := sink
+	if planner != nil {
+		emitSink = ResponseDeltaSinkFunc(func(ctx context.Context, delta ResponseDelta) error {
+			if err := emitResponseDelta(ctx, sink, delta); err != nil {
+				return err
+			}
+			planner.ObserveDelta(delta)
+			return nil
+		})
+	}
+
+	turn, err := executeTurnStream(ctx, r.Executor, req, userText, emitSink)
+	if err != nil {
+		if planner != nil {
+			planner.Close()
+		}
+		return agent.TurnOutput{}, nil, nil, err
+	}
+
+	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
+	if planner != nil {
+		if plannedStream := planner.Finalize(turn.Text); plannedStream != nil {
+			audioChunks = nil
+			audioStream = plannedStream
+		}
+	}
+	return turn, audioChunks, audioStream, nil
 }
 
 func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {

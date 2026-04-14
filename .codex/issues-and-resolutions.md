@@ -482,3 +482,41 @@
 - Problem: both websocket adapters still carried separate copies of response execution, interruption return-to-active, and active/end completion logic. That made fixes prone to drift before the next architecture step can move more ownership into `internal/voice`.
 - Resolution: added shared helper layers in `internal/gateway/turn_flow.go` and `internal/gateway/output_flow.go`, then rewired both adapters to use the same turn-response and output-lifecycle path without changing the published protocols.
 - Status: resolved for iteration 1; preview and playout ownership migration remains follow-up work.
+
+
+### Hidden Preview Auto-Commit Broke The Next Client Close On Long-Lived Websocket Sessions
+
+- Problem: the hidden preview path originally reused websocket read timeouts as a non-terminal polling loop. In live `server-endpoint-preview` validation, once auto-commit fired, the underlying gorilla websocket connection stayed in a timeout-corrupted read state, so the next client `session.end` failed and the server closed the session as `error`.
+- Resolution: moved hidden preview polling for native realtime and `xiaozhi` onto a shared ticker + read-pump path, and kept websocket read deadlines only for terminal idle or max-duration enforcement. Added regression coverage to prove the native realtime connection stays reusable after auto-commit.
+- Status: resolved.
+
+### Wake-Word-Prefixed Short Board Sample Still Degrades On The Current Local FunASR CPU Path
+
+- Problem: the real sample `artifacts/live-baseline/20260414/samples/input-wake-command.wav` completed the hidden preview flow successfully, but the current local `FunASR + cpu` path transcribed `小欧管家 + 打开客厅灯` as `调管家。`, which is materially worse than the command-only comparison sample.
+- Resolution: recorded the artifact and treated it as an ASR-quality follow-up rather than a websocket or preview-lifecycle blocker. The hidden preview flow itself is now stable again, but wake-word-prefixed short speech should be rechecked after further ASR or endpoint tuning.
+- Status: open quality caveat.
+
+
+### The Local FunASR Worker Had Been Overloaded By A Single-Model Speech Path
+
+- Problem: the local speech stack had previously asked one `SenseVoiceSmall` worker path to shoulder buffered preview, final recognition, wake-word-prefix robustness, and much of the acoustic endpoint evidence. Midway through the refactor, the worker also became temporarily unstartable because `WorkerConfig` had already been extended while `build_config()` still used the old shape.
+- Resolution: completed the worker-side modularization behind the same HTTP boundary:
+  - optional online preview model for `stream_2pass_online_final`
+  - separate final-ASR model
+  - optional final-path `fsmn-vad`
+  - optional final-path punctuation
+  - optional worker-side KWS with default `off`
+  - updated config parsing, health reporting, unit tests, and runtime/docs follow-through
+  - restarted `FunASR worker + agentd` successfully after the fix
+- Status: resolved at the worker architecture level; remaining quality follow-up is concrete model benchmarking and real-sample tuning rather than another boundary rewrite.
+
+### External Devices Saw `Connection refused` Because `agentd` Was Only Bound To Loopback
+
+- Problem: the stack had been started manually with `agentd` on `127.0.0.1:8080`, so local health checks passed while external probes to `101.33.235.154:8080` failed immediately with `Connection refused`. Ports `80/443` were also closed because no edge proxy was running.
+- Resolution: moved the local stack to a persistent machine-level deployment path:
+  - `systemd` now manages both `agentd` and the local FunASR worker
+  - `agentd` now runs on `0.0.0.0:8080`
+  - `nginx` now exposes `80/443` and proxies them to the local `agentd`
+  - `443` currently uses a self-signed certificate for the machine IP
+  - repeated restarts plus `curl` health checks and WebSocket upgrade checks now pass on `8080`, `80`, and `443`
+- Status: resolved for transport reachability; a publicly trusted certificate is still a later deployment follow-up if strict client trust is required.

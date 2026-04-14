@@ -87,6 +87,32 @@ func (s *timedInputPreviewSession) Close() error {
 	return nil
 }
 
+type fixedPartialPreviewSession struct {
+	partial    string
+	audioBytes int
+}
+
+func (s *fixedPartialPreviewSession) PushAudio(_ context.Context, chunk []byte) (voice.InputPreview, error) {
+	s.audioBytes += len(chunk)
+	return voice.InputPreview{
+		PartialText:   s.partial,
+		AudioBytes:    s.audioBytes,
+		SpeechStarted: s.audioBytes > 0,
+	}, nil
+}
+
+func (s *fixedPartialPreviewSession) Poll(time.Time) voice.InputPreview {
+	return voice.InputPreview{
+		PartialText:   s.partial,
+		AudioBytes:    s.audioBytes,
+		SpeechStarted: s.audioBytes > 0,
+	}
+}
+
+func (s *fixedPartialPreviewSession) Close() error {
+	return nil
+}
+
 type testInboundEvent struct {
 	Type      string         `json:"type"`
 	SessionID string         `json:"session_id"`
@@ -551,6 +577,92 @@ func TestRealtimeWSBargeInInterruptsSpeaking(t *testing.T) {
 	}
 }
 
+func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	longChunk := make([]byte, 640)
+	shortChunk := make([]byte, 640)
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			switch {
+			case strings.TrimSpace(req.Text) == "first":
+				return voice.TurnResponse{Text: "first response", AudioChunks: repeatAudioChunks(longChunk, 20)}, nil
+			case req.InputFrames > 0:
+				return voice.TurnResponse{Text: "interrupt response", AudioChunks: repeatAudioChunks(shortChunk, 3)}, nil
+			default:
+				return voice.TurnResponse{Text: "fallback"}, nil
+			}
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{partial: "嗯"}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "first"})
+
+	interrupted := false
+	commitSent := false
+	continuedFirstAudio := 0
+	sawEarlyActive := false
+	sawEarlyInterruptResponse := false
+	sawSecondResponse := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			switch {
+			case !interrupted:
+				interrupted = true
+				if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 640)); err != nil {
+					t.Fatalf("write short interrupt frame failed: %v", err)
+				}
+			case !commitSent:
+				continuedFirstAudio++
+				if continuedFirstAudio >= 3 {
+					writeControlEvent(t, conn, "audio.in.commit", sessionID, 3, map[string]any{"reason": "barge_in"})
+					commitSent = true
+				}
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		if !commitSent && event.Type == "session.update" && stringValue(event.Payload["state"]) == "active" {
+			sawEarlyActive = true
+		}
+		if !commitSent && event.Type == "response.chunk" && stringValue(event.Payload["text"]) == "interrupt response" {
+			sawEarlyInterruptResponse = true
+		}
+		if commitSent && event.Type == "response.chunk" && stringValue(event.Payload["text"]) == "interrupt response" {
+			sawSecondResponse = true
+			break
+		}
+	}
+
+	if !interrupted {
+		t.Fatal("expected to send a short interrupt frame while the server was speaking")
+	}
+	if continuedFirstAudio < 3 {
+		t.Fatalf("expected the first response audio to continue before commit, got %d extra chunks", continuedFirstAudio)
+	}
+	if sawEarlyActive {
+		t.Fatal("expected short incomplete preview to stay in speaking state until commit")
+	}
+	if sawEarlyInterruptResponse {
+		t.Fatal("expected short incomplete preview not to trigger the second response before commit")
+	}
+	if !sawSecondResponse {
+		t.Fatal("expected second response after explicit audio.in.commit")
+	}
+}
+
 func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.ServerEndpointEnabled = true
@@ -605,6 +717,72 @@ func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testin
 	}
 
 	t.Fatal("expected auto-committed response without explicit audio.in.commit")
+}
+
+func TestRealtimeWSServerEndpointPreviewKeepsConnectionOpenForClientEnd(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 1500
+	profile.MaxSessionMs = 5000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			if req.InputFrames == 0 {
+				return voice.TurnResponse{Text: "unexpected"}, nil
+			}
+			return voice.TurnResponse{InputText: "自动提交", Text: "auto endpoint response"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &timedInputPreviewSession{threshold: 60 * time.Millisecond}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	sawResponse := false
+	sentClientEnd := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "response.chunk":
+			if stringValue(event.Payload["text"]) == "auto endpoint response" {
+				sawResponse = true
+			}
+		case "session.update":
+			if sawResponse && !sentClientEnd && stringValue(event.Payload["state"]) == "active" {
+				writeControlEvent(t, conn, "session.end", sessionID, 3, map[string]any{
+					"reason":  "client_stop",
+					"message": "preview scenario complete",
+				})
+				sentClientEnd = true
+			}
+		case "session.end":
+			if !sawResponse {
+				t.Fatal("expected auto-committed response before client session.end")
+			}
+			if !sentClientEnd {
+				t.Fatal("expected client to end the session after auto-commit returned to active")
+			}
+			if got := stringValue(event.Payload["reason"]); got != "client_stop" {
+				t.Fatalf("expected client_stop reason, got %q", got)
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected connection to stay open until client session.end")
 }
 
 func testRealtimeProfile() RealtimeProfile {

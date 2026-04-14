@@ -1,0 +1,16 @@
+[Unit]
+Description=agent-server agentd
+After=network-online.target agent-server-funasr-worker.service
+Wants=network-online.target agent-server-funasr-worker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/agent-server
+EnvironmentFile=-/etc/agent-server/agentd.env
+ExecStart=/home/ubuntu/agent-server/scripts/run-agentd-local.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

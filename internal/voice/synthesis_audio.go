@@ -19,17 +19,22 @@ func synthesizedAudio(ctx context.Context, synthesizer Synthesizer, req TurnRequ
 		UserText:  userText,
 		Text:      responseText,
 	}
+	return nil, synthesizedAudioStream(ctx, synthesizer, synthesisReq)
+}
 
+func synthesizedAudioStream(ctx context.Context, synthesizer Synthesizer, req SynthesisRequest) AudioStream {
+	if synthesizer == nil {
+		return nil
+	}
 	if streaming, ok := synthesizer.(StreamingSynthesizer); ok {
-		stream, err := streaming.StreamSynthesize(ctx, synthesisReq)
+		stream, err := streaming.StreamSynthesize(ctx, req)
 		if err == nil && stream != nil {
-			if prepared := prepareStreamingAudio(ctx, stream, synthesizer, synthesisReq); prepared != nil {
-				return nil, prepared
+			if prepared := prepareStreamingAudio(ctx, stream, synthesizer, req); prepared != nil {
+				return prepared
 			}
 		}
 	}
-
-	return nil, bufferedSynthesisAudio(synthesizer, ctx, synthesisReq)
+	return bufferedSynthesisAudio(synthesizer, ctx, req)
 }
 
 func bufferedSynthesisAudio(synthesizer Synthesizer, ctx context.Context, req SynthesisRequest) AudioStream {

@@ -1,0 +1,16 @@
+[Unit]
+Description=agent-server FunASR worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/agent-server
+EnvironmentFile=-/etc/agent-server/funasr-worker.env
+ExecStart=/home/ubuntu/agent-server/scripts/run-funasr-worker-local.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

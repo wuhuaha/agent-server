@@ -250,3 +250,26 @@
 - Browser screenshots, browser console exports, and exported WAV files are still manual steps, but they should now land under that canonical root instead of in ad hoc locations.
 - Deep analysis, architecture comparison, and research work should not remain only in chat. The durable conclusion must be written into an appropriate `docs/` note in the same change, then indexed and mirrored into `.codex` records when it affects future work.
 - For the current phase-1 voice demo track, the highest-ROI spoken-interaction improvements are true streaming ASR, stronger endpointing, adaptive interruption arbitration, incremental TTS launch from stable clauses, and spoken-style response planning before widening the broader product surface.
+- The first low-risk shared optimization slice for the phase-1 voice demo now hardens endpoint naturalness inside `internal/voice.SilenceTurnDetector`: standalone hesitation or backchannel-like partials such as `嗯`, `呃`, `那个`, `uh`, and `um` stay on the lexical-hold path instead of being treated as immediately complete utterances.
+
+- Adaptive audio barge-in is now shared runtime behavior instead of a gateway-local first-frame interrupt: candidate interrupt audio is staged while the assistant is speaking, lexically complete previews can cut in after `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`, incomplete previews need an additional `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS`, and explicit `audio.in.commit` while speaking can still accept a short but intentional interruption.
+- Shared responders now support clause-level incremental TTS planning behind `AGENT_SERVER_VOICE_SPEECH_PLANNER_*`: stable text deltas are segmented into speakable clauses and pre-synthesized before the full streamed turn finishes, while the public websocket contract remains unchanged.
+- Hidden preview polling must not rely on websocket read-timeout recovery for long-lived sessions. Native realtime and `xiaozhi` now use a ticker + websocket read-pump path for non-terminal preview polling, and read deadlines remain only for terminal idle or max-duration enforcement.
+- The current archived live validation roots for the phase-1 hidden preview follow-up are:
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-command-only-final/report.json`
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-wake-command-v1/report.json`
+- The command-only real sample now validates the hidden preview flow end to end, but the wake-word-prefixed comparison sample still exposes a local `FunASR + cpu` ASR quality caveat (`调管家。`).
+
+- The local FunASR worker now supports a modular speech path behind the same shared HTTP boundary:
+  - default conservative mode: `stream_preview_batch` + final `SenseVoiceSmall` + `energy`
+  - optional 2pass mode: online preview model + separate final-ASR correction
+  - optional final-path `fsmn-vad` and punctuation
+  - optional worker-side `KWS`, which must remain configurable and default `off`
+- For the phase-1 voice demo, keep KWS/VAD/online preview internal to the worker/runtime path instead of widening the public realtime contract. The next quality step is concrete model benchmarking and live tuning on top of that boundary, not another protocol rewrite.
+- For local open-source TTS, the current Docker-default reference remains `iic/CosyVoice-300M-SFT`, but the effect-first next benchmark target should be `Fun-CosyVoice3-0.5B-2512`, with `CosyVoice2-0.5B` as a lower-risk intermediate step.
+- The current machine-local long-running deployment path is now:
+  - `systemd` manages `agent-server-funasr-worker.service`
+  - `systemd` manages `agent-server-agentd.service`
+  - `nginx` exposes `80/443` to the local `agentd` on `8080`
+- The local FunASR worker should stay on `127.0.0.1:8091`; only `agentd` belongs on the public edge.
+- The current `443` edge uses a self-signed certificate for the machine IP. This is sufficient to remove connection refusal and validate HTTPS/WSS transport reachability, but strict client trust still requires a later trusted-certificate rollout.

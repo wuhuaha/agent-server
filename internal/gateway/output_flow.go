@@ -18,6 +18,11 @@ type turnCompletionHooks struct {
 	OnEndSession   func(trace turnTrace, reason session.CloseReason, message string) error
 }
 
+type interruptSpeakingOptions struct {
+	ClearPreview bool
+	ClearPending bool
+}
+
 type turnFinalizeHooks struct {
 	Completion       turnCompletionHooks
 	BeforeNoAudio    func(trace turnTrace, response voice.TurnResponse, aggregatedText string) error
@@ -100,6 +105,13 @@ func completeTurnReturnOrClose(trace turnTrace, endSession bool, endReason, endM
 }
 
 func interruptSpeakingFlow(runtime *connectionRuntime, profile RealtimeProfile, logger *slog.Logger, onInterrupted func() error, onReturnActive func(turnTrace, session.Snapshot) error) error {
+	return interruptSpeakingFlowWithOptions(runtime, profile, logger, interruptSpeakingOptions{
+		ClearPreview: true,
+		ClearPending: true,
+	}, onInterrupted, onReturnActive)
+}
+
+func interruptSpeakingFlowWithOptions(runtime *connectionRuntime, profile RealtimeProfile, logger *slog.Logger, opts interruptSpeakingOptions, onInterrupted func() error, onReturnActive func(turnTrace, session.Snapshot) error) error {
 	snapshot := runtime.session.Snapshot()
 	if snapshot.State != session.StateSpeaking && runtime.output == nil {
 		return nil
@@ -122,7 +134,12 @@ func interruptSpeakingFlow(runtime *connectionRuntime, profile RealtimeProfile, 
 	logTurnTraceInfo(logger, "gateway turn interrupted", active.SessionID, trace,
 		"active_return_latency_ms", trace.ActiveReturnLatencyMs(),
 	)
-	runtime.clearInputPreview()
+	if opts.ClearPreview {
+		runtime.clearInputPreview()
+	}
+	if opts.ClearPending {
+		runtime.resetPendingBargeInAudio()
+	}
 	if err := applyReadDeadline(runtime, active, profile); err != nil {
 		return err
 	}

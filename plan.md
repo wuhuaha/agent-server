@@ -123,8 +123,8 @@ Current planning note:
 - the current phase-1 voice demo focus is perceived realtime quality first: true streaming ASR, stronger endpointing, adaptive interruption handling, earlier incremental TTS start, and spoken-style response planning should outrank broader capability surface
 - for the next full-duplex voice stage, the primary execution route is now explicitly `local / open-source first`
 - hosted realtime speech providers remain comparison baselines, not the main implementation target
-- the next `L2` hardening slice should strengthen local endpoint evidence inside the Python FunASR worker rather than widening the public realtime contract
-- that slice should add an optional stronger acoustic endpoint hint path, preferably `Silero VAD`, while preserving the current tail-energy hint as the default and graceful fallback
+- the initial modular local FunASR worker slice is now landed: the worker can stay on backward-compatible buffered preview or switch internally to `online preview + final-ASR correction`, and worker-side `KWS` remains optional plus default-off
+- the next voice-demo follow-up should benchmark concrete local model combinations and live latency/accuracy trade-offs on top of that worker boundary rather than widening the public realtime contract again
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context
 - the Codex harness now also has a canonical live-validation runbook plus artifact naming convention under `docs/codex/live-validation-runbook.md`
@@ -463,7 +463,74 @@ Recorded follow-through:
 - added `internal/channel.RuntimeBridge` plus delivery-status reporting primitives
 - updated architecture docs, runtime configuration docs, channel contract docs, and ADRs
 
+### 2026-04-14 Phase-1 Realtime Voice Demo Slice Complete
+
+- Scope:
+  - finish the requested `1 -> 2 -> 3` phase-1 voice-demo loop in order:
+    - adaptive barge-in threshold
+    - incremental TTS speech planner
+    - real-sample `server-endpoint-preview` validation and recording
+- Target files:
+  - `internal/voice/barge_in.go`
+  - `internal/voice/speech_planner.go`
+  - `internal/gateway/realtime_ws.go`
+  - `internal/gateway/xiaozhi_ws.go`
+  - `internal/app/config_voice.go`
+  - `docs/architecture/runtime-configuration.md`
+  - `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`
+  - `.env.example`
+  - `deploy/docker/.env.docker.example`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - inbound audio barge-in no longer interrupts on the first frame and still accepts an explicit short interruption commit while speaking
+  - shared responders can pre-synthesize stable text clauses behind the existing websocket contract
+  - `server-endpoint-preview` succeeds on real speech samples and the websocket remains reusable for a later client `session.end`
+- Validation recorded for this execution step:
+  - `go test ./internal/voice ./internal/app ./internal/gateway`
+  - `go test -tags=integration ./internal/gateway ./internal/voice`
+  - `make verify-fast`
+  - `python3 -m agent_server_desktop_client.runner --scenario server-endpoint-preview --http-base http://127.0.0.1:8081 --wav artifacts/live-baseline/20260414/samples/input-command-only.wav --output artifacts/live-baseline/20260414/desktop-server-endpoint-preview-command-only-final/report.json --save-rx-dir artifacts/live-baseline/20260414/desktop-server-endpoint-preview-command-only-final`
+  - `python3 -m agent_server_desktop_client.runner --scenario server-endpoint-preview --http-base http://127.0.0.1:8081 --wav artifacts/live-baseline/20260414/samples/input-wake-command.wav --output artifacts/live-baseline/20260414/desktop-server-endpoint-preview-wake-command-v1/report.json --save-rx-dir artifacts/live-baseline/20260414/desktop-server-endpoint-preview-wake-command-v1`
+- Observed outcome:
+  - adaptive barge-in is now shared and staged instead of first-frame hard interrupt
+  - the shared speech planner now pre-synthesizes stable clauses while streamed text is still arriving
+  - native realtime and `xiaozhi` preview polling now use a non-terminal ticker path instead of read-timeout recovery, so auto-commit no longer breaks the next client close step
+  - the real command-only sample passed `server-endpoint-preview` end to end and returned a normal client-driven `session.end`
+  - the wake-word-prefixed comparison sample still exposed a local ASR quality caveat (`调管家。`), which is recorded separately for follow-up
+
 ### Recent Slices Still Relevant
+
+- `2026-04-14 Local systemd + nginx edge bring-up`
+  - added reusable local service-management and edge-exposure assets for this machine:
+    - `scripts/install-local-systemd-stack.sh`
+    - `scripts/install-local-nginx-proxy.sh`
+    - `scripts/run-agentd-local.sh`
+    - `scripts/run-funasr-worker-local.sh`
+    - `deploy/systemd/agent-server-agentd.service`
+    - `deploy/systemd/agent-server-funasr-worker.service`
+    - `deploy/nginx/agent-server.conf`
+  - current local stack now runs under `systemd` with `agentd` on `0.0.0.0:8080`, the FunASR worker on `127.0.0.1:8091`, and `nginx` exposing `80/443`
+  - current `443` exposure uses a self-signed certificate for the machine IP, which removes connection refusal and enables HTTPS/WSS reachability, but trusted-certificate rollout remains a later deployment step if strict client trust is required
+  - validation: `systemctl status`, repeated `systemctl restart`, `curl` health checks on `8080/80/443`, and HTTP/HTTPS WebSocket upgrade checks through `nginx`
+
+- `2026-04-14 Local FunASR 2pass Worker And Optional KWS`
+  - the Python worker now supports a modular local speech path behind the same shared HTTP contract:
+    - optional online preview model
+    - separate final-ASR model
+    - optional final-path `fsmn-vad`
+    - optional final-path punctuation
+    - optional worker-side KWS with default `off`
+  - default bring-up remains conservative and backward-compatible: `stream_preview_batch`, `energy` endpoint hint, and `KWS` disabled
+  - added worker tests, runtime/config docs, Docker env examples, and ADR `0028`
+  - validation: worker `py_compile`, targeted Python worker unit tests, and live `/healthz` restart of `agentd + FunASR worker`
+
+- `2026-04-14 FunASR Model Selection Research`
+  - recorded the current repository truth: the main local FunASR path still uses one `SenseVoiceSmall` ASR worker plus heuristic or external endpoint signals instead of a modular FunASR stack
+  - compared official model options across ASR, online streaming, VAD, punctuation, KWS, speaker, emotion, and CosyVoice TTS
+  - recommended the next effect-first voice-demo direction as `fsmn-kws` + `fsmn-vad` + true online ASR preview + final-ASR correction rather than continuing to overload one batch-style ASR worker
+  - durable note: `docs/architecture/funasr-model-selection-zh-2026-04-14.md`
 
 - `2026-04-14 Local Open-Source GPU TTS Via CosyVoice`
   - added `cosyvoice_http` as a shared `internal/voice` TTS provider targeting the official CosyVoice FastAPI service, keeping local GPU deployment details behind the same runtime boundary as existing ASR/TTS providers

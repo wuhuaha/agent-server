@@ -116,10 +116,7 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 }
 
 func (d *SilenceTurnDetector) audioDurationMs() int {
-	if d.sampleRateHz <= 0 || d.channels <= 0 {
-		return 0
-	}
-	return int(float64(d.audioBytes) / float64(d.channels) / 2.0 / float64(d.sampleRateHz) * 1000.0)
+	return pcm16AudioDurationMs(d.audioBytes, d.sampleRateHz, d.channels)
 }
 
 func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string) {
@@ -153,11 +150,20 @@ func looksLexicallyComplete(text string) bool {
 	if trimmed == "" {
 		return false
 	}
+	if matchesAnyValue(trimmed, chineseStandaloneHesitations) {
+		return false
+	}
+	if tokens := asciiWordTokens(trimmed); len(tokens) == 1 && englishStandaloneHesitations[tokens[0]] {
+		return false
+	}
+	if strings.HasSuffix(trimmed, "...") || strings.HasSuffix(trimmed, "……") {
+		return false
+	}
 	lastRune := runeAtEnd(trimmed)
 	switch lastRune {
 	case '.', '!', '?', '。', '！', '？':
 		return true
-	case ',', '，', '、', ';', '；', ':', '：', '(', '（', '[', '{', '<', '"', '\'', '“', '‘':
+	case ',', '，', '、', ';', '；', ':', '：', '(', '（', '[', '{', '<', '"', '\'', '“', '‘', '-', '—', '…':
 		return false
 	}
 	if matchesAnySuffix(trimmed, chineseIncompleteSuffixes) {
@@ -215,9 +221,41 @@ func matchesAnySuffix(text string, suffixes []string) bool {
 	return false
 }
 
+func matchesAnyValue(text string, values []string) bool {
+	for _, value := range values {
+		if text == value {
+			return true
+		}
+	}
+	return false
+}
+
+func asciiWordTokens(text string) []string {
+	var tokens []string
+	var builder strings.Builder
+	flush := func() {
+		if builder.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, builder.String())
+		builder.Reset()
+	}
+	for _, r := range text {
+		if r <= unicode.MaxASCII && unicode.IsLetter(r) {
+			builder.WriteRune(unicode.ToLower(r))
+			continue
+		}
+		flush()
+	}
+	flush()
+	return tokens
+}
+
 var chineseIncompleteSuffixes = []string{
 	"然后",
+	"然后呢",
 	"还有",
+	"还有呢",
 	"而且",
 	"或者",
 	"但是",
@@ -241,6 +279,25 @@ var chineseIncompleteSuffixes = []string{
 	"先",
 }
 
+var chineseStandaloneHesitations = []string{
+	"嗯",
+	"嗯嗯",
+	"呃",
+	"额",
+	"啊",
+	"啊啊",
+	"哦",
+	"噢",
+	"诶",
+	"欸",
+	"唉",
+	"那个",
+	"这个",
+	"就是",
+	"然后",
+	"还有",
+}
+
 var englishIncompleteTokens = map[string]bool{
 	"and":     true,
 	"or":      true,
@@ -253,4 +310,12 @@ var englishIncompleteTokens = map[string]bool{
 	"with":    true,
 	"then":    true,
 	"please":  true,
+}
+
+var englishStandaloneHesitations = map[string]bool{
+	"uh":  true,
+	"um":  true,
+	"hmm": true,
+	"mm":  true,
+	"erm": true,
 }

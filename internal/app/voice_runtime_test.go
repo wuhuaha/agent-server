@@ -19,6 +19,9 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 			ServerEndpointLexicalMode:      "off",
 			ServerEndpointIncompleteHoldMs: 1500,
 			ServerEndpointHintSilenceMs:    220,
+			SpeechPlannerEnabled:           true,
+			SpeechPlannerMinChunkRunes:     5,
+			SpeechPlannerTargetChunkRunes:  18,
 			IflytekRTASR: IflytekRTASRProviderConfig{
 				AppID:           "app-id",
 				AccessKeyID:     "key-id",
@@ -58,6 +61,15 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 	if asrResponder.TurnDetectionHintSilenceMs != 220 {
 		t.Fatalf("expected hint silence 220ms, got %d", asrResponder.TurnDetectionHintSilenceMs)
 	}
+	if !asrResponder.SpeechPlannerEnabled {
+		t.Fatal("expected speech planner to stay enabled")
+	}
+	if asrResponder.SpeechPlannerMinChunkRunes != 5 {
+		t.Fatalf("expected speech planner min chunk runes 5, got %d", asrResponder.SpeechPlannerMinChunkRunes)
+	}
+	if asrResponder.SpeechPlannerTargetChunkRunes != 18 {
+		t.Fatalf("expected speech planner target chunk runes 18, got %d", asrResponder.SpeechPlannerTargetChunkRunes)
+	}
 }
 
 func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
@@ -72,6 +84,9 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			ServerEndpointLexicalMode:      "conservative",
 			ServerEndpointIncompleteHoldMs: 900,
 			ServerEndpointHintSilenceMs:    180,
+			SpeechPlannerEnabled:           true,
+			SpeechPlannerMinChunkRunes:     7,
+			SpeechPlannerTargetChunkRunes:  20,
 			EmitPlaceholderAudio:           true,
 		},
 	})
@@ -95,6 +110,42 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.TurnDetectionHintSilenceMs != 180 {
 		t.Fatalf("expected hint silence 180ms, got %d", asrResponder.TurnDetectionHintSilenceMs)
+	}
+	if !asrResponder.SpeechPlannerEnabled {
+		t.Fatal("expected speech planner to stay enabled")
+	}
+	if asrResponder.SpeechPlannerMinChunkRunes != 7 {
+		t.Fatalf("expected speech planner min chunk runes 7, got %d", asrResponder.SpeechPlannerMinChunkRunes)
+	}
+	if asrResponder.SpeechPlannerTargetChunkRunes != 20 {
+		t.Fatalf("expected speech planner target chunk runes 20, got %d", asrResponder.SpeechPlannerTargetChunkRunes)
+	}
+}
+
+func TestBuildResponderSupportsBootstrapSpeechPlannerConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := withRealtimeDefaults(Config{
+		Voice: VoiceConfig{
+			Provider:                      "bootstrap",
+			SpeechPlannerEnabled:          false,
+			SpeechPlannerMinChunkRunes:    9,
+			SpeechPlannerTargetChunkRunes: 27,
+		},
+	})
+
+	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), agent.NewInMemoryMemoryStore(4), nil)
+	bootstrap, ok := responder.(voice.BootstrapResponder)
+	if !ok {
+		t.Fatalf("expected BootstrapResponder, got %T", responder)
+	}
+	if bootstrap.SpeechPlannerEnabled {
+		t.Fatal("expected bootstrap speech planner to be disabled")
+	}
+	if bootstrap.SpeechPlannerMinChunkRunes != 9 {
+		t.Fatalf("expected bootstrap speech planner min chunk runes 9, got %d", bootstrap.SpeechPlannerMinChunkRunes)
+	}
+	if bootstrap.SpeechPlannerTargetChunkRunes != 27 {
+		t.Fatalf("expected bootstrap speech planner target chunk runes 27, got %d", bootstrap.SpeechPlannerTargetChunkRunes)
 	}
 }
 

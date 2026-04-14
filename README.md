@@ -164,6 +164,50 @@ See also:
 
 - [docs/architecture/local-cosyvoice-gpu-tts.md](docs/architecture/local-cosyvoice-gpu-tts.md)
 
+## Local systemd + nginx
+
+For a machine-local long-running stack that survives shell exit and reboot:
+
+```bash
+sudo env PATH="$PATH" bash scripts/install-local-systemd-stack.sh
+```
+
+This installs and enables:
+
+- `agent-server-funasr-worker.service`
+- `agent-server-agentd.service`
+
+Default env files are created under:
+
+- `/etc/agent-server/funasr-worker.env`
+- `/etc/agent-server/agentd.env`
+
+After installation, useful checks are:
+
+```bash
+systemctl status agent-server-funasr-worker.service agent-server-agentd.service
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8091/healthz
+```
+
+To expose the local stack on public `80/443` through `nginx`:
+
+```bash
+sudo PUBLIC_IP=<your-public-ip> bash scripts/install-local-nginx-proxy.sh
+```
+
+That script:
+
+- installs `nginx` when missing
+- proxies `80 -> 127.0.0.1:8080`
+- proxies `443 -> 127.0.0.1:8080`
+- generates a self-signed certificate for the supplied public IP if no certificate exists yet
+
+Important note for `443`:
+
+- the generated certificate is self-signed, so it removes `connection refused` and enables HTTPS or WSS reachability
+- clients that require a publicly trusted certificate will still need a real certificate to avoid trust failures later
+
 ## Docker Deployment
 
 The repository now has a first formal Docker deployment slice for:

@@ -46,6 +46,8 @@ The current baseline observability path also lives here: ASR and TTS requests no
 
 The local FunASR reference path now follows the same boundary: `internal/voice` owns a shared `StreamingTranscriber` contract, the local HTTP worker exposes `/v1/asr/stream/*` only behind that contract, and app bootstrap chooses whether a provider is true-streaming or wrapped by the buffered compatibility adapter.
 
+That worker boundary now also carries the first modular local speech pipeline without widening the public protocols: the worker may stay on backward-compatible buffered preview, or switch internally to a 2pass path of `optional KWS + online preview + final-ASR correction`. Worker-side `fsmn-vad`, `Silero VAD`, KWS prefix stripping, and preview endpoint hints all remain runtime-owned details behind `internal/voice`; device adapters still consume only normalized preview/final deltas and audio events.
+
 The next turn-detection slice also stays inside the same layer: `internal/voice` now owns an internal input-preview boundary for partial ASR plus silence-based turn suggestions, while websocket adapters only consume preview snapshots and optional commit suggestions. The adapters still do not call ASR providers directly, and the advertised public turn mode remains unchanged until the server-endpoint path is mature enough to publish.
 
 That hidden preview path is now explicitly runtime-configurable through shared voice-runtime thresholds instead of adapter-local constants, and bring-up validation is expected to happen through an explicit non-default runner scenario rather than by widening the public discovery contract early.
@@ -93,6 +95,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One provider-selected voice runtime behind shared `Transcriber` and `Synthesizer` interfaces so local and cloud voice backends do not leak into device or channel adapters.
 - One local open-source GPU TTS option behind the same shared `Synthesizer` boundary so CosyVoice deployment details still stop inside `internal/voice`.
 - One provider-selected streaming ASR path behind shared `StreamingTranscriber` and `StreamingTranscriptionSession` interfaces so local preview workers and buffered compatibility adapters both terminate inside `internal/voice`.
+- One worker-internal modular speech path so local FunASR can add `KWS`, worker-side VAD, online preview, and final-ASR correction without teaching device adapters or the public contracts about model-serving details.
 - One voice-runtime-owned input-preview path behind shared `InputPreviewer` and `InputPreviewSession` interfaces so server-side endpoint preview can evolve without pushing provider logic into websocket adapters.
 - One voice-runtime-owned session orchestrator behind shared preview and playback callbacks so auto-commit, interruption, playout completion, and heard-text persistence stop being split across multiple websocket handlers.
 - One runtime-owned hook layer for memory and tool orchestration.

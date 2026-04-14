@@ -42,6 +42,8 @@ func NewServer(cfg Config, logger *slog.Logger) (*http.Server, error) {
 		VoiceProvider:         cfg.Voice.Provider,
 		TTSProvider:           cfg.TTS.Provider,
 		ServerEndpointEnabled: cfg.Voice.ServerEndpointEnabled,
+		BargeInMinAudioMs:     cfg.Voice.BargeInMinAudioMs,
+		BargeInHoldAudioMs:    cfg.Voice.BargeInHoldAudioMs,
 		AuthMode:              cfg.Realtime.AuthMode,
 		TurnMode:              cfg.Realtime.TurnMode,
 		IdleTimeoutMs:         cfg.Realtime.IdleTimeoutMs,
@@ -66,6 +68,8 @@ func NewServer(cfg Config, logger *slog.Logger) (*http.Server, error) {
 		VoiceProvider:         cfg.Voice.Provider,
 		TTSProvider:           cfg.TTS.Provider,
 		ServerEndpointEnabled: cfg.Voice.ServerEndpointEnabled,
+		BargeInMinAudioMs:     cfg.Voice.BargeInMinAudioMs,
+		BargeInHoldAudioMs:    cfg.Voice.BargeInHoldAudioMs,
 		AuthMode:              cfg.Realtime.AuthMode,
 		TurnMode:              cfg.Realtime.TurnMode,
 		IdleTimeoutMs:         cfg.Realtime.IdleTimeoutMs,
@@ -259,12 +263,24 @@ func buildTurnDetectionConfig(cfg Config) voice.SilenceTurnDetectorConfig {
 	}
 }
 
+func buildSpeechPlannerConfig(cfg Config) voice.SpeechPlannerConfig {
+	return voice.SpeechPlannerConfig{
+		Enabled:          cfg.Voice.SpeechPlannerEnabled,
+		MinChunkRunes:    cfg.Voice.SpeechPlannerMinChunkRunes,
+		TargetChunkRunes: cfg.Voice.SpeechPlannerTargetChunkRunes,
+	}
+}
+
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {
 	bootstrap := voice.NewBootstrapResponder(
 		cfg.Realtime.OutputCodec,
 		cfg.Realtime.OutputSampleRate,
 		cfg.Realtime.OutputChannels,
-	).WithTurnExecutor(turnExecutor).WithSynthesizer(synthesizer).WithMemoryStore(memoryStore)
+	).
+		WithTurnExecutor(turnExecutor).
+		WithSynthesizer(synthesizer).
+		WithMemoryStore(memoryStore).
+		WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg))
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Voice.Provider)) {
 	case "", "bootstrap":
@@ -288,6 +304,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Voice.EmitPlaceholderAudio,
 		).
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
+			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
@@ -328,6 +345,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			cfg.Voice.EmitPlaceholderAudio,
 		).
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
+			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)

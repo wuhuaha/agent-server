@@ -247,11 +247,72 @@
 - 增加 incomplete-turn hold
 - 增加 backchannel / false interruption 过滤
 
+当前已落地的第一刀偏向这一层：
+
+- shared `turn detector` 现在对独立犹豫词 / 附和音更保守，例如 `嗯`、`呃`、`那个`、`uh`、`um` 这类 partial 不再被当作可立即收尾的完整话语
+- 这类短语默认继续走 lexical hold 路径，而不是走最短静音收尾路径
+- 目的不是让系统更慢，而是减少“用户还没组织好下一句，系统却先抢答”的违和感
+
 ### D3：在 text delta 与 TTS 之间插入 shared speech planner
 
 - 从“完整文本再播”升级到“稳定意群就播”
 - 保持 TTS 仍归 `internal/voice` 统一管理
 - 不把提前说话逻辑散落进各个 adapter
+
+### 2026-04-14 第一轮落地结果
+
+本轮已按 `1 -> 2 -> 3` 的顺序完成第一阶段 demo 的三项收敛：
+
+1. **自适应 barge-in 中断门槛**
+   - 新增共享 `internal/voice/barge_in.go`
+   - speaking 态下不再因为首个入站音频帧就立刻打断
+   - 当前策略变为：
+     - 先暂存候选打断音频
+     - 对 lexically complete preview 只要求基础最小时长
+     - 对 `嗯 / 呃 / 那个 / uh / um` 这类不完整插话要求额外 hold
+     - 如果用户在 speaking 态明确发出 `audio.in.commit`，即使插话较短，也可把已暂存音频作为一次“有意图”的打断提交
+2. **增量 TTS speech planner**
+   - 新增共享 `internal/voice/speech_planner.go`
+   - 在 streaming text delta 与 TTS 之间增加 clause-level planner
+   - 当前实现是“稳定意群预合成”而不是“协议层提前开口”：
+     - 对流式文本按逗号、句号、换行和 chunk 目标长度切稳定意群
+     - 在 LLM / runtime 仍在继续产出后续文本时，提前在后台合成前序稳定意群
+     - 网关和协议不变，但 turn 完成后首段音频可更早就绪
+3. **真实语音样本跑 `server-endpoint-preview`**
+   - 为了让该场景可稳定回归，本轮还修复了一个 live-only 问题：
+     - hidden preview 过去依赖 websocket read timeout 做非终态轮询
+     - 一次 auto-commit 后连接会被底层 timeout 状态污染，随后客户端再发 `session.end` 时会异常断开
+     - 现在改成 shared preview ticker + websocket read pump，native realtime 与 `xiaozhi` 都不再依赖 read timeout 做 preview 轮询
+
+### 本轮真实样本验证
+
+本轮使用了两份 2026-04-14 本机真实 WAV 样本做 `server-endpoint-preview` 验证：
+
+- 主验证样本：`artifacts/live-baseline/20260414/samples/input-command-only.wav`
+- 对比样本：`artifacts/live-baseline/20260414/samples/input-wake-command.wav`
+
+归档结果：
+
+- 主验证通过：
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-command-only-final/report.json`
+- 对比样本通过：
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-wake-command-v1/report.json`
+
+主验证样本的关键观察：
+
+- hidden preview 在**没有客户端 `audio.in.commit`** 的情况下完成了 turn auto-commit
+- 服务器在 turn 完成后保持连接可继续复用，客户端 `session.end` 收到正常确认
+- 这轮主验证质量摘要为：
+  - `thinking_latency_ms`: 约 `1281 ms`
+  - `response_start_latency_ms`: 约 `2058 ms`
+  - `first_text_latency_ms`: 约 `2058 ms`
+  - 返回文本：`agent-server received text input: 打开客厅灯。`
+
+对比样本的 caveat：
+
+- `input-wake-command.wav` 这份 `小欧管家 + 打开客厅灯` 样本在当前 `FunASR + cpu` 路径下仍出现了明显识别偏差，返回文本是 `调管家。`
+- 这说明当前阶段 hidden preview 的时延链路已可用，但 wake-word 前缀样本在本地 ASR 路径上的鲁棒性仍需继续补强
+- 这个问题更偏向 `ASR / endpoint / speech understanding` 质量，不是本轮 websocket 生命周期或 preview 机制的问题
 
 ### D4：做 preview-driven shadow planning
 

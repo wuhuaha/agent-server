@@ -26,8 +26,10 @@ type connectionRuntime struct {
 	voiceSession    *voice.SessionOrchestrator
 	turnTrace       turnTraceState
 
-	outputMu sync.Mutex
-	output   *outputStream
+	outputMu         sync.Mutex
+	output           *outputStream
+	pendingBargeInMu sync.Mutex
+	pendingBargeIn   pendingBargeInAudio
 }
 
 func newConnectionRuntime(conn *websocket.Conn, peer *wsPeer, rtSession *session.RealtimeSession, responder voice.Responder) *connectionRuntime {
@@ -84,13 +86,6 @@ func (r *connectionRuntime) interruptOutput(wait time.Duration) bool {
 
 func applyReadDeadline(runtime *connectionRuntime, snapshot session.Snapshot, profile RealtimeProfile) error {
 	deadline := readDeadlineForSnapshot(snapshot, profile)
-	previewDeadline := time.Time{}
-	if runtime.voiceSession != nil {
-		previewDeadline = runtime.voiceSession.PreviewReadDeadline(time.Now().UTC())
-	}
-	if !previewDeadline.IsZero() && (deadline.IsZero() || previewDeadline.Before(deadline)) {
-		deadline = previewDeadline
-	}
 	return runtime.conn.SetReadDeadline(deadline)
 }
 
