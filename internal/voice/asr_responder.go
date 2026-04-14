@@ -236,7 +236,7 @@ func splitPCMForStreaming(audioPCM []byte, sampleRateHz, channels, frameMs int) 
 	}
 	frameBytes := pcmFrameBytes(sampleRateHz, channels, frameMs)
 	if frameBytes <= 0 || len(audioPCM) <= frameBytes {
-		return [][]byte{append([]byte(nil), audioPCM...)}
+		return [][]byte{audioPCM}
 	}
 	chunks := make([][]byte, 0, (len(audioPCM)+frameBytes-1)/frameBytes)
 	for start := 0; start < len(audioPCM); start += frameBytes {
@@ -244,7 +244,7 @@ func splitPCMForStreaming(audioPCM []byte, sampleRateHz, channels, frameMs int) 
 		if end > len(audioPCM) {
 			end = len(audioPCM)
 		}
-		chunks = append(chunks, append([]byte(nil), audioPCM[start:end]...))
+		chunks = append(chunks, audioPCM[start:end])
 	}
 	return chunks
 }

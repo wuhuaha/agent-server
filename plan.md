@@ -134,6 +134,7 @@ Current planning note:
 - the voice-runtime ownership migration is now landed: hidden preview, playout callbacks, and heard-text persistence live behind `internal/voice.SessionOrchestrator`
 - external channel follow-up should build the first Feishu adapter on top of `internal/channel.RuntimeBridge` instead of adding another adapter-local orchestration path
 - startup config is now split by runtime domain and validated before handler wiring, so future provider additions should extend `Config.Validate()` instead of relying on request-time failures
+- reusable protocol-facing validation clients should now live under `clients/`; `tools/` stays reserved for helper scripts and diagnostics
 
 ## Current Execution Log
 
@@ -142,6 +143,46 @@ Detailed historical execution history now lives in:
 - `docs/codex/execution-log-archive-2026-04.md`
 
 Keep this root ledger focused on active direction, recent execution context, and next-step decisions. When a completed slice stops affecting immediate work, summarize it in the archive instead of extending the root plan.
+
+### 2026-04-14 Client Directory Taxonomy Slice Complete
+
+- Scope:
+  - align the repository structure so reusable protocol-facing validation clients live under `clients/` instead of `tools/`
+  - move the standalone browser realtime client to a stable client-specific path
+  - update scripts, docs, and durable repository records to the new location
+- Target files:
+  - `clients/web-realtime-client/*`
+  - `README.md`
+  - `scripts/web-h5-manual-capture.sh`
+  - `docs/protocols/web-h5-realtime-adaptation.md`
+  - `docs/architecture/overview.md`
+  - `docs/adr/0027-standalone-reference-clients-live-under-clients.md`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - the standalone browser realtime client lives under `clients/`
+  - root and protocol docs point at the new path
+  - repository memory now records the rule that reusable clients belong under `clients/`
+
+Validation recorded for this execution step:
+
+- `node --check clients/web-realtime-client/app.js`
+- `node --check clients/web-realtime-client/settings.js`
+- `python3 -m py_compile clients/web-realtime-client/serve.py`
+- `git diff --check`
+
+Observed outcome:
+
+- the standalone browser realtime debug surface now sits alongside the Python desktop client under `clients/`
+- the repository layout more clearly separates reusable endpoint clients from helper tooling
+
+Recorded follow-through:
+
+- moved `tools/web-client` to `clients/web-realtime-client`
+- updated browser validation docs and repository durable records
+- added ADR `0027-standalone-reference-clients-live-under-clients.md`
 
 ### 2026-04-13 Codex Planning Context And Collaboration Template Slice Complete
 
@@ -289,7 +330,7 @@ Recorded follow-through:
   - `docs/codex/harness-workflow.md`
   - `docs/protocols/web-h5-realtime-adaptation.md`
   - `README.md`
-  - `tools/web-client/README.md`
+  - `clients/web-realtime-client/README.md`
   - `plan.md`
   - `.claude/context.md`
   - `.codex/change-log.md`
@@ -319,7 +360,7 @@ Observed outcome:
 Recorded follow-through:
 
 - added `scripts/web-h5-manual-capture.sh`
-- updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone tool README, and durable repo records
+- updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone client README, and durable repo records
 - updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
 
 ### 2026-04-13 Iteration 1 Validation Surface And Gateway Shared Turn Flow Slice Complete
@@ -424,6 +465,21 @@ Recorded follow-through:
 
 ### Recent Slices Still Relevant
 
+- `2026-04-14 Local Open-Source GPU TTS Via CosyVoice`
+  - added `cosyvoice_http` as a shared `internal/voice` TTS provider targeting the official CosyVoice FastAPI service, keeping local GPU deployment details behind the same runtime boundary as existing ASR/TTS providers
+  - added config wiring, runtime validation, integration coverage, Linux bring-up scripts, a layered Docker GPU TTS overlay, architecture follow-through, and ADR `0026`
+  - validation: `make test-go`, `make test-go-integration`, `make docker-config`, `make verify-fast`
+  - environment note: the new Docker overlay assumes the official CosyVoice image has already been built locally as `cosyvoice:v1.0`; this slice validates compose shape, not a live model-serving run
+- `2026-04-14 Test Layout And Command Surface Cleanup`
+  - kept Go unit/package tests colocated with source, introduced tagged `integration` and `system` tiers for higher-level gateway tests plus listener-backed voice adapter tests, added top-level `tests/` docs, and exposed the split through `make test-go`, `make test-go-integration`, and `make test-go-system`
+  - validation: `make test-go`, `make test-go-integration`, `make test-go-system`, `make verify-fast`
+  - environment note: `make test-go-integration` requires local loopback bind permission because the tagged coverage uses `httptest` and websocket listeners
+- `2026-04-14 Root Agent And Skill Directory Pruning`
+  - reviewed the imported ECC reference pack under root `agents/` and `skills/`, removed items unrelated to the current Go or Python or voice-agent or deployment stack, and cleaned broken residual references from the kept skill docs
+  - validation: `rg` reference sweep across `agents/`, `skills/`, `AGENTS.md`, `.codex/`, `.claude/`, and docs
+- `2026-04-14 Gateway Write-Path Hardening And Audio Hot-Path Trim`
+  - added websocket write deadlines and close-on-write-error behavior for native realtime and `xiaozhi` peers, fixed the recoverable `session_not_started` audio error to actually keep the connection alive, and trimmed the first hot-path copy/write amplifiers in session ingest, buffered streaming ASR chunking, voice playback persistence, and in-memory turn upserts
+  - validation: `go test ./internal/gateway ./internal/session ./internal/voice ./internal/agent`
 - `2026-04-13 Codex Harness P0`
   - shortened `AGENTS.md`, introduced `docs/codex/harness-workflow.md`, standardized `Makefile` and `scripts` entrypoints, and added fast CI
   - validation: `make test-go`, `make test-py`, `make doctor`, `make docker-config`, `make verify-fast`

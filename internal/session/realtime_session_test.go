@@ -183,3 +183,33 @@ func BenchmarkRealtimeSessionIngestAudioFrame(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkRealtimeSessionIngestOwnedAudioFrame(b *testing.B) {
+	rt := NewRealtimeSession()
+	if _, err := rt.Start(StartRequest{
+		DeviceID:        "bench-rtos-owned-001",
+		ClientType:      "rtos",
+		Mode:            "voice",
+		InputCodec:      "pcm16le",
+		InputSampleRate: 16000,
+		InputChannels:   1,
+	}); err != nil {
+		b.Fatalf("start failed: %v", err)
+	}
+
+	payload := bytes.Repeat([]byte{0x01}, 640)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := rt.IngestOwnedAudioFrame(payload); err != nil {
+			b.Fatalf("ingest failed: %v", err)
+		}
+		if (i+1)%50 == 0 {
+			if _, err := rt.CommitTurn(); err != nil {
+				b.Fatalf("commit failed: %v", err)
+			}
+			rt.ClearTurn()
+		}
+	}
+}

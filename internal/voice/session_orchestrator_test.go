@@ -125,3 +125,48 @@ func TestSessionOrchestratorFinalizesTextOnlyTurn(t *testing.T) {
 		t.Fatalf("expected full text response, got %q", got)
 	}
 }
+
+type countingMemoryStore struct {
+	saves []agent.MemoryRecord
+}
+
+func (s *countingMemoryStore) LoadTurnContext(context.Context, agent.MemoryQuery) (agent.MemoryContext, error) {
+	return agent.MemoryContext{}, nil
+}
+
+func (s *countingMemoryStore) SaveTurn(_ context.Context, record agent.MemoryRecord) error {
+	s.saves = append(s.saves, record)
+	return nil
+}
+
+func TestSessionOrchestratorPlaybackPersistsOnlyAtStableBoundaries(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-3",
+		TurnID:     "turn-3",
+		DeviceID:   "dev-3",
+		ClientType: "rtos",
+		AudioPCM:   make([]byte, 6400),
+	}
+
+	orchestrator.PrepareTurn(request, "打开主灯", "好的，已经为你打开主灯。")
+	if got := len(store.saves); got != 1 {
+		t.Fatalf("expected one save after prepare, got %d", got)
+	}
+
+	orchestrator.StartPlayback("好的，已经为你打开主灯。", 200*time.Millisecond, 2*time.Second)
+	orchestrator.ObservePlaybackChunk()
+	orchestrator.ObservePlaybackChunk()
+	if got := len(store.saves); got != 1 {
+		t.Fatalf("expected playback progress to stay in-memory only, got %d saves", got)
+	}
+
+	orchestrator.InterruptPlayback()
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected interrupt to persist heard text once, got %d saves", got)
+	}
+	if !store.saves[1].ResponseInterrupted || !store.saves[1].ResponseTruncated {
+		t.Fatalf("expected interrupted truncated record, got %+v", store.saves[1])
+	}
+}

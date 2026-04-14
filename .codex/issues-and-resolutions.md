@@ -20,6 +20,51 @@
 - Resolution: added `internal/channel.RuntimeBridge`, extended the channel contract with message or thread or idempotency metadata, and added delivery-status reporting primitives so future adapters stay on normalize -> runtime -> deliver instead of learning provider APIs.
 - Status: resolved.
 
+## 2026-04-14
+
+### Standalone Browser Client Was Filed Under `tools` Instead Of `clients`
+
+- Problem: the repository taxonomy had drifted. `clients/python-desktop-client` already established `clients/` as the home for reusable protocol-facing validation endpoints, but the standalone browser realtime client still lived under `tools/`, which made the client-vs-helper boundary inconsistent.
+- Resolution: moved the browser client to `clients/web-realtime-client`, updated scripts and docs that scaffold or serve it, and recorded the taxonomy rule in ADR `0027`.
+- Status: resolved.
+
+### Websocket Write Paths Could Block Indefinitely Behind One Shared Mutex
+
+- Problem: both native realtime and `xiaozhi` websocket peers wrote JSON and binary frames without a write deadline. A slow or stalled client could therefore block one write forever while holding the shared write mutex, which in turn would stall audio downlink, interruption feedback, and session-close events.
+- Resolution: added a shared websocket write helper that applies a per-write deadline and closes the connection on write failure. Both peer implementations now route JSON and binary writes through that helper.
+- Status: resolved.
+
+### Recoverable `session_not_started` Audio Error Still Closed The Native Socket
+
+- Problem: native realtime treated binary audio before `session.start` as `Recoverable: true`, but `handleBinary` still returned the underlying `ErrNoActiveSession`, so `ServeHTTP` exited and closed the socket immediately afterward.
+- Resolution: keep the error event, but swallow `ErrNoActiveSession` after the recoverable error is emitted so the connection remains usable for a later `session.start`.
+- Status: resolved.
+
+### Audio Hot Path Still Did Extra Copies And Playback-Progress Writes
+
+- Problem: gateway audio still paid for repeated session-buffer growth copies, commit-time full-buffer copy, buffered streaming ASR chunk copies, and per-playback-chunk memory-store writes.
+- Resolution: introduced owned-frame ingest for gateway paths, flatten turn audio only at commit boundaries, stream buffered ASR through subslices instead of copied chunks, defer playback persistence to stable interrupt or completion boundaries, and stop cloning existing memory-store slices on every upsert.
+- Status: resolved for the first hot-path trim slice.
+
+### Imported Root Agent And Skill Packs Still Carried Irrelevant Upstream Noise
+
+- Problem: the root `agents/` and `skills/` directories still contained many upstream ECC references for unrelated language stacks or workflows, such as C++, Java, Kotlin, Rust, Flutter, PostgreSQL, and office-communication roles. That made the repository context heavier and left stale references in kept skill docs.
+- Resolution: trimmed those directories to the current `agent-server` stack, kept only Go or Python or voice-agent or deployment or security or harness-relevant references, and cleaned broken references from `skills/README.md` and `skills/prompt-optimizer/SKILL.md`.
+- Status: resolved.
+
+### Test Files Needed Better Layering But Not A Full Top-Level Relocation
+
+- Problem: Go `*_test.go` files were spread across package directories, which made the test surface look unstructured. But moving them wholesale into `tests/ut` or `tests/st` would have broken package-local testing ergonomics and pushed internal-only behavior behind wider exported APIs.
+- Resolution: kept Go unit/package tests colocated, introduced build-tagged `integration` and `system` tiers for higher-level gateway tests plus listener-backed voice adapter tests, added a documented top-level `tests/` taxonomy for future black-box suites, and exposed the split through `make test-go`, `make test-go-integration`, and `make test-go-system`.
+- Environment note: `make test-go-integration` needs local loopback bind permission because the tagged cases use `httptest` and websocket listeners. In restricted sandboxes, validate that tier outside the sandbox.
+- Status: resolved.
+
+### Local Open-Source GPU TTS Was Still Missing From The Shared Voice Runtime
+
+- Problem: the project already had a local open-source ASR path through `FunASR`, but TTS remained cloud-only or disabled. Adding a local GPU TTS by wiring browser pages, websocket adapters, or external channels directly to a model server would have broken the voice-runtime boundary.
+- Resolution: added `cosyvoice_http` under `internal/voice`, targeting the official CosyVoice FastAPI service as a local GPU-side dependency. App bootstrap now selects that provider through the shared TTS config, audio is normalized before it reaches adapters, and the repository also carries Linux bring-up plus layered Docker overlay guidance for the external GPU service.
+- Status: resolved.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace
@@ -171,7 +216,7 @@
 ### Standalone Static Web Tool Could Not Assume Same-Origin Discovery
 
 - Problem: the built-in `/debug/realtime-h5/` page can call `GET /v1/realtime` because it is served by the same Go process, but a separate static tool under `tools/` would often run on another origin and therefore could not safely depend on browser-side discovery fetches.
-- Resolution: the standalone tool under `tools/web-client` now treats manual realtime-profile entry as the primary path and supports pasted discovery JSON as an optional sync aid, while still connecting to the same native `/v1/realtime/ws` contract.
+- Resolution: the standalone client under `clients/web-realtime-client` now treats manual realtime-profile entry as the primary path and supports pasted discovery JSON as an optional sync aid, while still connecting to the same native `/v1/realtime/ws` contract.
 - Status: resolved.
 
 ### Web Or H5 Direct Access Risked Becoming A Second Protocol Surface
@@ -238,7 +283,7 @@
 
 ### Browser Debug Pages Could Render But Stay Completely Non-Interactive On Older Browsers
 
-- Problem: the built-in `/debug/realtime-h5/` page and the standalone `tools/web-client` pages were served as raw browser scripts without any build step, but they still used `type="module"`, optional chaining, nullish coalescing, and `String.prototype.replaceAll`. On older browsers or embedded WebViews, the scripts could fail during parse or be skipped entirely, leaving a page that looked loaded but did not react to clicks.
+- Problem: the built-in `/debug/realtime-h5/` page and the standalone `clients/web-realtime-client` pages were served as raw browser scripts without any build step, but they still used `type="module"`, optional chaining, nullish coalescing, and `String.prototype.replaceAll`. On older browsers or embedded WebViews, the scripts could fail during parse or be skipped entirely, leaving a page that looked loaded but did not react to clicks.
 - Resolution: switched all browser pages to classic deferred scripts and removed those unsupported syntax features from the shipped frontend code while keeping the same runtime behavior.
 - Status: resolved.
 
@@ -256,7 +301,7 @@
 
 ### Browser Bring-Up Had Too Much Configuration Mixed Into The Live Debug Page
 
-- Problem: after the first browser bring-up slice, both the standalone tool and the built-in `/debug/realtime-h5/` page still mixed endpoint setup, discovery sync, device preset, session control, TTS playback, and protocol logs into one dense surface. That made the page harder to scan during real debugging and made the intended bring-up flow less obvious.
+- Problem: after the first browser bring-up slice, both the standalone client and the built-in `/debug/realtime-h5/` page still mixed endpoint setup, discovery sync, device preset, session control, TTS playback, and protocol logs into one dense surface. That made the page harder to scan during real debugging and made the intended bring-up flow less obvious.
 - Resolution: split both browser paths into dedicated `settings` and `debug` pages. Settings now owns endpoint/audio profile and device preset work, while the debug page focuses on websocket turns, TTS playback, and logs.
 - Status: resolved.
 

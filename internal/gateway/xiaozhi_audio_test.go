@@ -1,3 +1,6 @@
+//go:build system
+// +build system
+
 package gateway
 
 import (

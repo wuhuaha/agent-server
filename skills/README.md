@@ -10,7 +10,7 @@ The goal is not to mirror the full upstream repository. The imported subset is c
 - MCP and agent engineering patterns
 - testing, benchmarking, and verification
 - security review and scanning
-- on-device and `nanoclaw` adjacent workflows
+- on-device voice or model workflows
 
 ## Imported Skill Set
 
@@ -22,7 +22,6 @@ The goal is not to mirror the full upstream repository. The imported subset is c
 - `architecture-decision-records`
 - `backend-patterns`
 - `benchmark`
-- `blueprint`
 - `codebase-onboarding`
 - `coding-standards`
 - `cost-aware-llm-pipeline`
@@ -33,8 +32,6 @@ The goal is not to mirror the full upstream repository. The imported subset is c
 - `golang-patterns`
 - `golang-testing`
 - `mcp-server-patterns`
-- `nanoclaw-repl`
-- `postgres-patterns`
 - `prompt-optimizer`
 - `python-patterns`
 - `python-testing`
@@ -48,5 +45,6 @@ The goal is not to mirror the full upstream repository. The imported subset is c
 ## Notes
 
 - These files are copied for local reference and future adaptation.
+- Clearly unrelated upstream items for other language stacks or database-specific workflows are intentionally not kept here.
 - Project-specific operational skills remain under `.codex/skills/`.
 - If a copied upstream skill conflicts with project guardrails, `AGENTS.md` and local `.codex/skills/` take precedence.

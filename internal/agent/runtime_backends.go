@@ -113,7 +113,7 @@ func (s *InMemoryMemoryStore) SaveTurn(_ context.Context, record MemoryRecord) e
 	defer s.mu.Unlock()
 
 	for _, scope := range scopes {
-		existing := append([]MemoryRecord(nil), s.recordsByScope[scope.Key]...)
+		existing := s.recordsByScope[scope.Key]
 		updated := false
 		if cloned.TurnID != "" {
 			for index := range existing {

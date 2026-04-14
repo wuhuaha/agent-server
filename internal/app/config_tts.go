@@ -13,8 +13,17 @@ type TTSConfig struct {
 	MimoVoice   string
 	MimoStyle   string
 	TimeoutMs   int
+	CosyVoice   CosyVoiceTTSProviderConfig
 	Iflytek     IflytekTTSProviderConfig
 	Volcengine  VolcengineTTSProviderConfig
+}
+
+type CosyVoiceTTSProviderConfig struct {
+	BaseURL            string
+	Mode               string
+	SpeakerID          string
+	InstructText       string
+	SourceSampleRateHz int
 }
 
 type IflytekTTSProviderConfig struct {
@@ -56,6 +65,13 @@ func loadTTSConfig() TTSConfig {
 		MimoVoice:   getenv("AGENT_SERVER_TTS_MIMO_VOICE", "mimo_default"),
 		MimoStyle:   getenv("AGENT_SERVER_TTS_MIMO_STYLE", ""),
 		TimeoutMs:   getenvInt("AGENT_SERVER_TTS_TIMEOUT_MS", 30000),
+		CosyVoice: CosyVoiceTTSProviderConfig{
+			BaseURL:            getenv("AGENT_SERVER_TTS_COSYVOICE_BASE_URL", "http://127.0.0.1:50000"),
+			Mode:               getenv("AGENT_SERVER_TTS_COSYVOICE_MODE", "sft"),
+			SpeakerID:          getenv("AGENT_SERVER_TTS_COSYVOICE_SPK_ID", "中文女"),
+			InstructText:       getenv("AGENT_SERVER_TTS_COSYVOICE_INSTRUCT_TEXT", ""),
+			SourceSampleRateHz: getenvInt("AGENT_SERVER_TTS_COSYVOICE_SOURCE_SAMPLE_RATE", 22050),
+		},
 		Iflytek: IflytekTTSProviderConfig{
 			AppID:        getenv("AGENT_SERVER_TTS_IFLYTEK_APP_ID", getenv("IFLYTEK_TTS_APP_ID", "")),
 			APIKey:       getenv("AGENT_SERVER_TTS_IFLYTEK_API_KEY", getenv("IFLYTEK_TTS_API_KEY", "")),
@@ -103,6 +119,18 @@ func applyTTSDefaults(cfg *Config) {
 	if cfg.TTS.TimeoutMs <= 0 {
 		cfg.TTS.TimeoutMs = 30000
 	}
+	if cfg.TTS.CosyVoice.BaseURL == "" {
+		cfg.TTS.CosyVoice.BaseURL = "http://127.0.0.1:50000"
+	}
+	if cfg.TTS.CosyVoice.Mode == "" {
+		cfg.TTS.CosyVoice.Mode = "sft"
+	}
+	if cfg.TTS.CosyVoice.SpeakerID == "" {
+		cfg.TTS.CosyVoice.SpeakerID = "中文女"
+	}
+	if cfg.TTS.CosyVoice.SourceSampleRateHz <= 0 {
+		cfg.TTS.CosyVoice.SourceSampleRateHz = 22050
+	}
 }
 
 func validateTTSConfig(cfg Config) error {
@@ -112,6 +140,28 @@ func validateTTSConfig(cfg Config) error {
 	case "mimo_v2_tts":
 		if strings.TrimSpace(cfg.TTS.MimoAPIKey) == "" {
 			problems = append(problems, "tts.mimo api key is required when tts provider is mimo_v2_tts")
+		}
+	case "cosyvoice_http":
+		if strings.TrimSpace(cfg.TTS.CosyVoice.BaseURL) == "" {
+			problems = append(problems, "tts.cosyvoice base url is required when tts provider is cosyvoice_http")
+		}
+		switch strings.ToLower(strings.TrimSpace(cfg.TTS.CosyVoice.Mode)) {
+		case "", "sft":
+			if strings.TrimSpace(cfg.TTS.CosyVoice.SpeakerID) == "" {
+				problems = append(problems, "tts.cosyvoice spk_id is required when cosyvoice mode is sft")
+			}
+		case "instruct":
+			if strings.TrimSpace(cfg.TTS.CosyVoice.SpeakerID) == "" {
+				problems = append(problems, "tts.cosyvoice spk_id is required when cosyvoice mode is instruct")
+			}
+			if strings.TrimSpace(cfg.TTS.CosyVoice.InstructText) == "" {
+				problems = append(problems, "tts.cosyvoice instruct_text is required when cosyvoice mode is instruct")
+			}
+		default:
+			problems = append(problems, "tts.cosyvoice mode must be sft or instruct")
+		}
+		if cfg.TTS.CosyVoice.SourceSampleRateHz <= 0 {
+			problems = append(problems, "tts.cosyvoice source sample rate must be positive")
 		}
 	case "iflytek_tts_ws":
 		if strings.TrimSpace(cfg.TTS.Iflytek.AppID) == "" ||
@@ -124,7 +174,7 @@ func validateTTSConfig(cfg Config) error {
 			problems = append(problems, "tts.volcengine access token and app id are required when tts provider is volcengine_tts")
 		}
 	default:
-		problems = append(problems, "tts.provider must be none, mimo_v2_tts, iflytek_tts_ws, or volcengine_tts")
+		problems = append(problems, "tts.provider must be none, mimo_v2_tts, cosyvoice_http, iflytek_tts_ws, or volcengine_tts")
 	}
 	if len(problems) == 0 {
 		return nil

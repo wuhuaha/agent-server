@@ -20,10 +20,13 @@ Current priorities:
 - `internal/control`: health, info, admin-oriented APIs, and built-in debug surfaces such as the Web/H5 realtime page.
 - `pkg/events`: shared event envelope types.
 - `clients/python-desktop-client`: desktop debug client for realtime protocol bring-up.
+- `clients/web-realtime-client`: standalone browser debug client for the native realtime websocket contract.
+- `tools`: auxiliary diagnostics, capture, and bootstrap helpers rather than packaged clients.
 - `docs/architecture`: architecture notes and boundaries.
 - `docs/protocols`: protocol contracts and compatibility notes.
 - `docs/adr`: architecture decision records.
 - `docs/codex`: Codex-facing workflow, harness entrypoints, and repo execution guidance.
+- `tests`: test-layer documentation and future repository-wide black-box suites.
 - `.codex`: Codex-facing memory, logs, and project-local skills.
 - `.claude`: Claude-facing context, commands, and review roles.
 
@@ -61,12 +64,26 @@ The standard local validation and bring-up entrypoints are now:
 ```bash
 make doctor
 make test-go
+make test-go-integration
+make test-go-system
 make test-py
 make test-py-workers
 make docker-config
 make verify-fast
 make run
 ```
+
+Test organization note:
+
+- Go unit/package tests stay colocated beside the code as `*_test.go`
+- higher-level Go tests use build tags instead of being moved wholesale into one top-level tree:
+  - `integration` covers listener-backed transport/provider tests such as websocket handlers or `httptest` voice adapters
+  - `integration` -> `make test-go-integration`
+  - `system` -> `make test-go-system`
+- top-level [tests/README.md](tests/README.md) documents the full layering
+
+The `integration` tier opens local loopback listeners. In restricted sandboxes, run it
+where local bind permission is available.
 
 Then open:
 
@@ -96,10 +113,10 @@ For archived manual browser-validation evidence, scaffold the artifact bundle fi
 ./scripts/web-h5-manual-capture.sh --mode built-in
 ```
 
-For a standalone repository tool that you can serve separately and use for manual test/debug:
+For a standalone repository client that you can serve separately and use for manual test/debug:
 
 ```bash
-cd tools/web-client
+cd clients/web-realtime-client
 python3 serve.py --port 18081
 ```
 
@@ -107,9 +124,9 @@ Then open:
 
 - `http://127.0.0.1:18081/settings.html`
 - `http://127.0.0.1:18081/`
-- [tools/web-client/README.md](tools/web-client/README.md)
+- [clients/web-realtime-client/README.md](clients/web-realtime-client/README.md)
 
-If you want one evidence bundle covering both the built-in page and the standalone tool:
+If you want one evidence bundle covering both the built-in page and the standalone client:
 
 ```bash
 ./scripts/web-h5-manual-capture.sh --mode both --standalone-base http://127.0.0.1:18081
@@ -136,12 +153,24 @@ On Linux, the equivalent dependency preparation path is:
 conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service --host 127.0.0.1 --port 8091 --device cpu
 ```
 
+For directly usable local open-source GPU TTS with CosyVoice:
+
+```bash
+bash scripts/start-cosyvoice-fastapi.sh --repo-dir /path/to/CosyVoice --conda-env cosyvoice --model-dir iic/CosyVoice-300M-SFT
+bash scripts/dev-funasr-cosyvoice.sh
+```
+
+See also:
+
+- [docs/architecture/local-cosyvoice-gpu-tts.md](docs/architecture/local-cosyvoice-gpu-tts.md)
+
 ## Docker Deployment
 
 The repository now has a first formal Docker deployment slice for:
 
 - `agentd` alone
 - `agentd + local CPU FunASR worker`
+- `agentd + local GPU CosyVoice TTS`
 
 Files:
 
@@ -149,6 +178,7 @@ Files:
 - [deploy/docker/funasr-worker.cpu.Dockerfile](deploy/docker/funasr-worker.cpu.Dockerfile)
 - [deploy/docker/compose.base.yml](deploy/docker/compose.base.yml)
 - [deploy/docker/compose.local-asr.yml](deploy/docker/compose.local-asr.yml)
+- [deploy/docker/compose.local-tts-gpu.yml](deploy/docker/compose.local-tts-gpu.yml)
 - [deploy/docker/.env.docker.example](deploy/docker/.env.docker.example)
 
 Prepare the env file:
@@ -170,11 +200,18 @@ Start `agentd + local CPU FunASR worker`:
 docker compose -f compose.base.yml -f compose.local-asr.yml up --build
 ```
 
+Start `agentd + local GPU CosyVoice TTS` after you have built the official CosyVoice image locally as `cosyvoice:v1.0`:
+
+```bash
+docker compose -f compose.base.yml -f compose.local-tts-gpu.yml up
+```
+
 The older [deploy/docker/docker-compose.yml](deploy/docker/docker-compose.yml) remains as a compatibility single-service entrypoint for `agentd`, but the layered compose files above are now the preferred path.
 
 Important container-networking note:
 
 - when `agentd` talks to the local worker inside compose, `AGENT_SERVER_VOICE_ASR_URL` must use the service name `http://funasr-worker:8091/v1/asr/transcribe`
+- when `agentd` talks to local CosyVoice TTS inside compose, `AGENT_SERVER_TTS_COSYVOICE_BASE_URL` must use the service name `http://cosyvoice-tts:50000`
 - do not use `127.0.0.1` for the ASR worker URL inside compose unless the worker runs in the same container
 - the local worker image stores model caches in named volumes under `/models/modelscope`, `/models/hf`, and `/models/torch`
 

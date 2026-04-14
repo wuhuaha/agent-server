@@ -45,6 +45,8 @@ Start here before inventing ad hoc commands:
 
 - `make doctor`
 - `make test-go`
+- `make test-go-integration` for tagged listener-backed gateway and voice adapter tests
+- `make test-go-system`
 - `make test-py`
 - `make test-py-workers`
 - `make docker-config`
@@ -77,4 +79,5 @@ Open these docs before large changes:
 
 - Project-specific skills live under `.codex/skills/`.
 - Imported reference roles and skills live under `agents/` and `skills/`.
+- Those root reference directories are intentionally trimmed to the current `agent-server` stack: Go, Python, voice or agent runtime work, deployment, security, docs, testing, and harness workflows.
 - Treat those directories as supporting references, not as permission to ignore the project guardrails above.

@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve the tools/web-client directory for local debugging.")
+    parser = argparse.ArgumentParser(description="Serve the clients/web-realtime-client directory for local debugging.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind. Default: 127.0.0.1")
     parser.add_argument("--port", type=int, default=18081, help="Port to bind. Default: 18081")
     return parser.parse_args()
@@ -21,7 +21,7 @@ def main() -> None:
     os.chdir(root)
 
     httpd = ThreadingHTTPServer((args.host, args.port), SimpleHTTPRequestHandler)
-    print(f"Serving tools/web-client at http://{args.host}:{args.port}")
+    print(f"Serving clients/web-realtime-client at http://{args.host}:{args.port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -27,7 +27,7 @@
 - 原生 `/v1/realtime/ws`
 - `xiaozhi` 兼容接入
 - Web/H5 直连调试路径
-- Python desktop runner 与 standalone web tool
+- Python desktop runner 与 standalone web client
 - `internal/session`
 - `internal/voice`
 - `internal/agent`

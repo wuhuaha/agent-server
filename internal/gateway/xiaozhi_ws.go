@@ -20,20 +20,20 @@ import (
 )
 
 type xiaozhiJSONPeer struct {
-	conn    *websocket.Conn
+	conn    websocketWriteConn
 	writeMu sync.Mutex
 }
 
 func (p *xiaozhiJSONPeer) WriteJSON(payload any) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	return p.conn.WriteJSON(payload)
+	return writeWebsocketJSON(p.conn, payload)
 }
 
 func (p *xiaozhiJSONPeer) WriteBinary(payload []byte) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	return p.conn.WriteMessage(websocket.BinaryMessage, payload)
+	return writeWebsocketBinary(p.conn, payload)
 }
 
 func (p *xiaozhiJSONPeer) WriteCompatBinary(payload []byte, protocolVersion int) error {
@@ -512,7 +512,7 @@ func (h *xiaozhiWSHandler) handleBinary(runtime *connectionRuntime, peer *xiaozh
 		return nil
 	}
 
-	snapshot, err := runtime.session.IngestAudioFrame(normalized)
+	snapshot, err := runtime.session.IngestOwnedAudioFrame(normalized)
 	if err != nil {
 		return h.emitServerError(peer, state.sessionID, "audio_ingest_failed", err.Error())
 	}

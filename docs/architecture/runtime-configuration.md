@@ -186,6 +186,7 @@ Current cloud ASR note:
 - `AGENT_SERVER_TTS_PROVIDER`
   - `none`: disable real TTS and keep current fallback behavior
   - `mimo_v2_tts`: call Xiaomi MiMo TTS through its OpenAI-compatible API
+  - `cosyvoice_http`: call a local GPU-side CosyVoice FastAPI service
   - `iflytek_tts_ws`: call iFlytek TTS over websocket
   - `volcengine_tts`: call Volcengine TTS over SSE
 - `MIMO_API_KEY`: MiMo API key, recommended as a user environment variable
@@ -194,6 +195,11 @@ Current cloud ASR note:
 - `AGENT_SERVER_TTS_MIMO_VOICE`: built-in voice such as `mimo_default`, `default_zh`, or `default_en`
 - `AGENT_SERVER_TTS_MIMO_STYLE`: optional style prefix inserted as `<style>...</style>`
 - `AGENT_SERVER_TTS_TIMEOUT_MS`: request timeout
+- `AGENT_SERVER_TTS_COSYVOICE_BASE_URL`: default `http://127.0.0.1:50000`
+- `AGENT_SERVER_TTS_COSYVOICE_MODE`: one of `sft` or `instruct`, default `sft`
+- `AGENT_SERVER_TTS_COSYVOICE_SPK_ID`: CosyVoice speaker id, default `中文女`
+- `AGENT_SERVER_TTS_COSYVOICE_INSTRUCT_TEXT`: required when mode is `instruct`
+- `AGENT_SERVER_TTS_COSYVOICE_SOURCE_SAMPLE_RATE`: source PCM sample rate returned by CosyVoice, default `22050`
 - `AGENT_SERVER_TTS_IFLYTEK_APP_ID` or `IFLYTEK_TTS_APP_ID`
 - `AGENT_SERVER_TTS_IFLYTEK_API_KEY` or `IFLYTEK_TTS_API_KEY`
 - `AGENT_SERVER_TTS_IFLYTEK_API_SECRET` or `IFLYTEK_TTS_API_SECRET`
@@ -222,6 +228,8 @@ Current cloud ASR note:
 Current implementation details:
 
 - TTS belongs to the shared voice runtime output layer, not to a specific browser, RTOS, or channel adapter.
+- `cosyvoice_http` is the first local open-source GPU TTS option in the shared runtime, and it integrates against the official CosyVoice FastAPI service instead of teaching adapters about model-serving details.
+- the current CosyVoice slice supports `sft` and `instruct` modes and normalizes CosyVoice raw PCM output to the configured realtime output sample rate before downlink.
 - the Go server now calls MiMo with streaming `pcm16` output for the realtime path
 - the SSE stream is decoded incrementally and the first device frames can be forwarded without waiting for a full synthesis result
 - the streamed PCM is emitted to the device in `20 ms` paced frames so barge-in can preempt the current response
@@ -251,4 +259,5 @@ Container-networking rules for this slice:
 Current scope limit:
 
 - this slice covers `agentd` alone and `agentd + local CPU FunASR worker`
+- an additional layered GPU TTS overlay now exists for `agentd + local CosyVoice FastAPI`
 - GPU worker containerization remains a later follow-up so CUDA packaging, driver passthrough, and model-cache behavior can be validated separately without weakening the baseline deployment path

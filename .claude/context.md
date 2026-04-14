@@ -17,7 +17,11 @@
 - Mirror durable implementation changes into `.codex` logs.
 - Prefer the shared `Makefile` and repository scripts over ad hoc shell sequences when a repeatable command surface exists.
 - Use `make test-py-workers` when a change affects `workers/python`; `make verify-fast` intentionally stays narrower.
+- Use `make test-go-integration` for tagged websocket/handler and listener-backed voice-adapter coverage; `make test-go-system` stays for external-runtime Go tests, while `make test-go` remains the default colocated unit/package layer.
+- The tagged Go integration tier binds local loopback listeners; in restricted sandboxes it must run in a context with local bind permission.
 - Keep repository issue and PR templates aligned with the shared command surface and required protocol or ADR follow-through.
+- Treat root `agents/` and `skills/` as curated references for the current Go or Python or voice-agent stack only, not as a generic upstream role dump.
+- Local open-source GPU TTS now enters through `internal/voice` as `cosyvoice_http`, targeting the official CosyVoice FastAPI service rather than teaching adapters about model-serving APIs.
 
 ## Current Constraints
 

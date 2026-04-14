@@ -223,7 +223,6 @@ func (o *SessionOrchestrator) StartPlayback(deliveredText string, chunkDuration,
 	o.turn.responseInterrupted = false
 	o.turn.responseTruncated = false
 	o.turn.heardText = ""
-	o.persistLocked()
 }
 
 func (o *SessionOrchestrator) ObservePlaybackChunk() {
@@ -238,7 +237,6 @@ func (o *SessionOrchestrator) ObservePlaybackChunk() {
 		return
 	}
 	o.turn.heardText = heard
-	o.persistLocked()
 }
 
 func (o *SessionOrchestrator) InterruptPlayback() {
@@ -328,7 +326,7 @@ func heardTextForPlayback(text string, playedDuration, plannedDuration time.Dura
 
 func cloneTurnRequest(request TurnRequest) TurnRequest {
 	cloned := request
-	cloned.AudioPCM = append([]byte(nil), request.AudioPCM...)
+	cloned.AudioPCM = nil
 	cloned.Metadata = cloneStringMap(request.Metadata)
 	return cloned
 }

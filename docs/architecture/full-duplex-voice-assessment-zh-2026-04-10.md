@@ -227,7 +227,7 @@
 
 相关实现：
 
-- [tools/web-client/app.js#L1045](../../tools/web-client/app.js#L1045)
+- [clients/web-realtime-client/app.js#L1045](../../clients/web-realtime-client/app.js#L1045)
 - [internal/control/webh5_assets/app.js#L865](../../internal/control/webh5_assets/app.js#L865)
 
 但这些能力还停留在页面级，尚未形成统一的共享语音媒体工程体系，例如：

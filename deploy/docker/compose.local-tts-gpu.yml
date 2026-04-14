@@ -1,0 +1,33 @@
+services:
+  agentd:
+    environment:
+      AGENT_SERVER_TTS_PROVIDER: cosyvoice_http
+      AGENT_SERVER_TTS_COSYVOICE_BASE_URL: http://cosyvoice-tts:50000
+    depends_on:
+      cosyvoice-tts:
+        condition: service_healthy
+
+  cosyvoice-tts:
+    image: ${COSYVOICE_IMAGE:-cosyvoice:v1.0}
+    command:
+      - /bin/bash
+      - -lc
+      - cd /opt/CosyVoice/CosyVoice/runtime/python/fastapi && python3 server.py --port 50000 --model_dir ${COSYVOICE_MODEL_DIR:-iic/CosyVoice-300M-SFT}
+    environment:
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    gpus: all
+    ports:
+      - "50000:50000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:50000/docs', timeout=5).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped

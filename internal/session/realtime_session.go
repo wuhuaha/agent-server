@@ -51,10 +51,10 @@ type CommittedTurn struct {
 }
 
 type RealtimeSession struct {
-	mu        sync.Mutex
-	active    bool
-	current   Snapshot
-	turnAudio []byte
+	mu              sync.Mutex
+	active          bool
+	current         Snapshot
+	turnAudioChunks [][]byte
 }
 
 func NewRealtimeSession() *RealtimeSession {
@@ -92,13 +92,18 @@ func (s *RealtimeSession) Start(req StartRequest) (Snapshot, error) {
 		ClientCanEnd:    req.ClientCanEnd,
 		ServerCanEnd:    req.ServerCanEnd,
 	}
-	s.turnAudio = nil
+	s.turnAudioChunks = nil
 	s.active = true
 
 	return cloneSnapshot(s.current), nil
 }
 
 func (s *RealtimeSession) IngestAudioFrame(payload []byte) (Snapshot, error) {
+	owned := append([]byte(nil), payload...)
+	return s.IngestOwnedAudioFrame(owned)
+}
+
+func (s *RealtimeSession) IngestOwnedAudioFrame(payload []byte) (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -109,7 +114,9 @@ func (s *RealtimeSession) IngestAudioFrame(payload []byte) (Snapshot, error) {
 	s.current.State = StateActive
 	s.current.InputFrames++
 	s.current.AudioBytes += len(payload)
-	s.turnAudio = append(s.turnAudio, payload...)
+	if len(payload) > 0 {
+		s.turnAudioChunks = append(s.turnAudioChunks, payload)
+	}
 	s.current.LastActivityAt = time.Now().UTC()
 	return cloneSnapshot(s.current), nil
 }
@@ -138,9 +145,11 @@ func (s *RealtimeSession) CommitTurn() (CommittedTurn, error) {
 	s.current.State = StateThinking
 	s.current.Turns++
 	s.current.LastActivityAt = time.Now().UTC()
+	audioPCM := flattenTurnAudioChunks(s.turnAudioChunks, s.current.AudioBytes)
+	s.turnAudioChunks = nil
 	return CommittedTurn{
 		Snapshot: cloneSnapshot(s.current),
-		AudioPCM: append([]byte(nil), s.turnAudio...),
+		AudioPCM: audioPCM,
 	}, nil
 }
 
@@ -177,7 +186,7 @@ func (s *RealtimeSession) ClearTurn() {
 
 	s.current.InputFrames = 0
 	s.current.AudioBytes = 0
-	s.turnAudio = nil
+	s.turnAudioChunks = nil
 	s.current.LastActivityAt = time.Now().UTC()
 }
 
@@ -187,7 +196,7 @@ func (s *RealtimeSession) Reset() {
 
 	s.active = false
 	s.current = Snapshot{State: StateIdle}
-	s.turnAudio = nil
+	s.turnAudioChunks = nil
 }
 
 func (s *RealtimeSession) Snapshot() Snapshot {
@@ -199,4 +208,23 @@ func (s *RealtimeSession) Snapshot() Snapshot {
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	return snapshot
+}
+
+func flattenTurnAudioChunks(chunks [][]byte, totalBytes int) []byte {
+	switch len(chunks) {
+	case 0:
+		return nil
+	case 1:
+		return chunks[0]
+	}
+	if totalBytes <= 0 {
+		for _, chunk := range chunks {
+			totalBytes += len(chunk)
+		}
+	}
+	audio := make([]byte, 0, totalBytes)
+	for _, chunk := range chunks {
+		audio = append(audio, chunk...)
+	}
+	return audio
 }

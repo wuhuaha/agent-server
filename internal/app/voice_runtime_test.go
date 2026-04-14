@@ -106,6 +106,21 @@ func TestBuildSynthesizerSupportsStreamingCloudProviders(t *testing.T) {
 		expectedType any
 	}{
 		{
+			name: "cosyvoice_http",
+			config: withRealtimeDefaults(Config{
+				TTS: TTSConfig{
+					Provider: "cosyvoice_http",
+					CosyVoice: CosyVoiceTTSProviderConfig{
+						BaseURL:            "http://127.0.0.1:50000",
+						Mode:               "sft",
+						SpeakerID:          "中文女",
+						SourceSampleRateHz: 22050,
+					},
+				},
+			}),
+			expectedType: voice.CosyVoiceHTTPSynthesizer{},
+		},
+		{
 			name: "iflytek_tts_ws",
 			config: withRealtimeDefaults(Config{
 				TTS: TTSConfig{
@@ -142,6 +157,10 @@ func TestBuildSynthesizerSupportsStreamingCloudProviders(t *testing.T) {
 				t.Fatalf("expected LoggingSynthesizer, got %T", synthesizer)
 			}
 			switch tc.expectedType.(type) {
+			case voice.CosyVoiceHTTPSynthesizer:
+				if _, ok := logged.Inner.(voice.CosyVoiceHTTPSynthesizer); !ok {
+					t.Fatalf("expected CosyVoiceHTTPSynthesizer, got %T", logged.Inner)
+				}
 			case voice.IflytekTTSSynthesizer:
 				if _, ok := logged.Inner.(voice.IflytekTTSSynthesizer); !ok {
 					t.Fatalf("expected IflytekTTSSynthesizer, got %T", logged.Inner)
