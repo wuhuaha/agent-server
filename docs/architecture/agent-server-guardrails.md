@@ -26,6 +26,7 @@ Build a reusable agent service framework for multimodal voice, image, and text i
 ## Required Updates When Making Changes
 
 - Update `plan.md` when scope, priority, or milestone state changes.
+- When a task produces deep analysis or research conclusions, write the durable result into the appropriate `docs/` note in the same change instead of leaving it only in chat.
 - Update `.codex/change-log.md` for meaningful repository changes.
 - Update `.codex/issues-and-resolutions.md` when a blocker is found or closed.
 - Update `.codex/project-memory.md` when a durable decision is made.

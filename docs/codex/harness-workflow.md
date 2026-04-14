@@ -112,6 +112,7 @@ The richer manual and scripted validation assets live here:
 
 - Do not bypass `internal/agent` or `internal/voice` from adapters.
 - Prefer extending the standard command surface instead of inventing one-off shell sequences.
+- When a task produces deep analysis, architecture comparison, or research conclusions, land the durable result in the appropriate `docs/` note in the same change and update the related indexes or durable logs instead of leaving the outcome only in chat.
 - When you discover a durable environment or tooling caveat, record it in `.codex/issues-and-resolutions.md`.
 - When you add a new repeatable verification path, expose it through `Makefile`, `scripts/`, or both.
 

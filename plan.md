@@ -114,11 +114,13 @@ Live smoke validation has also succeeded against a local `agentd` process for:
 The detailed task breakdown for this track now lives in:
 
 - `docs/architecture/project-optimization-roadmap-zh-2026-04.md`
+- `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`
 - `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md`
 - `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md`
 
 Current planning note:
 
+- the current phase-1 voice demo focus is perceived realtime quality first: true streaming ASR, stronger endpointing, adaptive interruption handling, earlier incremental TTS start, and spoken-style response planning should outrank broader capability surface
 - for the next full-duplex voice stage, the primary execution route is now explicitly `local / open-source first`
 - hosted realtime speech providers remain comparison baselines, not the main implementation target
 - the next `L2` hardening slice should strengthen local endpoint evidence inside the Python FunASR worker rather than widening the public realtime contract

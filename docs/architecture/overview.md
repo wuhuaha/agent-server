@@ -124,6 +124,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 ## Related Notes
 
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
+- [第一阶段语音 Agent Demo 实时体验优化研究（2026-04-14）](voice-demo-realtime-optimization-zh-2026-04-14.md)
 - [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
 - [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
 - [现代 AI Agent / 语音 Agent 框架复核与架构优化建议（2026-04-08）](modern-ai-agent-framework-review-zh-2026-04-08.md)

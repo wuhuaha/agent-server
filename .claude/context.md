@@ -13,6 +13,7 @@
 - Use `docs/codex/live-validation-runbook.md` when a task needs archived live-stack evidence instead of fast local checks.
 - Prefer repository-local `scripts/smoke-funasr.sh`, `scripts/smoke-rtos-mock.sh`, or their PowerShell counterparts over handwritten live-smoke sequences when those helpers fit the task.
 - Prefer `scripts/web-h5-manual-capture.sh` before manual browser validation so server snapshots, page snapshots, and checklist files land in the canonical artifact root.
+- Deep analysis or research tasks should land their durable conclusions in `docs/` during the same change, with matching `.codex` updates when those conclusions affect future work.
 - Mirror durable implementation changes into `.codex` logs.
 - Prefer the shared `Makefile` and repository scripts over ad hoc shell sequences when a repeatable command surface exists.
 - Use `make test-py-workers` when a change affects `workers/python`; `make verify-fast` intentionally stays narrower.

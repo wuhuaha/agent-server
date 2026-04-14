@@ -235,3 +235,5 @@
   - `exports/`
   - `logs/`
 - Browser screenshots, browser console exports, and exported WAV files are still manual steps, but they should now land under that canonical root instead of in ad hoc locations.
+- Deep analysis, architecture comparison, and research work should not remain only in chat. The durable conclusion must be written into an appropriate `docs/` note in the same change, then indexed and mirrored into `.codex` records when it affects future work.
+- For the current phase-1 voice demo track, the highest-ROI spoken-interaction improvements are true streaming ASR, stronger endpointing, adaptive interruption arbitration, incremental TTS launch from stable clauses, and spoken-style response planning before widening the broader product surface.

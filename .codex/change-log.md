@@ -1,5 +1,11 @@
 # Change Log
 
+## 2026-04-14
+
+- Added `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`, a Chinese research note focused on the current phase-1 voice-agent demo goal of improving realtime fluency, naturalness, and vividness.
+- Indexed that new note from `docs/architecture/overview.md` and `plan.md` so the current optimization priority is discoverable from the main architecture and planning entrypoints.
+- Updated `AGENTS.md`, `docs/architecture/agent-server-guardrails.md`, `docs/codex/harness-workflow.md`, `.claude/context.md`, and `.codex/project-memory.md` to make deep-analysis and research conclusions land in `docs/` by default instead of remaining only in chat.
+
 ## 2026-04-13
 
 - Completed the review-driven runtime ownership refactor after the earlier shared gateway turn-flow slice.
