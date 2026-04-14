@@ -418,7 +418,7 @@
 - `internal/app/config.go`
 - `internal/app/app.go`
 - `docs/architecture/runtime-configuration.md`
-- `tools/web-client/*`
+- `clients/web-realtime-client/*`
 - `internal/control/webh5_assets/*`
 - `clients/python-desktop-client/*`
 
@@ -485,7 +485,7 @@
 ### 第三批
 
 - `internal/agent`: 保存 `heard_assistant_text`
-- `tools/web-client`: 增加 continuous-voice 调试信息面板
+- `clients/web-realtime-client`: 增加 continuous-voice 调试信息面板
 - `docs`: 再决定是否升级公开协议语义
 
 ## 最终判断

@@ -1,4 +1,10 @@
 const storageKeys = {
+  profile: "agent-server.clients.web-realtime-client.profile",
+  deviceId: "agent-server.clients.web-realtime-client.device_id",
+  wakeReason: "agent-server.clients.web-realtime-client.wake_reason",
+};
+
+const legacyStorageKeys = {
   profile: "agent-server.tools.web-client.profile",
   deviceId: "agent-server.tools.web-client.device_id",
   wakeReason: "agent-server.tools.web-client.wake_reason",
@@ -115,8 +121,23 @@ function mergeProfile(base, incoming) {
   return merged;
 }
 
+function readStoredValue(key, legacyKey) {
+  const current = window.localStorage.getItem(key);
+  if (current !== null) {
+    return current;
+  }
+  if (!legacyKey) {
+    return null;
+  }
+  const legacy = window.localStorage.getItem(legacyKey);
+  if (legacy !== null) {
+    window.localStorage.setItem(key, legacy);
+  }
+  return legacy;
+}
+
 function initialProfile() {
-  const raw = window.localStorage.getItem(storageKeys.profile);
+  const raw = readStoredValue(storageKeys.profile, legacyStorageKeys.profile);
   if (!raw) {
     return cloneProfile(defaultProfile);
   }
@@ -128,21 +149,21 @@ function initialProfile() {
 }
 
 function initialDeviceId() {
-  const stored = window.localStorage.getItem(storageKeys.deviceId);
+  const stored = readStoredValue(storageKeys.deviceId, legacyStorageKeys.deviceId);
   if (stored) {
     return stored;
   }
-  const fresh = `web-tool-${Math.random().toString(16).slice(2, 8)}`;
+  const fresh = `web-client-${Math.random().toString(16).slice(2, 8)}`;
   window.localStorage.setItem(storageKeys.deviceId, fresh);
   return fresh;
 }
 
 function initialWakeReason() {
-  const stored = window.localStorage.getItem(storageKeys.wakeReason);
+  const stored = readStoredValue(storageKeys.wakeReason, legacyStorageKeys.wakeReason);
   if (stored) {
     return stored;
   }
-  return "manual_web_tool";
+  return "manual_web_client";
 }
 
 function setBadge(element, text, variant) {

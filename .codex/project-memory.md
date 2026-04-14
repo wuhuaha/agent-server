@@ -20,6 +20,7 @@
 - `GET /v1/realtime` is the discovery contract for device teams and must stay aligned with the protocol docs and runtime config defaults.
 - The first bootstrap implementation now supports: WebSocket upgrade, `session.start`, binary audio uplink, `audio.in.commit`, placeholder streamed response events, and bidirectional `session.end`.
 - A Python desktop debug client now exists under `clients/python-desktop-client` and is the primary manual validation tool for the bootstrap realtime protocol until a smaller RTOS reference client is added.
+- Reusable protocol-facing debug or reference clients belong under `clients/`, while `tools/` is reserved for auxiliary diagnostics and bootstrap helpers. The standalone browser realtime client now lives at `clients/web-realtime-client`.
 - The same Python client package now also provides a headless scripted runner for repeatable discovery/text/audio/server-end validation.
 - The local Go toolchain is now installed and this machine now persists `GOPROXY=https://goproxy.cn,direct` plus `GOSUMDB=sum.golang.google.cn` via `go env -w`, so repository-level Go verification no longer depends on per-command shell overrides.
 - A live smoke run against `agentd` on `http://127.0.0.1:8080` has verified the bootstrap realtime contract, including binary audio uplink, placeholder streamed response events, and bidirectional session close semantics.
@@ -70,7 +71,7 @@
 - The `xiaozhi` compatibility adapter now emits audio-turn `stt` transcript echo, but it still derives that text from shared responder output instead of parsing ASR provider payloads directly.
 - Web or H5 direct clients now reuse the native `/v1/realtime/ws` contract; browser-specific microphone and playback quirks are handled in the page layer instead of creating a second browser-only websocket protocol.
 - The service now hosts a same-origin browser bring-up surface at `/debug/realtime-h5/`, but that page belongs to the control plane and must stay a debug surface over the shared realtime contract rather than a second orchestration path.
-- The standalone repository browser tool now lives at `tools/web-client`; unlike the built-in same-origin page, it must stay usable without direct browser discovery fetches, so manual profile entry plus pasted discovery JSON is the primary standalone bring-up model.
+- The standalone repository browser client now lives at `clients/web-realtime-client`; unlike the built-in same-origin page, it must stay usable without direct browser discovery fetches, so manual profile entry plus pasted discovery JSON is the primary standalone bring-up model.
 - Both browser bring-up paths are now intentionally split into `settings` and `debug` pages. Configuration and discovery sync belong on the settings page; live websocket turns, TTS playback, and protocol logs belong on the debug page.
 - The shared MiMo TTS path now prefetches the first non-empty streaming audio chunk and falls back to buffered synthesis when the provider closes a stream without audio, so transports do not surface successful-but-silent TTS turns to clients.
 - Gateway websocket handlers must treat any `ReadMessage()` failure, including deadline timeouts, as terminal for that connection. Timeout-driven close paths may emit one final `session.end` or compat `tts stop`, but they must not loop back into another websocket read on the failed connection.
@@ -78,7 +79,7 @@
 - The current first zero-external-dependency loopback smoke stack on this machine is:
   - FunASR worker from `xiaozhi-esp32-server` on `127.0.0.1:8091`
   - `agentd` on `127.0.0.1:8080` with `AGENT_SERVER_VOICE_PROVIDER=funasr_http`, `AGENT_SERVER_TTS_PROVIDER=none`, and `AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap`
-  - standalone tool static server on `127.0.0.1:18081`
+  - standalone client static server on `127.0.0.1:18081`
 - The latest live local loopback runner report is archived at `.codex/artifacts/local-loopback-full-2026-04-07.json`.
 
 ## Working Defaults
@@ -108,12 +109,12 @@
 - Current `xiaozhi` compatibility defaults are `opus/16000/mono/60ms` uplink and `opus/24000/mono/60ms` downlink, while the shared runtime source audio remains realtime-output `pcm16le`.
 - `docs/protocols/xiaozhi-compat-ws-v0.md` is now the canonical detailed bring-up guide for existing `xiaozhi` firmware, including OTA, handshake, turn sequencing, framing, and troubleshooting.
 - `docs/protocols/web-h5-realtime-adaptation.md` is now the canonical guide for browser or H5 direct bring-up against the native realtime websocket profile.
-- `tools/web-client/README.md` is now the quick-start guide for the standalone repository browser tool used for native realtime test/debug work.
+- `clients/web-realtime-client/README.md` is now the quick-start guide for the standalone repository browser client used for native realtime test/debug work.
 - Current browser page entrypoints are:
   - built-in same-origin settings: `/debug/realtime-h5/settings.html`
   - built-in same-origin debug: `/debug/realtime-h5/`
-  - standalone settings: `tools/web-client/settings.html`
-  - standalone debug: `tools/web-client/index.html`
+  - standalone settings: `clients/web-realtime-client/settings.html`
+  - standalone debug: `clients/web-realtime-client/index.html`
 - Browser debug pages are shipped directly, without a frontend build pipeline. Keep them on classic broadly supported web syntax: avoid requiring `type="module"`, optional chaining, nullish coalescing, or newer string helpers unless a transpile step is introduced first.
 - For browser-side bring-up UX, prefer the `py-xiaozhi` pattern of a clear live state machine over a wall of controls. The primary page should make `connect -> listen -> speak` obvious at a glance, while logs and raw protocol tools stay secondary.
 - The durable LLM startup default is now `auto`: when a DeepSeek key is present, the runtime should behave as `deepseek_chat`; otherwise it should fall back to `bootstrap`. Discovery must expose the effective `llm_provider` so clients can diagnose bootstrap echo behavior without reading server logs.

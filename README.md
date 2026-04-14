@@ -20,6 +20,8 @@ Current priorities:
 - `internal/control`: health, info, admin-oriented APIs, and built-in debug surfaces such as the Web/H5 realtime page.
 - `pkg/events`: shared event envelope types.
 - `clients/python-desktop-client`: desktop debug client for realtime protocol bring-up.
+- `clients/web-realtime-client`: standalone browser debug client for the native realtime websocket contract.
+- `tools`: auxiliary diagnostics, capture, and bootstrap helpers rather than packaged clients.
 - `docs/architecture`: architecture notes and boundaries.
 - `docs/protocols`: protocol contracts and compatibility notes.
 - `docs/adr`: architecture decision records.
@@ -111,10 +113,10 @@ For archived manual browser-validation evidence, scaffold the artifact bundle fi
 ./scripts/web-h5-manual-capture.sh --mode built-in
 ```
 
-For a standalone repository tool that you can serve separately and use for manual test/debug:
+For a standalone repository client that you can serve separately and use for manual test/debug:
 
 ```bash
-cd tools/web-client
+cd clients/web-realtime-client
 python3 serve.py --port 18081
 ```
 
@@ -122,9 +124,9 @@ Then open:
 
 - `http://127.0.0.1:18081/settings.html`
 - `http://127.0.0.1:18081/`
-- [tools/web-client/README.md](tools/web-client/README.md)
+- [clients/web-realtime-client/README.md](clients/web-realtime-client/README.md)
 
-If you want one evidence bundle covering both the built-in page and the standalone tool:
+If you want one evidence bundle covering both the built-in page and the standalone client:
 
 ```bash
 ./scripts/web-h5-manual-capture.sh --mode both --standalone-base http://127.0.0.1:18081

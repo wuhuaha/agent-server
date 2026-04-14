@@ -124,6 +124,12 @@ The control plane can also host same-service debug surfaces such as the built-in
 - Provider-specific ASR result payloads must be normalized inside `internal/voice` before any speech metadata reaches `internal/agent`.
 - Channel skills must not call model providers directly.
 
+## Repository Client Taxonomy
+
+- Standalone reference and debug clients belong under `clients/`.
+- `tools/` is reserved for auxiliary diagnostics, capture, conversion, bootstrap, or one-off lab helpers.
+- A browser or desktop client does not move into `tools/` just because it is used for validation; if it is a reusable endpoint implementation over a shared protocol, keep it in `clients/`.
+
 ## Related Notes
 
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)

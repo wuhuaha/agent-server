@@ -12,6 +12,9 @@
 
 ## 2026-04-14
 
+- Moved the standalone browser realtime debug client from `tools/web-client` to `clients/web-realtime-client` so reusable protocol-facing clients now share one top-level home under `clients/`.
+- Updated README, browser-validation scripts, protocol docs, architecture notes, and `.codex` records to reflect the new client-vs-tool taxonomy.
+- Added ADR `0027-standalone-reference-clients-live-under-clients.md` to freeze the repository rule that reusable reference clients live under `clients/` and `tools/` stays for auxiliary helpers.
 - Hardened native realtime and `xiaozhi` websocket write paths with per-write deadlines and close-on-write-error handling so slow or stalled readers do not block the shared write mutex indefinitely.
 - Fixed native realtime binary-audio handling so `session_not_started` remains a truly recoverable error instead of sending a recoverable event and then tearing down the socket anyway.
 - Reduced the first audio hot-path costs by:
@@ -246,23 +249,23 @@
 
 ## 2026-04-05
 
-- Added a standalone repository browser client under `tools/web-client`:
+- Added a standalone repository browser client under `clients/web-realtime-client`:
   - static UI for native `/v1/realtime/ws` usage, bring-up, and debug work
   - manual realtime-profile fields plus pasted discovery-JSON import so the tool still works when it is not served from the same origin as `agent-server`
   - text turns, microphone turns, interrupt send, raw JSON control send, assistant transcript view, and raw event logging
   - simple `serve.py` helper for local static hosting
-- Revalidated the standalone tool assets with:
-  - `node --check tools/web-client/app.js`
-  - `python3 -m py_compile tools/web-client/serve.py`
+- Revalidated the standalone client assets with:
+  - `node --check clients/web-realtime-client/app.js`
+  - `python3 -m py_compile clients/web-realtime-client/serve.py`
 - Completed a live local loopback validation on 2026-04-07 with:
   - FunASR worker on `127.0.0.1:8091` from the `xiaozhi-esp32-server` conda env
   - `agentd` on `127.0.0.1:8080` with `funasr_http + tts=none + bootstrap`
-  - standalone `tools/web-client` static server on `127.0.0.1:18081`
+  - standalone `clients/web-realtime-client` static server on `127.0.0.1:18081`
   - full desktop-runner validation saved to `.codex/artifacts/local-loopback-full-2026-04-07.json`
 - The local loopback report confirmed:
   - `ok=true` across `text`, `audio`, and `server-end`
   - realtime discovery advertising `voice_provider=funasr_http`, `tts_provider=none`, and `/v1/realtime/ws`
-  - the standalone tool index served successfully on `http://127.0.0.1:18081/`
+  - the standalone client index served successfully on `http://127.0.0.1:18081/`
 - Fixed a live websocket timeout panic in both gateway adapters:
   - native `/v1/realtime/ws` and `xiaozhi` compatibility handlers no longer continue reading after a timeout-triggered websocket read failure
   - timeout-triggered close paths now terminate the handler after emitting final close signals instead of looping back into `ReadMessage()`
@@ -389,10 +392,10 @@
   - normalized the remaining modified text files back to LF so the kept diff now reflects product changes instead of formatting noise
 - Installed the requested `ui-ux-pro-max` design skill locally under `/root/.codex/skills/ui-ux-pro-max`.
 - Reworked the browser bring-up surfaces into a two-page flow instead of one overloaded screen:
-  - standalone tool now has `tools/web-client/settings.html` plus `tools/web-client/index.html`
+  - standalone client now has `clients/web-realtime-client/settings.html` plus `clients/web-realtime-client/index.html`
   - built-in same-origin page now has `/debug/realtime-h5/settings.html` plus `/debug/realtime-h5/`
 - Added dedicated browser-side settings scripts:
-  - `tools/web-client/settings.js`
+  - `clients/web-realtime-client/settings.js`
   - `internal/control/webh5_assets/settings.js`
 - Updated both browser debug pages so they stay focused on live work only:
   - websocket connect and session control
@@ -404,8 +407,8 @@
   - fall back to buffered synthesis immediately when the provider closes a stream without audio
   - preserve the existing native websocket binary-audio contract
 - Revalidated the browser/TTS slice with:
-  - `node --check tools/web-client/app.js`
-  - `node --check tools/web-client/settings.js`
+  - `node --check clients/web-realtime-client/app.js`
+  - `node --check clients/web-realtime-client/settings.js`
   - `node --check internal/control/webh5_assets/app.js`
   - `node --check internal/control/webh5_assets/settings.js`
   - `env GOCACHE=/tmp/agent-server-go-build go test ./internal/voice ./internal/app ./internal/control`
@@ -636,7 +639,7 @@
 - Standardized Web/H5 manual validation evidence:
   - added `scripts/web-h5-manual-capture.sh`
   - the helper now scaffolds `web-h5-manual` artifact roots with `capture.json`, `manual-checklist.md`, server snapshots, page snapshots, and attachment directories
-  - updated `docs/codex/live-validation-runbook.md`, `docs/protocols/web-h5-realtime-adaptation.md`, `README.md`, and `tools/web-client/README.md` to point at the same evidence flow
+  - updated `docs/codex/live-validation-runbook.md`, `docs/protocols/web-h5-realtime-adaptation.md`, `README.md`, and `clients/web-realtime-client/README.md` to point at the same evidence flow
 - Hardened the Python validation entrypoints:
   - added `scripts/require-python-3-11.sh`
   - added `scripts/test-python-desktop.sh`

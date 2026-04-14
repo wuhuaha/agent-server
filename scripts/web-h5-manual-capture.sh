@@ -9,7 +9,7 @@ Usage:
 Options:
   --output-dir PATH         Artifact root. Default: artifacts/live-smoke/YYYYMMDD/web-h5-manual
   --http-base URL           agentd HTTP base. Default: http://127.0.0.1:8080
-  --standalone-base URL     Standalone web tool base. Default: http://127.0.0.1:18081
+  --standalone-base URL     Standalone web client base. Default: http://127.0.0.1:18081
   --mode MODE               built-in | standalone | both. Default: built-in
   --skip-fetch              Only scaffold the artifact bundle; do not fetch server or page snapshots
   --help                    Show this message
@@ -57,7 +57,7 @@ write_manual_checklist() {
 - Device or OS:
 - Validation mode:
   - built-in `/debug/realtime-h5/`
-  - standalone `tools/web-client`
+  - standalone `clients/web-realtime-client`
 - Reviewer:
 
 ## Basic Bring-Up
@@ -198,7 +198,7 @@ if [[ "$MODE" == "built-in" || "$MODE" == "both" ]]; then
 fi
 
 if [[ "$MODE" == "standalone" || "$MODE" == "both" ]]; then
-  log "capturing standalone Web/H5 tool pages"
+  log "capturing standalone Web/H5 client pages"
   fetch_to_file "${STANDALONE_BASE}/settings.html" "${OUTPUT_DIR}/pages/standalone/settings.html"
   fetch_to_file "${STANDALONE_BASE}/" "${OUTPUT_DIR}/pages/standalone/index.html"
   fetch_to_file "${STANDALONE_BASE}/app.js" "${OUTPUT_DIR}/pages/standalone/app.js"

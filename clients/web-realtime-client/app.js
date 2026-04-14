@@ -1,4 +1,10 @@
 const storageKeys = {
+  profile: "agent-server.clients.web-realtime-client.profile",
+  deviceId: "agent-server.clients.web-realtime-client.device_id",
+  wakeReason: "agent-server.clients.web-realtime-client.wake_reason",
+};
+
+const legacyStorageKeys = {
   profile: "agent-server.tools.web-client.profile",
   deviceId: "agent-server.tools.web-client.device_id",
   wakeReason: "agent-server.tools.web-client.wake_reason",
@@ -155,8 +161,23 @@ function cloneProfile(profile) {
   };
 }
 
+function readStoredValue(key, legacyKey) {
+  const current = window.localStorage.getItem(key);
+  if (current !== null) {
+    return current;
+  }
+  if (!legacyKey) {
+    return null;
+  }
+  const legacy = window.localStorage.getItem(legacyKey);
+  if (legacy !== null) {
+    window.localStorage.setItem(key, legacy);
+  }
+  return legacy;
+}
+
 function initialProfile() {
-  const fromStorage = window.localStorage.getItem(storageKeys.profile);
+  const fromStorage = readStoredValue(storageKeys.profile, legacyStorageKeys.profile);
   if (!fromStorage) {
     return cloneProfile(defaultProfile);
   }
@@ -170,21 +191,21 @@ function initialProfile() {
 }
 
 function initialDeviceId() {
-  const stored = window.localStorage.getItem(storageKeys.deviceId);
+  const stored = readStoredValue(storageKeys.deviceId, legacyStorageKeys.deviceId);
   if (stored) {
     return stored;
   }
-  const fresh = `web-tool-${Math.random().toString(16).slice(2, 8)}`;
+  const fresh = `web-client-${Math.random().toString(16).slice(2, 8)}`;
   window.localStorage.setItem(storageKeys.deviceId, fresh);
   return fresh;
 }
 
 function initialWakeReason() {
-  const stored = window.localStorage.getItem(storageKeys.wakeReason);
+  const stored = readStoredValue(storageKeys.wakeReason, legacyStorageKeys.wakeReason);
   if (stored) {
     return stored;
   }
-  return "manual_web_tool";
+  return "manual_web_client";
 }
 
 function mergeProfile(base, incoming) {
@@ -657,7 +678,7 @@ function updateRequirementNote(profile) {
   }
   refs.requirementNote.textContent = notes.length > 0
     ? notes.join(" ")
-    : "Profile looks compatible with the current standalone tool path. You can connect and send text or microphone turns directly to the native realtime websocket.";
+    : "Profile looks compatible with the current standalone client path. You can connect and send text or microphone turns directly to the native realtime websocket.";
 }
 
 function applyDiscoveryJSON() {
@@ -1105,13 +1126,13 @@ async function ensureSessionStarted(wakeReason = currentWakeReason()) {
     return state.sessionId;
   }
 
-  const sessionId = generateId("sess_webtool");
+  const sessionId = generateId("sess_webclient");
   sendEvent("session.start", {
     protocol_version: state.profile.protocolVersion,
     device: {
       device_id: currentDeviceId(),
-      client_type: "web-h5-tool",
-      firmware_version: "tools-web-client",
+      client_type: "web-h5-client",
+      firmware_version: "web-realtime-client",
     },
     audio: {
       codec: state.profile.inputAudio.codec,
@@ -1288,7 +1309,7 @@ function handleJSONEvent(raw) {
 async function sendTextTurn() {
   const profile = currentProfile();
   if (!profile.allowTextInput) {
-    throw new Error("text input is disabled in the current tool profile");
+    throw new Error("text input is disabled in the current client profile");
   }
 
   const text = refs.textInput.value.trim();
@@ -1436,7 +1457,7 @@ function bindActions() {
         appendEvent("session.end ignored because no session is active");
         return;
       }
-      sendEvent("session.end", { reason: "client_stop", message: "tools web client stop" });
+      sendEvent("session.end", { reason: "client_stop", message: "web realtime client stop" });
       state.sessionId = "";
       updateSessionValue();
       finalizeTTSTurn("client_stop");

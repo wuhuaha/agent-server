@@ -22,6 +22,12 @@
 
 ## 2026-04-14
 
+### Standalone Browser Client Was Filed Under `tools` Instead Of `clients`
+
+- Problem: the repository taxonomy had drifted. `clients/python-desktop-client` already established `clients/` as the home for reusable protocol-facing validation endpoints, but the standalone browser realtime client still lived under `tools/`, which made the client-vs-helper boundary inconsistent.
+- Resolution: moved the browser client to `clients/web-realtime-client`, updated scripts and docs that scaffold or serve it, and recorded the taxonomy rule in ADR `0027`.
+- Status: resolved.
+
 ### Websocket Write Paths Could Block Indefinitely Behind One Shared Mutex
 
 - Problem: both native realtime and `xiaozhi` websocket peers wrote JSON and binary frames without a write deadline. A slow or stalled client could therefore block one write forever while holding the shared write mutex, which in turn would stall audio downlink, interruption feedback, and session-close events.
@@ -210,7 +216,7 @@
 ### Standalone Static Web Tool Could Not Assume Same-Origin Discovery
 
 - Problem: the built-in `/debug/realtime-h5/` page can call `GET /v1/realtime` because it is served by the same Go process, but a separate static tool under `tools/` would often run on another origin and therefore could not safely depend on browser-side discovery fetches.
-- Resolution: the standalone tool under `tools/web-client` now treats manual realtime-profile entry as the primary path and supports pasted discovery JSON as an optional sync aid, while still connecting to the same native `/v1/realtime/ws` contract.
+- Resolution: the standalone client under `clients/web-realtime-client` now treats manual realtime-profile entry as the primary path and supports pasted discovery JSON as an optional sync aid, while still connecting to the same native `/v1/realtime/ws` contract.
 - Status: resolved.
 
 ### Web Or H5 Direct Access Risked Becoming A Second Protocol Surface
@@ -277,7 +283,7 @@
 
 ### Browser Debug Pages Could Render But Stay Completely Non-Interactive On Older Browsers
 
-- Problem: the built-in `/debug/realtime-h5/` page and the standalone `tools/web-client` pages were served as raw browser scripts without any build step, but they still used `type="module"`, optional chaining, nullish coalescing, and `String.prototype.replaceAll`. On older browsers or embedded WebViews, the scripts could fail during parse or be skipped entirely, leaving a page that looked loaded but did not react to clicks.
+- Problem: the built-in `/debug/realtime-h5/` page and the standalone `clients/web-realtime-client` pages were served as raw browser scripts without any build step, but they still used `type="module"`, optional chaining, nullish coalescing, and `String.prototype.replaceAll`. On older browsers or embedded WebViews, the scripts could fail during parse or be skipped entirely, leaving a page that looked loaded but did not react to clicks.
 - Resolution: switched all browser pages to classic deferred scripts and removed those unsupported syntax features from the shipped frontend code while keeping the same runtime behavior.
 - Status: resolved.
 
@@ -295,7 +301,7 @@
 
 ### Browser Bring-Up Had Too Much Configuration Mixed Into The Live Debug Page
 
-- Problem: after the first browser bring-up slice, both the standalone tool and the built-in `/debug/realtime-h5/` page still mixed endpoint setup, discovery sync, device preset, session control, TTS playback, and protocol logs into one dense surface. That made the page harder to scan during real debugging and made the intended bring-up flow less obvious.
+- Problem: after the first browser bring-up slice, both the standalone client and the built-in `/debug/realtime-h5/` page still mixed endpoint setup, discovery sync, device preset, session control, TTS playback, and protocol logs into one dense surface. That made the page harder to scan during real debugging and made the intended bring-up flow less obvious.
 - Resolution: split both browser paths into dedicated `settings` and `debug` pages. Settings now owns endpoint/audio profile and device preset work, while the debug page focuses on websocket turns, TTS playback, and logs.
 - Status: resolved.
 

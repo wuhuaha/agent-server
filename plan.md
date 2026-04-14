@@ -132,6 +132,7 @@ Current planning note:
 - the voice-runtime ownership migration is now landed: hidden preview, playout callbacks, and heard-text persistence live behind `internal/voice.SessionOrchestrator`
 - external channel follow-up should build the first Feishu adapter on top of `internal/channel.RuntimeBridge` instead of adding another adapter-local orchestration path
 - startup config is now split by runtime domain and validated before handler wiring, so future provider additions should extend `Config.Validate()` instead of relying on request-time failures
+- reusable protocol-facing validation clients should now live under `clients/`; `tools/` stays reserved for helper scripts and diagnostics
 
 ## Current Execution Log
 
@@ -140,6 +141,46 @@ Detailed historical execution history now lives in:
 - `docs/codex/execution-log-archive-2026-04.md`
 
 Keep this root ledger focused on active direction, recent execution context, and next-step decisions. When a completed slice stops affecting immediate work, summarize it in the archive instead of extending the root plan.
+
+### 2026-04-14 Client Directory Taxonomy Slice Complete
+
+- Scope:
+  - align the repository structure so reusable protocol-facing validation clients live under `clients/` instead of `tools/`
+  - move the standalone browser realtime client to a stable client-specific path
+  - update scripts, docs, and durable repository records to the new location
+- Target files:
+  - `clients/web-realtime-client/*`
+  - `README.md`
+  - `scripts/web-h5-manual-capture.sh`
+  - `docs/protocols/web-h5-realtime-adaptation.md`
+  - `docs/architecture/overview.md`
+  - `docs/adr/0027-standalone-reference-clients-live-under-clients.md`
+  - `plan.md`
+  - `.codex/change-log.md`
+  - `.codex/issues-and-resolutions.md`
+  - `.codex/project-memory.md`
+- Acceptance for this execution step:
+  - the standalone browser realtime client lives under `clients/`
+  - root and protocol docs point at the new path
+  - repository memory now records the rule that reusable clients belong under `clients/`
+
+Validation recorded for this execution step:
+
+- `node --check clients/web-realtime-client/app.js`
+- `node --check clients/web-realtime-client/settings.js`
+- `python3 -m py_compile clients/web-realtime-client/serve.py`
+- `git diff --check`
+
+Observed outcome:
+
+- the standalone browser realtime debug surface now sits alongside the Python desktop client under `clients/`
+- the repository layout more clearly separates reusable endpoint clients from helper tooling
+
+Recorded follow-through:
+
+- moved `tools/web-client` to `clients/web-realtime-client`
+- updated browser validation docs and repository durable records
+- added ADR `0027-standalone-reference-clients-live-under-clients.md`
 
 ### 2026-04-13 Codex Planning Context And Collaboration Template Slice Complete
 
@@ -287,7 +328,7 @@ Recorded follow-through:
   - `docs/codex/harness-workflow.md`
   - `docs/protocols/web-h5-realtime-adaptation.md`
   - `README.md`
-  - `tools/web-client/README.md`
+  - `clients/web-realtime-client/README.md`
   - `plan.md`
   - `.claude/context.md`
   - `.codex/change-log.md`
@@ -317,7 +358,7 @@ Observed outcome:
 Recorded follow-through:
 
 - added `scripts/web-h5-manual-capture.sh`
-- updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone tool README, and durable repo records
+- updated the runbook, harness docs, Web/H5 protocol guide, root README, standalone client README, and durable repo records
 - updated `plan.md`, `.claude/context.md`, and `.codex/` durable records
 
 ### 2026-04-13 Iteration 1 Validation Surface And Gateway Shared Turn Flow Slice Complete

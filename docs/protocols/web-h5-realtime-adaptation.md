@@ -52,9 +52,9 @@ The built-in pages perform:
 
 ## Standalone Repository Tool
 
-The repository also now ships a separate static tool:
+The repository also now ships a separate static client:
 
-- `tools/web-client/`
+- `clients/web-realtime-client/`
 
 Use that path when you want:
 
@@ -68,7 +68,7 @@ Because it is a separate static site, it does not assume same-origin discovery. 
 - `index.html` for live websocket debug, microphone turns, and TTS playback
 - pasted discovery JSON from `GET /v1/realtime`
 
-For archived evidence covering the standalone tool too:
+For archived evidence covering the standalone client too:
 
 ```bash
 ./scripts/web-h5-manual-capture.sh --mode standalone --standalone-base http://127.0.0.1:18081
@@ -103,7 +103,7 @@ Practical rule:
 
 If you open the built-in page over a non-secure remote origin, the text path may still work, but microphone capture will usually be blocked by the browser.
 
-The same browser rule applies to the standalone tool under `tools/web-client/`.
+The same browser rule applies to the standalone client under `clients/web-realtime-client/`.
 
 ## Expected Server Profile
 
@@ -144,7 +144,7 @@ The reference flow is the same as the native realtime profile:
 Choose one direct client shape per implementation:
 
 - browser or H5 page built specifically for `agent-server`: use `GET /v1/realtime`, `/v1/realtime/ws`, start from `/debug/realtime-h5/settings.html`, then debug through `/debug/realtime-h5/`
-- standalone repo-hosted browser debug tool: serve `tools/web-client/`, start from `settings.html`, then move to `index.html` for live websocket debug
+- standalone repo-hosted browser debug client: serve `clients/web-realtime-client/`, start from `settings.html`, then move to `index.html` for live websocket debug
 - existing `xiaozhi` firmware or an old browser page written around `hello/listen/abort`: use `/xiaozhi/ota/` and `/xiaozhi/v1/`
 
 ## Implementation Notes

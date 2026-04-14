@@ -31,15 +31,15 @@ Representative validation:
 ## 2026-04-05 Web/H5 And Standalone Browser Bring-Up
 
 - Added a first native Web/H5 direct client against `/v1/realtime/ws` without creating a browser-only protocol.
-- Added the standalone `tools/web-client` debug tool for text turns, mic turns, interrupts, and raw envelope inspection.
+- Added the standalone `clients/web-realtime-client` debug tool for text turns, mic turns, interrupts, and raw envelope inspection.
 - Documented browser constraints and the shared native realtime contract in `docs/protocols/web-h5-realtime-adaptation.md`.
 
 Representative validation:
 
 - `go test ./internal/app ./internal/control`
 - `node --check internal/control/webh5_assets/app.js`
-- `node --check tools/web-client/app.js`
-- `python3 -m py_compile tools/web-client/serve.py`
+- `node --check clients/web-realtime-client/app.js`
+- `python3 -m py_compile clients/web-realtime-client/serve.py`
 
 ## 2026-04-07 Local Integration And Frontend Stabilization
 

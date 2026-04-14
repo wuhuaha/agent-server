@@ -1,4 +1,4 @@
-# tools/web-client
+# clients/web-realtime-client
 
 Standalone browser client for the native `agent-server` realtime websocket contract.
 
@@ -9,7 +9,7 @@ It is intended for:
 - text-turn and microphone-turn debugging
 - raw JSON control-event testing
 
-Unlike the built-in `/debug/realtime-h5/` page served by `agent-server`, this tool is designed to work as a separate static site.
+Unlike the built-in `/debug/realtime-h5/` page served by `agent-server`, this client is designed to work as a separate static site.
 
 That means:
 
@@ -24,7 +24,7 @@ That means:
 From the repository root:
 
 ```bash
-cd tools/web-client
+cd clients/web-realtime-client
 python3 serve.py --port 18081
 ```
 
@@ -53,7 +53,7 @@ Current happy-path defaults already match the repository runtime defaults:
 
 ## Discovery JSON Import
 
-If you want the tool fields to match a running server exactly, fetch discovery separately and paste the JSON into the page:
+If you want the client fields to match a running server exactly, fetch discovery separately and paste the JSON into the page:
 
 ```bash
 curl http://127.0.0.1:8080/v1/realtime
