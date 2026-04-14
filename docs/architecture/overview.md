@@ -36,6 +36,8 @@ Provides built-in voice capabilities such as turn detection, ASR, TTS, and strea
 
 Provider choice remains a runtime concern inside `internal/voice`: local workers and optional cloud ASR/TTS backends are selected at app bootstrap, while transports still consume one shared responder contract.
 
+The shared TTS boundary now also covers one local open-source GPU deployment path: `cosyvoice_http` targets the official CosyVoice FastAPI runtime as a local dependency, while `agent-server` still owns provider selection, output normalization, and pacing inside `internal/voice`.
+
 TTS is part of this shared voice-runtime output layer rather than a browser-only, RTOS-only, or channel-specific feature. Once the runtime has produced final user-facing text, the same synthesized audio path can be reused by native RTOS devices, browser debug pages, desktop clients, and future channel adapters that need spoken output.
 
 The voice runtime now also normalizes structured speech-understanding metadata before handing a turn to `internal/agent`. ASR providers may expose different fields, but the shared runtime path only sees normalized metadata keys such as language, emotion, speaker, endpoint reason, audio events, and partial hypotheses.
@@ -89,6 +91,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One transport-neutral `TurnExecutor` boundary under `internal/agent`.
 - One sink-based streaming path from `StreamingTurnExecutor` through `internal/voice` into realtime `response.chunk` events.
 - One provider-selected voice runtime behind shared `Transcriber` and `Synthesizer` interfaces so local and cloud voice backends do not leak into device or channel adapters.
+- One local open-source GPU TTS option behind the same shared `Synthesizer` boundary so CosyVoice deployment details still stop inside `internal/voice`.
 - One provider-selected streaming ASR path behind shared `StreamingTranscriber` and `StreamingTranscriptionSession` interfaces so local preview workers and buffered compatibility adapters both terminate inside `internal/voice`.
 - One voice-runtime-owned input-preview path behind shared `InputPreviewer` and `InputPreviewSession` interfaces so server-side endpoint preview can evolve without pushing provider logic into websocket adapters.
 - One voice-runtime-owned session orchestrator behind shared preview and playback callbacks so auto-commit, interruption, playout completion, and heard-text persistence stop being split across multiple websocket handlers.
@@ -126,6 +129,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
 - [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
 - [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
+- [本地 CosyVoice GPU TTS 接入说明](local-cosyvoice-gpu-tts.md)
 - [现代 AI Agent / 语音 Agent 框架复核与架构优化建议（2026-04-08）](modern-ai-agent-framework-review-zh-2026-04-08.md)
 - [`agent-server` 新一代项目框架设计提案（2026-04-08）](agent-server-next-framework-zh-2026-04-08.md)
 - [从当前实现迁移到新一代项目框架的分阶段实施方案（2026-04-08）](migration-plan-to-next-framework-zh-2026-04-08.md)

@@ -20,6 +20,7 @@
 - The tagged Go integration tier binds local loopback listeners; in restricted sandboxes it must run in a context with local bind permission.
 - Keep repository issue and PR templates aligned with the shared command surface and required protocol or ADR follow-through.
 - Treat root `agents/` and `skills/` as curated references for the current Go or Python or voice-agent stack only, not as a generic upstream role dump.
+- Local open-source GPU TTS now enters through `internal/voice` as `cosyvoice_http`, targeting the official CosyVoice FastAPI service rather than teaching adapters about model-serving APIs.
 
 ## Current Constraints
 

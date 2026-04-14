@@ -422,6 +422,11 @@ Recorded follow-through:
 
 ### Recent Slices Still Relevant
 
+- `2026-04-14 Local Open-Source GPU TTS Via CosyVoice`
+  - added `cosyvoice_http` as a shared `internal/voice` TTS provider targeting the official CosyVoice FastAPI service, keeping local GPU deployment details behind the same runtime boundary as existing ASR/TTS providers
+  - added config wiring, runtime validation, integration coverage, Linux bring-up scripts, a layered Docker GPU TTS overlay, architecture follow-through, and ADR `0026`
+  - validation: `make test-go`, `make test-go-integration`, `make docker-config`, `make verify-fast`
+  - environment note: the new Docker overlay assumes the official CosyVoice image has already been built locally as `cosyvoice:v1.0`; this slice validates compose shape, not a live model-serving run
 - `2026-04-14 Test Layout And Command Surface Cleanup`
   - kept Go unit/package tests colocated with source, introduced tagged `integration` and `system` tiers for higher-level gateway tests plus listener-backed voice adapter tests, added top-level `tests/` docs, and exposed the split through `make test-go`, `make test-go-integration`, and `make test-go-system`
   - validation: `make test-go`, `make test-go-integration`, `make test-go-system`, `make verify-fast`

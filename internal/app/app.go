@@ -362,6 +362,32 @@ func buildSynthesizer(cfg Config, logger *slog.Logger) voice.Synthesizer {
 			Inner:  synthesizer,
 			Logger: logger,
 		}
+	case "cosyvoice_http":
+		if strings.TrimSpace(cfg.TTS.CosyVoice.BaseURL) == "" {
+			logger.Warn("cosyvoice tts provider requested but base url is empty; falling back to no tts")
+			return nil
+		}
+		logger.Info(
+			"tts synthesizer configured",
+			"provider", "cosyvoice_http",
+			"mode", cfg.TTS.CosyVoice.Mode,
+			"speaker_id", cfg.TTS.CosyVoice.SpeakerID,
+			"base_url", cfg.TTS.CosyVoice.BaseURL,
+		)
+		return voice.LoggingSynthesizer{
+			Inner: voice.NewCosyVoiceHTTPSynthesizer(voice.CosyVoiceHTTPConfig{
+				BaseURL:            cfg.TTS.CosyVoice.BaseURL,
+				Mode:               cfg.TTS.CosyVoice.Mode,
+				SpeakerID:          cfg.TTS.CosyVoice.SpeakerID,
+				InstructText:       cfg.TTS.CosyVoice.InstructText,
+				SourceSampleRateHz: cfg.TTS.CosyVoice.SourceSampleRateHz,
+				TargetCodec:        cfg.Realtime.OutputCodec,
+				TargetRateHz:       cfg.Realtime.OutputSampleRate,
+				TargetChannels:     cfg.Realtime.OutputChannels,
+				Timeout:            time.Duration(cfg.TTS.TimeoutMs) * time.Millisecond,
+			}),
+			Logger: logger,
+		}
 	case "iflytek_tts_ws":
 		if strings.TrimSpace(cfg.TTS.Iflytek.AppID) == "" ||
 			strings.TrimSpace(cfg.TTS.Iflytek.APIKey) == "" ||

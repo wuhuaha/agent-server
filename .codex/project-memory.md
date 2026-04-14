@@ -36,6 +36,8 @@
 - The local `SenseVoiceSmall` cache under `/root/.cache/modelscope/hub/models/iic/SenseVoiceSmall` is now prewarmed on this machine, and the worker has been validated end-to-end through `/healthz`, `/v1/asr/info`, and `/v1/asr/transcribe` with `trust_remote_code=false`.
 - Optional cloud voice providers now stay inside `internal/voice` behind the same `Transcriber` and `StreamingSynthesizer` contracts as the local FunASR and MiMo paths.
 - `iflytek_rtasr`, `iflytek_tts_ws`, and `volcengine_tts` are now selectable from app bootstrap by environment without changing the realtime websocket/session contract.
+- The first local open-source GPU TTS path now also stays behind the same shared voice runtime boundary: `cosyvoice_http` targets the official CosyVoice FastAPI service as a local dependency, and adapters still see only normalized synthesized audio.
+- CosyVoice deployment details are intentionally externalized: `agent-server` owns the provider contract and audio normalization, while the actual GPU model service is expected to run through the official CosyVoice runtime or image.
 - Optional cloud LLM providers now stay inside `internal/agent` behind the same `TurnExecutor` boundary as bootstrap execution, memory hooks, and tool hooks.
 - `deepseek_chat` is now the first selectable cloud LLM provider from app bootstrap, and it uses DeepSeek's OpenAI-compatible chat completions API without leaking provider code into transports.
 - The default cloud-LLM persona is now a Chinese household smart-home control-screen assistant template with assistant-name substitution, natural-language-only output, and concealed debug-stage simulation rules.

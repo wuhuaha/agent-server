@@ -296,3 +296,20 @@ func TestConfigValidateAllowsStreamingPreviewVoiceProviders(t *testing.T) {
 		t.Fatalf("expected iflytek_rtasr preview config to validate, got %v", err)
 	}
 }
+
+func TestConfigValidateRejectsCosyVoiceInstructModeWithoutInstruction(t *testing.T) {
+	err := Config{
+		TTS: TTSConfig{
+			Provider: "cosyvoice_http",
+			CosyVoice: CosyVoiceTTSProviderConfig{
+				BaseURL:            "http://127.0.0.1:50000",
+				Mode:               "instruct",
+				SpeakerID:          "中文女",
+				SourceSampleRateHz: 22050,
+			},
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "tts.cosyvoice instruct_text is required") {
+		t.Fatalf("expected cosyvoice instruct validation error, got %v", err)
+	}
+}

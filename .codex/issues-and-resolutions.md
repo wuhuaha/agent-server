@@ -53,6 +53,12 @@
 - Environment note: `make test-go-integration` needs local loopback bind permission because the tagged cases use `httptest` and websocket listeners. In restricted sandboxes, validate that tier outside the sandbox.
 - Status: resolved.
 
+### Local Open-Source GPU TTS Was Still Missing From The Shared Voice Runtime
+
+- Problem: the project already had a local open-source ASR path through `FunASR`, but TTS remained cloud-only or disabled. Adding a local GPU TTS by wiring browser pages, websocket adapters, or external channels directly to a model server would have broken the voice-runtime boundary.
+- Resolution: added `cosyvoice_http` under `internal/voice`, targeting the official CosyVoice FastAPI service as a local GPU-side dependency. App bootstrap now selects that provider through the shared TTS config, audio is normalized before it reaches adapters, and the repository also carries Linux bring-up plus layered Docker overlay guidance for the external GPU service.
+- Status: resolved.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace

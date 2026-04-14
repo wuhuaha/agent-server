@@ -32,5 +32,6 @@ trap cleanup EXIT
 
 docker compose -f deploy/docker/compose.base.yml config >/dev/null
 docker compose -f deploy/docker/compose.base.yml -f deploy/docker/compose.local-asr.yml config >/dev/null
+docker compose -f deploy/docker/compose.base.yml -f deploy/docker/compose.local-tts-gpu.yml config >/dev/null
 
 echo "docker compose config checks passed"

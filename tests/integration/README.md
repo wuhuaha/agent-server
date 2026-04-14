@@ -11,6 +11,7 @@ tests depend on package-local helpers. Examples:
 - `internal/voice/iflytek_rtasr_test.go`
 - `internal/voice/iflytek_tts_test.go`
 - `internal/voice/mimo_tts_test.go`
+- `internal/voice/cosyvoice_tts_test.go`
 - `internal/voice/volcengine_tts_test.go`
 
 Those tests are enabled with the `integration` build tag and run through:

@@ -30,6 +30,12 @@
   - added `tests/README.md` plus `tests/integration/`, `tests/system/`, and `tests/live/` docs
   - documented that the `integration` tier requires local loopback bind permission because it runs colocated `httptest` and websocket listeners
   - updated `Makefile`, `AGENTS.md`, `README.md`, and `docs/codex/harness-workflow.md` to reflect the split command surface
+- Added a local open-source GPU TTS path through `cosyvoice_http`:
+  - added `internal/voice.CosyVoiceHTTPSynthesizer` behind the shared `Synthesizer` and `StreamingSynthesizer` runtime contracts
+  - added app config and validation for CosyVoice FastAPI base URL, mode, speaker id, instruct text, and source sample rate
+  - added integration coverage for streamed SFT and buffered instruct synthesis against a fake local CosyVoice HTTP server
+  - added Linux bring-up scripts plus a layered Docker GPU TTS overlay that targets an externally built official `cosyvoice:v1.0` image
+  - updated architecture docs and added ADR `0026-local-open-source-gpu-tts-uses-cosyvoice-http-provider.md`
 
 ## 2026-03-25
 
