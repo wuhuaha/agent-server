@@ -6,8 +6,7 @@ cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-echo "==> go test ./..."
-go test ./...
+bash "${ROOT_DIR}/scripts/test-go-unit.sh"
 
 bash "${ROOT_DIR}/scripts/test-python-desktop.sh"
 

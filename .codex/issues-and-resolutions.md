@@ -46,6 +46,13 @@
 - Resolution: trimmed those directories to the current `agent-server` stack, kept only Go or Python or voice-agent or deployment or security or harness-relevant references, and cleaned broken references from `skills/README.md` and `skills/prompt-optimizer/SKILL.md`.
 - Status: resolved.
 
+### Test Files Needed Better Layering But Not A Full Top-Level Relocation
+
+- Problem: Go `*_test.go` files were spread across package directories, which made the test surface look unstructured. But moving them wholesale into `tests/ut` or `tests/st` would have broken package-local testing ergonomics and pushed internal-only behavior behind wider exported APIs.
+- Resolution: kept Go unit/package tests colocated, introduced build-tagged `integration` and `system` tiers for higher-level gateway tests plus listener-backed voice adapter tests, added a documented top-level `tests/` taxonomy for future black-box suites, and exposed the split through `make test-go`, `make test-go-integration`, and `make test-go-system`.
+- Environment note: `make test-go-integration` needs local loopback bind permission because the tagged cases use `httptest` and websocket listeners. In restricted sandboxes, validate that tier outside the sandbox.
+- Status: resolved.
+
 ## 2026-03-25
 
 ### Writing to E Drive from the Current Workspace

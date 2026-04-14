@@ -10,6 +10,8 @@ Use the standard command surface first:
 ```bash
 make doctor
 make test-go
+make test-go-integration
+make test-go-system
 make test-py
 make test-py-workers
 make docker-config
@@ -76,9 +78,16 @@ make verify-fast
 
 The current fast path includes:
 
-- `go test ./...`
+- Go unit/package tests only
 - Python desktop-client unit tests
 - layered Docker compose config expansion
+
+Additional tagged Go coverage is available through:
+
+- `make test-go-integration`
+  - includes colocated listener-backed gateway and voice adapter tests
+  - requires local loopback bind permission in constrained sandboxes
+- `make test-go-system`
 
 Additional Python worker coverage is available through:
 

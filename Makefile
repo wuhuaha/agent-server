@@ -1,4 +1,4 @@
-.PHONY: run test test-go test-py test-py-workers fmt doctor docker-config verify-fast bootstrap-linux
+.PHONY: run test test-go test-go-unit test-go-integration test-go-system test-py test-py-workers fmt doctor docker-config verify-fast bootstrap-linux
 
 PYTHON ?= python3
 
@@ -8,7 +8,16 @@ run:
 test: verify-fast
 
 test-go:
-	go test ./...
+	bash scripts/test-go-unit.sh
+
+test-go-unit:
+	bash scripts/test-go-unit.sh
+
+test-go-integration:
+	bash scripts/test-go-integration.sh
+
+test-go-system:
+	bash scripts/test-go-system.sh
 
 test-py:
 	PYTHON_BIN="$(PYTHON)" bash scripts/test-python-desktop.sh

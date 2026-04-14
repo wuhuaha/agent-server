@@ -67,6 +67,8 @@ git status --short
 print_section "Suggested Next Commands"
 printf '%s\n' \
   "make test-go" \
+  "make test-go-integration" \
+  "make test-go-system" \
   "make test-py" \
   "make test-py-workers" \
   "make docker-config" \

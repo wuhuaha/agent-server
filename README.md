@@ -24,6 +24,7 @@ Current priorities:
 - `docs/protocols`: protocol contracts and compatibility notes.
 - `docs/adr`: architecture decision records.
 - `docs/codex`: Codex-facing workflow, harness entrypoints, and repo execution guidance.
+- `tests`: test-layer documentation and future repository-wide black-box suites.
 - `.codex`: Codex-facing memory, logs, and project-local skills.
 - `.claude`: Claude-facing context, commands, and review roles.
 
@@ -61,12 +62,26 @@ The standard local validation and bring-up entrypoints are now:
 ```bash
 make doctor
 make test-go
+make test-go-integration
+make test-go-system
 make test-py
 make test-py-workers
 make docker-config
 make verify-fast
 make run
 ```
+
+Test organization note:
+
+- Go unit/package tests stay colocated beside the code as `*_test.go`
+- higher-level Go tests use build tags instead of being moved wholesale into one top-level tree:
+  - `integration` covers listener-backed transport/provider tests such as websocket handlers or `httptest` voice adapters
+  - `integration` -> `make test-go-integration`
+  - `system` -> `make test-go-system`
+- top-level [tests/README.md](tests/README.md) documents the full layering
+
+The `integration` tier opens local loopback listeners. In restricted sandboxes, run it
+where local bind permission is available.
 
 Then open:
 

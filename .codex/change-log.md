@@ -21,6 +21,15 @@
   - removing unnecessary slice cloning inside `InMemoryMemoryStore.SaveTurn`
 - Added regression tests for websocket write deadline behavior, recoverable pre-start audio, and playback persistence boundaries.
 - Pruned the imported root `agents/` and `skills/` reference directories down to the current `agent-server` stack, removing unrelated cross-language, database-specific, and office-workflow references and cleaning stale references from kept skill docs.
+- Organized the test surface without moving Go unit tests out of their packages:
+  - kept colocated `*_test.go` as the default unit/package layer
+  - marked websocket handler tests as `integration`
+  - marked listener-backed voice adapter tests as `integration`
+  - marked external-binary `ffmpeg` coverage as `system`
+  - added `scripts/test-go-unit.sh`, `scripts/test-go-integration.sh`, `scripts/test-go-system.sh`
+  - added `tests/README.md` plus `tests/integration/`, `tests/system/`, and `tests/live/` docs
+  - documented that the `integration` tier requires local loopback bind permission because it runs colocated `httptest` and websocket listeners
+  - updated `Makefile`, `AGENTS.md`, `README.md`, and `docs/codex/harness-workflow.md` to reflect the split command surface
 
 ## 2026-03-25
 

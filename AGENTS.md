@@ -44,6 +44,8 @@ Start here before inventing ad hoc commands:
 
 - `make doctor`
 - `make test-go`
+- `make test-go-integration` for tagged listener-backed gateway and voice adapter tests
+- `make test-go-system`
 - `make test-py`
 - `make test-py-workers`
 - `make docker-config`

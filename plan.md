@@ -422,6 +422,10 @@ Recorded follow-through:
 
 ### Recent Slices Still Relevant
 
+- `2026-04-14 Test Layout And Command Surface Cleanup`
+  - kept Go unit/package tests colocated with source, introduced tagged `integration` and `system` tiers for higher-level gateway tests plus listener-backed voice adapter tests, added top-level `tests/` docs, and exposed the split through `make test-go`, `make test-go-integration`, and `make test-go-system`
+  - validation: `make test-go`, `make test-go-integration`, `make test-go-system`, `make verify-fast`
+  - environment note: `make test-go-integration` requires local loopback bind permission because the tagged coverage uses `httptest` and websocket listeners
 - `2026-04-14 Root Agent And Skill Directory Pruning`
   - reviewed the imported ECC reference pack under root `agents/` and `skills/`, removed items unrelated to the current Go or Python or voice-agent or deployment stack, and cleaned broken residual references from the kept skill docs
   - validation: `rg` reference sweep across `agents/`, `skills/`, `AGENTS.md`, `.codex/`, `.claude/`, and docs

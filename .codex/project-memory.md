@@ -9,6 +9,13 @@
 - Authentication is deferred, not ignored; reserved fields stay in the protocol.
 - The repository now carries a trimmed root `agents/` reference pack inspired by `everything-claude-code`, limited to roles that still match the current `agent-server` stack; project guardrails in root `AGENTS.md` remain the higher-priority source of truth.
 - The repository also carries a trimmed curated subset of upstream ECC skills in root `skills/`, limited to Go or Python or voice-agent or deployment or security or harness-relevant workflows, while project-specific execution skills continue to live under `.codex/skills/`.
+- Go unit/package tests should stay colocated with the code they verify; do not move them wholesale into a top-level `tests/ut` tree.
+- Higher-level Go tests should be layered through tags and command surface instead:
+  - `integration` for handler or transport black-box tests that still need package-local helpers
+  - this also includes provider-adapter tests that bind local listeners through `httptest`
+  - `system` for tests that depend on external binaries or runtimes such as `ffmpeg`
+- `make test-go-integration` therefore requires local loopback bind permission on the executing machine; keep it out of restricted sandbox-only fast paths.
+- The top-level `tests/` directory is reserved for taxonomy docs and future repository-wide black-box suites, not as a dumping ground for all existing Go tests.
 - The first concrete device profile is now frozen as `rtos-ws-v0`: one active session per socket, text frames for control, binary frames for audio, baseline codec `pcm16le/16k/mono`.
 - `GET /v1/realtime` is the discovery contract for device teams and must stay aligned with the protocol docs and runtime config defaults.
 - The first bootstrap implementation now supports: WebSocket upgrade, `session.start`, binary audio uplink, `audio.in.commit`, placeholder streamed response events, and bidirectional `session.end`.
