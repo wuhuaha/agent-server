@@ -122,6 +122,9 @@ Current runtime note:
 - `AGENT_SERVER_VOICE_ASR_URL`: FunASR worker transcription endpoint
 - `AGENT_SERVER_VOICE_ASR_TIMEOUT_MS`: timeout for one ASR request
 - `AGENT_SERVER_VOICE_ASR_LANGUAGE`: language hint, default `auto`
+- `AGENT_SERVER_VOICE_ASR_READY_URL`: optional health endpoint override used by `scripts/run-agentd-local.sh` before `agentd` starts
+- `AGENT_SERVER_VOICE_ASR_READY_TIMEOUT_SEC`: how long the local launcher waits for FunASR readiness, default `180`
+- `AGENT_SERVER_VOICE_ASR_READY_POLL_INTERVAL_SEC`: local launcher poll interval for worker readiness, default `2`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED`: internal server-endpoint preview switch, default `false`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`: minimum accumulated audio before the hidden preview path may suggest auto-commit, default `320`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`: trailing local silence window before the hidden preview path may suggest auto-commit, default `480`
@@ -159,6 +162,17 @@ Current directly usable machine-local long-running setup:
 2. optionally expose `80/443` through `nginx` with `sudo PUBLIC_IP=<your-public-ip> bash scripts/install-local-nginx-proxy.sh`
 3. adjust `/etc/agent-server/funasr-worker.env` or `/etc/agent-server/agentd.env` when local runtime defaults need to persist across reboots
 
+When `AGENT_SERVER_VOICE_PROVIDER=funasr_http`, the local launcher now waits for the worker health endpoint to reach `status=ok` before it execs `agentd`.
+That readiness gate uses:
+
+- `AGENT_SERVER_VOICE_ASR_READY_URL` when explicitly set
+- otherwise a derived `/healthz` URL from `AGENT_SERVER_VOICE_ASR_URL`
+
+This readiness wait is currently a launcher-side behavior in `scripts/run-agentd-local.sh`; it is not a new public API surface.
+
+For the current machine-local `systemd` path, `scripts/run-agentd-local.sh` now also supports a repo-local user override binary at `.runtime/bin/agentd`.
+If `/etc/agent-server/agentd.env` still points at the default `/home/ubuntu/agent-server/bin/agentd`, the launcher may transparently prefer that repo-local override when it exists. This keeps unprivileged iteration possible on machines where the root-owned `bin/` directory cannot be updated directly.
+
 For `opus` device uplink, the current server path supports mono speech-oriented `SILK-only` packets and normalizes them in Go before calling the worker. The Python worker still receives `pcm16le` JSON payloads.
 
 Current internal endpoint-preview note:
@@ -178,6 +192,7 @@ Current internal endpoint-preview note:
   - `stream_2pass_online_final`: optional 2pass mode enabled by `AGENT_SERVER_FUNASR_ONLINE_MODEL`, where preview comes from a true online ASR model and turn-final text still comes from the configured final-ASR model
 - the worker-side 2pass knobs are:
   - `AGENT_SERVER_FUNASR_ONLINE_MODEL`
+  - `AGENT_SERVER_FUNASR_PRELOAD_MODELS`
   - `AGENT_SERVER_FUNASR_STREAM_CHUNK_SIZE`
   - `AGENT_SERVER_FUNASR_STREAM_ENCODER_CHUNK_LOOK_BACK`
   - `AGENT_SERVER_FUNASR_STREAM_DECODER_CHUNK_LOOK_BACK`
@@ -186,6 +201,8 @@ Current internal endpoint-preview note:
   - `AGENT_SERVER_FUNASR_FINAL_MERGE_VAD`
   - `AGENT_SERVER_FUNASR_FINAL_MERGE_LENGTH_S`
 - the local FunASR worker now also emits a lightweight preview endpoint hint (`preview_tail_silence`) based on tail-audio energy, and the shared voice runtime consumes that hint without widening the public protocol
+- the worker now background-preloads configured models by default through `AGENT_SERVER_FUNASR_PRELOAD_MODELS=true`
+- `/healthz` and `/v1/asr/info` now report `status=ok` only after all configured worker-side model dependencies for the active path are ready, not merely after the final ASR model object exists
 - the local FunASR worker can now optionally strengthen that internal hint path through `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER`:
   - `energy`: keep the existing lightweight tail-energy hint as the default behavior
   - `fsmn_vad`: use the configured `AGENT_SERVER_FUNASR_FINAL_VAD_MODEL` as the worker-side endpoint hint source
@@ -209,9 +226,25 @@ Current internal endpoint-preview note:
 Current note on this machine:
 
 - `FunASR` inference has been validated locally on both CPU and GPU.
-- The `xiaozhi-esp32-server` conda env now carries `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, and `SenseVoiceSmall` has been verified on the local RTX 5060 with `device=cuda:0`.
-- The default worker scripts still use `device=cpu` for predictable local bring-up and easy fallback.
+- The current 2026-04-15 production host uses `Tesla V100-SXM2-32GB` (`sm_70`), and the original `xiaozhi-esp32-server` conda env should no longer be treated as the GPU runtime of record: it was found with `torch 2.11.0+cpu` plus a broken `torchaudio` import after an interrupted reinstall.
+- The active long-running GPU worker now runs from `FUNASR_PYTHON_BIN=/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311/bin/python` with caches rooted under `/home/ubuntu/kws-training/data/agent-server-cache/{modelscope,hf,torch}` so large wheels and model downloads no longer consume the root disk.
+- The validated GPU runtime on this V100 host is `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126`; the newer `torch 2.11.0+cu128` wheel family was rejected because the official wheel omits `sm_70` kernels and fails with `CUDA error: no kernel image is available for execution on the device`.
+- With that runtime, `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` now preload successfully on `cuda:0`, and the long-running worker reports `pipeline_mode=stream_2pass_online_final` with worker-side endpoint VAD status `ready`.
+- The calibrated enabled-KWS baseline on this host is now `iic/speech_charctc_kws_phone-xiaoyun`; the worker initializes `AutoModel(...)` with both `keywords` and `output_dir`, and `/healthz` reports `status=error` if `AGENT_SERVER_FUNASR_KWS_ENABLED=true` but `KWS_MODEL` or `KWS_KEYWORDS` is still missing.
+- The default worker scripts still keep `device=cpu` for portable bring-up and easy fallback; GPU deployment should opt in explicitly through the worker env overrides above.
 - The local `SenseVoiceSmall` worker path must keep `AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE=false`; the downloaded model bundle loads correctly from cache, but enabling remote code fails with `No module named 'model'`.
+- The same host now also runs a long-running local CosyVoice GPU TTS runtime through `agent-server-cosyvoice-fastapi.service`, backed by `/home/ubuntu/kws-training/data/agent-server-runtime/cosyvoice-py310` plus the staged model `/home/ubuntu/kws-training/data/agent-server-cache/modelscope/models/iic/CosyVoice-300M-SFT-runtime`.
+- The long-running `agentd` path is now configured with `AGENT_SERVER_TTS_PROVIDER=cosyvoice_http`, `AGENT_SERVER_TTS_COSYVOICE_BASE_URL=http://127.0.0.1:50000`, `AGENT_SERVER_TTS_COSYVOICE_MODE=sft`, `AGENT_SERVER_TTS_COSYVOICE_SPK_ID=中文女`, and `AGENT_SERVER_TTS_COSYVOICE_SOURCE_SAMPLE_RATE=22050`.
+- Direct `POST /inference_sft` validation on this host now returns non-empty raw PCM from the local FastAPI runtime, and local systemd-backed realtime text plus audio smoke runs both return audio.
+- The current machine has also revalidated the public edge after the GPU cutover: `http://101.33.235.154/healthz` and `https://101.33.235.154/healthz` both return `status=ok`, and public-IP realtime text smoke now returns audio with `tts_provider=cosyvoice_http`.
+- On 2026-04-15, the shared realtime TTS chain on this host was corrected in two places:
+  - the gateway now keeps the `StreamingResponder` audio-stream context alive until the returned `AudioStream` closes instead of canceling it immediately after `RespondStream(...)` returns
+  - speech-planner turns now avoid the old duplicate full-response TTS call when a planned incremental stream is already available
+- After that fix, the same committed-WAV audio path now succeeds locally and through the public edge again:
+  - local audio smoke: `artifacts/live-smoke/20260415/local-systemd-cosyvoice-audio-postfix/run_120700_3677/run_935960053343`
+  - public-IP audio smoke: `artifacts/live-smoke/20260415/public-edge-cosyvoice-audio-postfix/run_120710_10469/run_846a70c2f15d`
+  - public-IP text smoke recheck: `artifacts/live-smoke/20260415/public-edge-cosyvoice-text-postfix/run_120720_31537/run_3db52dc40d16`
+- The repaired runs now show one `tts stream started` per turn, no `context canceled` TTS failure for the validated turns, and large non-zero returned audio (`122600` bytes locally, `123344` bytes on the public-IP audio smoke).
 
 Current cloud ASR note:
 

@@ -35,6 +35,7 @@ Replace the bootstrap audio-byte-count reply with real local speech recognition 
 - final VAD model default: empty
 - final punctuation model default: empty
 - KWS default: disabled
+- KWS model default when enabled: `iic/speech_charctc_kws_phone-xiaoyun`
 - device default: `cpu`
 - `trust_remote_code`: `false`
 - input format: `pcm16le / 16000 Hz / mono`
@@ -57,6 +58,40 @@ Add `--with-stream-vad` when the worker should also install `onnxruntime` and `s
   - `AGENT_SERVER_FUNASR_ONLINE_MODEL` is empty by default, so streaming still starts in `stream_preview_batch`
   - `AGENT_SERVER_FUNASR_KWS_ENABLED=false`, so wake-word detection is opt-in
   - `AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER=energy`, so the default endpoint hint remains lightweight and dependency-free
+- the worker now background-preloads its configured models by default through `AGENT_SERVER_FUNASR_PRELOAD_MODELS=true`, so `/healthz` only reports `status=ok` after the configured final, online, KWS, and preview-VAD components are ready
+- the local `run-agentd-local.sh` entrypoint now waits for the FunASR worker health endpoint to reach `status=ok` before starting `agentd` when `AGENT_SERVER_VOICE_PROVIDER=funasr_http`
 - when `AGENT_SERVER_FUNASR_ONLINE_MODEL` is configured, the same worker routes preview through a true online ASR model while keeping turn-final text on the configured final-ASR model
-- when `AGENT_SERVER_FUNASR_KWS_ENABLED=true`, the worker may emit `kws_detected` audio events and optionally strip the matched wake-word prefix from preview/final transcript text, but the public realtime contract still stays unchanged
+- when `AGENT_SERVER_FUNASR_KWS_ENABLED=true`, the worker now treats missing `AGENT_SERVER_FUNASR_KWS_MODEL` or `AGENT_SERVER_FUNASR_KWS_KEYWORDS` as a health/config error, and the validated runtime path initializes `AutoModel(...)` with both `keywords` and `output_dir`
+- the current calibrated KWS baseline on this machine is `iic/speech_charctc_kws_phone-xiaoyun`; it stays default-off, may emit `kws_detected` audio events when enabled, and still does not change the public realtime contract
 - the local `SenseVoiceSmall` reference path on this machine now loads successfully only with `trust_remote_code=false`; enabling remote code causes model initialization to fail because the cached model bundle does not ship a `model` module
+- the latest archived CPU benchmark on this machine shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is operational after preload, but it is not yet the best default for a CPU demo:
+  - command-only sample kept the correct text, but response-start latency rose from about `2058 ms` to about `3485 ms`
+  - wake-word-prefixed sample still misrecognized `小欧管家 + 打开客厅灯` as `调管家。`
+  - the short KWS alias `fsmn-kws` currently fails preload in the local FunASR `1.3.1` runtime with `fsmn-kws is not registered`, while the validated replacement `iic/speech_charctc_kws_phone-xiaoyun` only works reliably after passing `keywords` and `output_dir` during `AutoModel(...)` initialization
+
+## 2026-04-15 GPU Deployment Note
+
+- current production GPU host:
+  - GPU: `Tesla V100-SXM2-32GB`
+  - driver: `570.158.01`
+  - reported CUDA runtime: `12.8`
+  - hardware capability: `sm_70`
+- the previous `xiaozhi-esp32-server` conda env should not be reused as the GPU runtime baseline on this machine:
+  - it was found in a CPU-only or partially broken state (`torch 2.11.0+cpu`, `torchaudio` import failure) after an interrupted reinstall
+  - the official `torch 2.11.0+cu128` wheel family also fails on V100 with `CUDA error: no kernel image is available for execution on the device`, because that wheel no longer contains `sm_70` kernels
+- the validated replacement runtime is a dedicated data-volume worker Python at `/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311/bin/python` with:
+  - `torch 2.7.1+cu126`
+  - `torchaudio 2.7.1+cu126`
+  - model and wheel caches rooted under `/home/ubuntu/kws-training/data/agent-server-cache/{modelscope,hf,torch}`
+- the validated long-running GPU pipeline on this host is:
+  - final ASR: `iic/SenseVoiceSmall`
+  - online preview: `paraformer-zh-streaming`
+  - preview/final VAD: `fsmn-vad`
+  - device: `cuda:0`
+  - pipeline mode: `stream_2pass_online_final`
+  - KWS: still `disabled` by default
+- live validation completed on the long-running GPU service after the cutover:
+  - `GET http://127.0.0.1:8091/healthz` returned `status=ok`
+  - `GET http://127.0.0.1:8091/v1/asr/info` reported `device=cuda:0`, `online_model_loaded=true`, and `stream_endpoint_fsmn_vad_loaded=true`
+  - `POST http://127.0.0.1:8091/v1/asr/transcribe` recognized the cached sample `zh.mp3` as `开放时间早上9点至下午5点。` on `device=cuda:0` with worker elapsed time about `430 ms`
+- local TTS remains `none` on this host for now. The current environment priority is low-latency ASR and turn detection on GPU first; CosyVoice or another local GPU TTS runtime should be installed as a separate follow-up.

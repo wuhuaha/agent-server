@@ -306,6 +306,58 @@ func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestASRResponderSpeechPlannerDoesNotDoubleSynthesizeFinalResponse(t *testing.T) {
+	synth := &recordingSynthesizer{}
+	responder := NewASRResponder(
+		fakeTranscriber{result: TranscriptionResult{Text: "打开客厅灯"}},
+		"auto",
+		"pcm16le",
+		16000,
+		1,
+		false,
+	).WithTurnExecutor(staticTurnExecutor{text: "好的。"}).
+		WithSynthesizer(synth).
+		WithSpeechPlannerConfig(SpeechPlannerConfig{
+		Enabled:          true,
+		MinChunkRunes:    2,
+		TargetChunkRunes: 6,
+	})
+
+	response, err := responder.RespondStream(context.Background(), TurnRequest{
+		SessionID:       "sess_asr_planner_once",
+		TurnID:          "turn_asr_planner_once",
+		TraceID:         "trace_asr_planner_once",
+		DeviceID:        "dev_asr_planner_once",
+		AudioPCM:        make([]byte, 3200),
+		AudioBytes:      3200,
+		InputFrames:     5,
+		InputCodec:      "pcm16le",
+		InputSampleRate: 16000,
+		InputChannels:   1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("RespondStream failed: %v", err)
+	}
+	if response.AudioStream == nil {
+		t.Fatal("expected planned audio stream on the response")
+	}
+
+	if _, err := response.AudioStream.Next(context.Background()); err != nil {
+		t.Fatalf("expected synthesized audio chunk, got %v", err)
+	}
+	drainTestAudioStream(t, response.AudioStream)
+	_ = response.AudioStream.Close()
+
+	synth.mu.Lock()
+	defer synth.mu.Unlock()
+	if len(synth.texts) != 1 {
+		t.Fatalf("expected exactly one synthesis request when planner audio is available, got %+v", synth.texts)
+	}
+	if synth.texts[0] != "好的。" {
+		t.Fatalf("unexpected synthesized text %q", synth.texts[0])
+	}
+}
+
 func TestASRResponderInputPreviewSuggestsCommitAfterSilence(t *testing.T) {
 	responder := NewASRResponder(
 		previewStreamingTranscriber{},

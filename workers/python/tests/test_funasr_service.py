@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -28,11 +31,12 @@ class FunASRServiceTests(unittest.TestCase):
             "final_merge_vad": True,
             "final_merge_length_s": 15,
             "kws_enabled": False,
-            "kws_model": "fsmn-kws",
+            "kws_model": "iic/speech_charctc_kws_phone-xiaoyun",
             "kws_keywords": (),
             "kws_strip_matched_prefix": True,
             "kws_min_audio_ms": 480,
             "kws_min_interval_ms": 400,
+            "kws_output_dir": "",
             "stream_preview_min_audio_ms": 20,
             "stream_preview_min_interval_ms": 0,
             "stream_endpoint_tail_ms": 160,
@@ -41,6 +45,7 @@ class FunASRServiceTests(unittest.TestCase):
             "stream_endpoint_vad_threshold": 0.5,
             "stream_endpoint_vad_min_silence_ms": 160,
             "stream_endpoint_vad_speech_pad_ms": 30,
+            "preload_models": False,
         }
         values.update(overrides)
         return WorkerConfig(**values)
@@ -71,17 +76,19 @@ class FunASRServiceTests(unittest.TestCase):
         self.assertTrue(config.final_merge_vad)
         self.assertEqual(config.final_merge_length_s, 15)
         self.assertFalse(config.kws_enabled)
-        self.assertEqual(config.kws_model, "fsmn-kws")
+        self.assertEqual(config.kws_model, "iic/speech_charctc_kws_phone-xiaoyun")
         self.assertEqual(config.kws_keywords, ())
         self.assertTrue(config.kws_strip_matched_prefix)
         self.assertEqual(config.kws_min_audio_ms, 480)
         self.assertEqual(config.kws_min_interval_ms, 400)
+        self.assertEqual(config.kws_output_dir, "")
         self.assertEqual(config.stream_preview_min_audio_ms, 320)
         self.assertEqual(config.stream_preview_min_interval_ms, 240)
         self.assertEqual(config.stream_endpoint_vad_provider, "energy")
         self.assertEqual(config.stream_endpoint_vad_threshold, 0.5)
         self.assertEqual(config.stream_endpoint_vad_min_silence_ms, 160)
         self.assertEqual(config.stream_endpoint_vad_speech_pad_ms, 30)
+        self.assertTrue(config.preload_models)
 
     def test_build_config_parses_online_kws_and_fsmn_vad_envs(self) -> None:
         env = {
@@ -92,6 +99,7 @@ class FunASRServiceTests(unittest.TestCase):
             "AGENT_SERVER_FUNASR_KWS_ENABLED": "true",
             "AGENT_SERVER_FUNASR_KWS_KEYWORDS": "你好小智, 小智同学",
             "AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_PROVIDER": "fsmn-vad",
+            "AGENT_SERVER_FUNASR_PRELOAD_MODELS": "false",
         }
         with patch.dict(os.environ, env, clear=True):
             with patch("sys.argv", ["funasr_service.py"]):
@@ -103,6 +111,146 @@ class FunASRServiceTests(unittest.TestCase):
         self.assertTrue(config.kws_enabled)
         self.assertEqual(config.kws_keywords, ("你好小智", "小智同学"))
         self.assertEqual(config.stream_endpoint_vad_provider, "fsmn_vad")
+        self.assertFalse(config.preload_models)
+
+    def test_health_only_reports_ready_after_all_configured_models_are_loaded(self) -> None:
+        engine = FunASREngine(
+            self.make_config(
+                online_model="paraformer-zh-streaming",
+                final_vad_model="fsmn-vad",
+                stream_endpoint_vad_provider="fsmn_vad",
+                kws_enabled=True,
+                kws_keywords=("你好小智",),
+            )
+        )
+        engine._final_model = object()
+        health = engine.health()
+        self.assertEqual(health["status"], "starting")
+        self.assertFalse(health["ready"])
+        self.assertTrue(health["online_model_required"])
+        self.assertTrue(health["stream_endpoint_fsmn_vad_required"])
+        self.assertTrue(health["kws_model_required"])
+
+        engine._online_model = object()
+        engine._fsmn_vad_model = object()
+        engine._kws_model = object()
+        ready_health = engine.health()
+        self.assertEqual(ready_health["status"], "ok")
+        self.assertTrue(ready_health["ready"])
+        self.assertTrue(ready_health["online_model_loaded"])
+        self.assertTrue(ready_health["stream_endpoint_fsmn_vad_loaded"])
+        self.assertTrue(ready_health["kws_model_loaded"])
+
+    def test_health_reports_error_when_kws_is_enabled_without_keywords(self) -> None:
+        engine = FunASREngine(self.make_config(kws_enabled=True, kws_keywords=()))
+        engine._final_model = object()
+        health = engine.health()
+        self.assertEqual(health["status"], "error")
+        self.assertFalse(health["ready"])
+        self.assertTrue(health["kws_model_required"])
+        self.assertFalse(health["kws_configured"])
+        self.assertEqual(health["kws_last_error"], "KWS is enabled but AGENT_SERVER_FUNASR_KWS_KEYWORDS is empty")
+
+    def test_preload_models_loads_all_requested_components(self) -> None:
+        engine = FunASREngine(
+            self.make_config(
+                online_model="paraformer-zh-streaming",
+                final_vad_model="fsmn-vad",
+                stream_endpoint_vad_provider="auto",
+                kws_enabled=True,
+                kws_keywords=("你好小智",),
+            )
+        )
+
+        def set_final() -> tuple[object, object]:
+            engine._final_model = object()
+            engine._final_postprocess = object()
+            return engine._final_model, engine._final_postprocess
+
+        def set_online() -> tuple[object, object]:
+            engine._online_model = object()
+            engine._online_postprocess = object()
+            return engine._online_model, engine._online_postprocess
+
+        def set_fsmn() -> tuple[object, object]:
+            engine._fsmn_vad_model = object()
+            engine._fsmn_vad_postprocess = object()
+            return engine._fsmn_vad_model, engine._fsmn_vad_postprocess
+
+        def set_kws() -> tuple[object, object]:
+            engine._kws_model = object()
+            engine._kws_postprocess = object()
+            return engine._kws_model, engine._kws_postprocess
+
+        with patch.object(engine, "_ensure_final_model", side_effect=set_final) as final_model, patch.object(
+            engine,
+            "_ensure_online_model",
+            side_effect=set_online,
+        ) as online_model, patch.object(
+            engine,
+            "_ensure_fsmn_vad_model",
+            side_effect=set_fsmn,
+        ) as fsmn_vad_model, patch.object(
+            engine,
+            "_ensure_kws_model",
+            side_effect=set_kws,
+        ) as kws_model:
+            engine.preload_models()
+
+        self.assertTrue(engine._preload_started)
+        self.assertTrue(engine._preload_completed)
+        self.assertEqual(engine._preload_error, "")
+        self.assertIsNotNone(engine._final_model)
+        self.assertIsNotNone(engine._online_model)
+        self.assertIsNotNone(engine._fsmn_vad_model)
+        self.assertIsNotNone(engine._kws_model)
+        final_model.assert_called_once()
+        online_model.assert_called_once()
+        fsmn_vad_model.assert_called_once()
+        kws_model.assert_called_once()
+
+    def test_kws_model_initializes_with_keywords_and_output_dir(self) -> None:
+        calls: dict[str, object] = {}
+
+        class FakeModel:
+            def __init__(self, **kwargs: object) -> None:
+                calls["init_kwargs"] = kwargs
+
+            def generate(self, **kwargs: object) -> list[dict[str, str]]:
+                calls["generate_kwargs"] = kwargs
+                return [{"text": "detected 小云小云 0.95"}]
+
+        fake_funasr = types.ModuleType("funasr")
+        fake_funasr.AutoModel = FakeModel  # type: ignore[attr-defined]
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(sys.modules, {"funasr": fake_funasr}):
+            engine = FunASREngine(
+                self.make_config(
+                    kws_enabled=True,
+                    kws_model="iic/speech_charctc_kws_phone-xiaoyun",
+                    kws_keywords=("小云小云",),
+                    kws_output_dir=tmpdir,
+                )
+            )
+            result = engine._run_kws_detection(bytes(640), 16000, 1, state=None)
+
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["keyword"], "小云小云")
+        self.assertAlmostEqual(result["score"], 0.95)
+        self.assertEqual(
+            calls["init_kwargs"],
+            {
+                "model": "iic/speech_charctc_kws_phone-xiaoyun",
+                "trust_remote_code": False,
+                "device": "cpu",
+                "disable_update": True,
+                "keywords": "小云小云",
+                "output_dir": tmpdir,
+            },
+        )
+        self.assertIn("input", calls["generate_kwargs"])
+        self.assertEqual(calls["generate_kwargs"]["cache"], {})
+        self.assertNotIn("keywords", calls["generate_kwargs"])
 
     def test_stream_lifecycle_tracks_preview_and_final_without_duplicate_partials(self) -> None:
         engine = FunASREngine(self.make_config(language="zh"))

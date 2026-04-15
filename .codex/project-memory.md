@@ -29,12 +29,13 @@
 - The directly usable local ASR reference path on this machine is:
   - worker env `xiaozhi-esp32-server`
   - model `iic/SenseVoiceSmall`
-  - device `cpu` by default, with `cuda:0` now validated on the local RTX 5060
+  - device `cpu` by default for portable bring-up, with the production GPU path now explicitly validated on the local `Tesla V100-SXM2-32GB`
   - `trust_remote_code=false`
   - server script `scripts/dev-funasr.ps1`
   - worker script `scripts/start-funasr-worker.ps1`
-- The `xiaozhi-esp32-server` env on this machine now carries `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, and both direct `FunASR AutoModel` inference and the HTTP worker path have been validated on `device=cuda:0`.
-- The local `SenseVoiceSmall` cache under `/root/.cache/modelscope/hub/models/iic/SenseVoiceSmall` is now prewarmed on this machine, and the worker has been validated end-to-end through `/healthz`, `/v1/asr/info`, and `/v1/asr/transcribe` with `trust_remote_code=false`.
+- The production GPU worker on this machine should now run from `FUNASR_PYTHON_BIN=/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311/bin/python` with caches rooted under `/home/ubuntu/kws-training/data/agent-server-cache/{modelscope,hf,torch}`.
+- The validated V100 runtime on this machine is `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126`; the newer `torch 2.11.0+cu128` wheel family is not valid on this host because it omits `sm_70` kernels and fails with `CUDA error: no kernel image is available for execution on the device`.
+- The local `SenseVoiceSmall` cache is now prewarmed through `~/.cache/modelscope/hub/models/iic/SenseVoiceSmall`, with `~/.cache/modelscope` symlinked onto `/home/ubuntu/kws-training/data/agent-server-cache/modelscope`; the worker has been validated end-to-end through `/healthz`, `/v1/asr/info`, and `/v1/asr/transcribe` with `trust_remote_code=false`.
 - Optional cloud voice providers now stay inside `internal/voice` behind the same `Transcriber` and `StreamingSynthesizer` contracts as the local FunASR and MiMo paths.
 - `iflytek_rtasr`, `iflytek_tts_ws`, and `volcengine_tts` are now selectable from app bootstrap by environment without changing the realtime websocket/session contract.
 - The first local open-source GPU TTS path now also stays behind the same shared voice runtime boundary: `cosyvoice_http` targets the official CosyVoice FastAPI service as a local dependency, and adapters still see only normalized synthesized audio.
@@ -269,7 +270,23 @@
 - For local open-source TTS, the current Docker-default reference remains `iic/CosyVoice-300M-SFT`, but the effect-first next benchmark target should be `Fun-CosyVoice3-0.5B-2512`, with `CosyVoice2-0.5B` as a lower-risk intermediate step.
 - The current machine-local long-running deployment path is now:
   - `systemd` manages `agent-server-funasr-worker.service`
+  - `systemd` manages `agent-server-cosyvoice-fastapi.service`
   - `systemd` manages `agent-server-agentd.service`
   - `nginx` exposes `80/443` to the local `agentd` on `8080`
+- The current machine-local GPU TTS runtime of record is `/home/ubuntu/kws-training/data/agent-server-runtime/cosyvoice-py310` plus the staged model `/home/ubuntu/kws-training/data/agent-server-cache/modelscope/models/iic/CosyVoice-300M-SFT-runtime`; the long-running `agentd` path is now configured with `AGENT_SERVER_TTS_PROVIDER=cosyvoice_http`.
 - The local FunASR worker should stay on `127.0.0.1:8091`; only `agentd` belongs on the public edge.
 - The current `443` edge uses a self-signed certificate for the machine IP. This is sufficient to remove connection refusal and validate HTTPS/WSS transport reachability, but strict client trust still requires a later trusted-certificate rollout.
+- For the current CosyVoice v1 runtime on this host, `openai-whisper` is not actually optional: `cosyvoice.yaml` references `whisper.tokenizer.get_tokenizer`, so bring-up should treat `openai-whisper` as a required runtime dependency even when the live demo only uses `sft`.
+- On 2026-04-15, the shared realtime TTS regression after the CosyVoice cutover was fixed in two layers:
+  - the gateway must not cancel the responder-scoped context immediately after `StreamingResponder.RespondStream(...)` returns if the returned `AudioStream` still depends on it
+  - speech-planner turns must not also start a redundant full-response TTS request when the planner already produced incremental audio
+- The same day, the current machine revalidated the public edge directly through `101.33.235.154`: both `http://101.33.235.154/healthz` and `https://101.33.235.154/healthz` return `status=ok`, public-IP realtime text smoke returns audio, and the previously failing committed-WAV public-IP audio smoke now also returns audio successfully.
+- The durable success artifacts for that fix are:
+  - `artifacts/live-smoke/20260415/local-systemd-cosyvoice-audio-postfix/run_120700_3677/run_935960053343`
+  - `artifacts/live-smoke/20260415/public-edge-cosyvoice-audio-postfix/run_120710_10469/run_846a70c2f15d`
+  - `artifacts/live-smoke/20260415/public-edge-cosyvoice-text-postfix/run_120720_31537/run_3db52dc40d16`
+- For this host's unprivileged service-update loop, `scripts/run-agentd-local.sh` may now prefer a repo-local `.runtime/bin/agentd` override when `/etc/agent-server/agentd.env` still points at `/home/ubuntu/agent-server/bin/agentd`. This is the current safe way to refresh the long-running service without rewriting the root-owned `bin/` directory.
+- Configured local FunASR workers should now background-preload their model set by default. `/healthz` and `/v1/asr/info` should not report `status=ok` until the active final or online or preview-VAD or KWS dependencies are actually ready.
+- The local `funasr_http` bring-up path should now gate `agentd` start on worker readiness through `scripts/run-agentd-local.sh`, so a first live turn does not absorb online-model download or initialization time and hit the ASR HTTP timeout.
+- The archived 2026-04-14 CPU comparison shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is architecturally viable after preload, but it is not yet the right default for the CPU phase-1 demo path: response-start latency rose from about `2.05 s` to about `3.5 s` without improving the wake-word-prefixed sample.
+- The current local FunASR `1.3.1` runtime does not accept the short KWS alias `fsmn-kws` (`fsmn-kws is not registered`). The current calibrated enabled-KWS baseline is `iic/speech_charctc_kws_phone-xiaoyun`, and the worker must initialize that `AutoModel(...)` with both `keywords` and `output_dir` to avoid the `writer` error seen when those arguments were delayed until `generate(...)`.

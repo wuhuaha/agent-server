@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,7 @@ func TestBootstrapResponderSpeechPlannerStartsSynthesisBeforeStreamFinishes(t *t
 	if len(chunk) == 0 {
 		t.Fatal("expected non-empty synthesized chunk")
 	}
+	drainTestAudioStream(t, result.response.AudioStream)
 	_ = result.response.AudioStream.Close()
 
 	synth.mu.Lock()
@@ -180,4 +182,67 @@ func (s *recordingSynthesizer) Synthesize(_ context.Context, req SynthesisReques
 		Channels:     1,
 		Codec:        "pcm16le",
 	}, nil
+}
+
+func TestBootstrapResponderSpeechPlannerDoesNotDoubleSynthesizeFinalResponse(t *testing.T) {
+	synth := &recordingSynthesizer{}
+	responder := NewBootstrapResponder("pcm16le", 16000, 1).
+		WithTurnExecutor(staticTurnExecutor{text: "好的。"}).
+		WithSynthesizer(synth).
+		WithSpeechPlannerConfig(SpeechPlannerConfig{
+			Enabled:          true,
+			MinChunkRunes:    2,
+			TargetChunkRunes: 6,
+		})
+
+	response, err := responder.RespondStream(context.Background(), TurnRequest{
+		SessionID: "sess_planner_once",
+		TurnID:    "turn_planner_once",
+		TraceID:   "trace_planner_once",
+		DeviceID:  "dev_planner_once",
+		Text:      "打开客厅灯",
+	}, nil)
+	if err != nil {
+		t.Fatalf("RespondStream failed: %v", err)
+	}
+	if response.AudioStream == nil {
+		t.Fatal("expected planned audio stream on the response")
+	}
+
+	if _, err := response.AudioStream.Next(context.Background()); err != nil {
+		t.Fatalf("expected synthesized audio chunk, got %v", err)
+	}
+	drainTestAudioStream(t, response.AudioStream)
+	_ = response.AudioStream.Close()
+
+	synth.mu.Lock()
+	defer synth.mu.Unlock()
+	if len(synth.texts) != 1 {
+		t.Fatalf("expected exactly one synthesis request when planner audio is available, got %+v", synth.texts)
+	}
+	if synth.texts[0] != "好的。" {
+		t.Fatalf("unexpected synthesized text %q", synth.texts[0])
+	}
+}
+
+type staticTurnExecutor struct {
+	text string
+}
+
+func (e staticTurnExecutor) ExecuteTurn(context.Context, agent.TurnInput) (agent.TurnOutput, error) {
+	return agent.TurnOutput{Text: e.text}, nil
+}
+
+func drainTestAudioStream(t *testing.T, stream AudioStream) {
+	t.Helper()
+	for {
+		_, err := stream.Next(context.Background())
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			return
+		}
+		t.Fatalf("unexpected audio stream error %v", err)
+	}
 }

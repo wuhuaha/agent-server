@@ -1,5 +1,50 @@
 # Issues And Resolutions
 
+## 2026-04-15
+
+### V100 Host Could Not Use The Newer cu128 PyTorch Wheel Family
+
+- Problem: the current production machine uses `Tesla V100-SXM2-32GB` (`sm_70`). The first repair attempt installed `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, but CUDA tensor creation still failed with `CUDA error: no kernel image is available for execution on the device`. The previous `xiaozhi-esp32-server` conda env also ended up in a CPU-only or partially broken state after an interrupted reinstall (`torch 2.11.0+cpu`, broken `torchaudio` import).
+- Resolution: moved the worker runtime and caches onto the large data volume, created a dedicated GPU worker runtime at `/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311`, and validated `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126` on `cuda:0`. The systemd worker now points at that runtime through `FUNASR_PYTHON_BIN`.
+- Status: resolved.
+
+### Long-Running GPU FunASR Service Needed A Durable 2pass Cutover
+
+- Problem: even after the CUDA runtime was fixed, the systemd worker was still configured for `device=cpu`, no online preview model, and no final VAD, which meant the machine-level GPU capability was not actually reflected in the long-running service path.
+- Resolution: updated `/etc/agent-server/funasr-worker.env` to use the dedicated GPU runtime plus data-volume caches, enabled `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` on `cuda:0`, and revalidated `:8091` plus `:8080` after restart. The long-running worker now reports `pipeline_mode=stream_2pass_online_final`, `online_model_loaded=true`, and `stream_endpoint_fsmn_vad_loaded=true`.
+- Status: resolved.
+
+### KWS Worker Path Needed A Calibrated Runtime Baseline
+
+- Problem: the KWS boundary was already implemented, but the default short alias `fsmn-kws` was not runnable in the current local FunASR `1.3.1` runtime (`fsmn-kws is not registered`). Even after switching to a concrete repo id, the validated model still failed if `keywords` and `output_dir` were passed only at `generate(...)` time.
+- Resolution: calibrated the enabled-KWS baseline to `iic/speech_charctc_kws_phone-xiaoyun`, updated the worker to initialize `AutoModel(...)` with `keywords` plus `output_dir`, and tightened health so `KWS_ENABLED=true` with missing `KWS_MODEL` or `KWS_KEYWORDS` now reports `status=error`. Local unittest coverage and a live GPU-side preload plus detect check now verify that path.
+- Status: resolved.
+
+### Public Edge Needed Current-Machine Revalidation
+
+- Problem: the repository had already documented the `systemd + nginx` edge path, but this machine needed a fresh check after the GPU ASR cutover because earlier user-side probes had observed `Connection refused` on `80/443/8080`.
+- Resolution: revalidated the active machine state directly through `http://101.33.235.154/healthz`, `https://101.33.235.154/healthz`, and public-IP websocket smoke runs. The current edge now serves health correctly on both `80` and `443`, while `nginx` continues to proxy to local `agentd` on `8080`.
+- Status: resolved.
+
+### Local CosyVoice GPU Runtime Needed A Dedicated V100 Bring-Up
+
+- Problem: the current machine had no durable local GPU TTS service yet. Initial CosyVoice bring-up failed on missing runtime dependencies such as `python-multipart`, `diffusers`, `pyarrow`, `pyworld`, `matplotlib`, and `openai-whisper`, and the runtime-minimal staging path was also creating a second cache root that did not reuse the already downloaded `iic/CosyVoice-300M-SFT-runtime` model directory.
+- Resolution: completed the dedicated runtime at `/home/ubuntu/kws-training/data/agent-server-runtime/cosyvoice-py310`, staged `iic/CosyVoice-300M-SFT` under `/home/ubuntu/kws-training/data/agent-server-cache/modelscope/models/iic/CosyVoice-300M-SFT-runtime`, corrected the launcher to preserve the repo-id cache shape, and deployed `agent-server-cosyvoice-fastapi.service` plus `/etc/agent-server/cosyvoice-fastapi.env`. Direct `POST /inference_sft` now returns non-empty PCM on GPU, and `agentd` is cut over to `cosyvoice_http`.
+- Status: resolved.
+
+### Public-Edge Audio Turns Can Still Lose TTS After The CosyVoice Cutover
+
+- Problem: after switching the long-running service path to `cosyvoice_http`, direct FastAPI synth, local realtime text, local realtime audio, and public realtime text all returned audio successfully. But public-IP realtime audio runs against `artifacts/live-baseline/20260414/samples/input-command-only.wav` still reproduced text-only completion with no binary audio chunks.
+- Resolution: the regression was traced to two stacked bugs in the shared runtime:
+  - `internal/gateway/turn_flow.go` canceled the responder-scoped context as soon as `RespondStream(...)` returned, even when the returned `AudioStream` still needed that context for downstream TTS or playback work
+  - `internal/voice/asr_responder.go` plus `internal/voice/bootstrap_responder.go` still launched a redundant full-response TTS request even when the speech planner had already produced a planned incremental stream, which explained the duplicate `tts stream started` logs and unnecessary GPU work
+  The fix now keeps the streaming responder context alive until the returned audio stream closes, wraps that stream so cleanup still happens at playback end, and removes the redundant full-response TTS fallback when planner audio is already available. Post-fix validation succeeded in both the original public-edge audio path and a local control run:
+  - `artifacts/live-smoke/20260415/local-systemd-cosyvoice-audio-postfix/run_120700_3677/run_935960053343`
+  - `artifacts/live-smoke/20260415/public-edge-cosyvoice-audio-postfix/run_120710_10469/run_846a70c2f15d`
+  - `artifacts/live-smoke/20260415/public-edge-cosyvoice-text-postfix/run_120720_31537/run_3db52dc40d16`
+  The repaired turns now show one `tts stream started`, non-zero returned audio, and no `context canceled` TTS error for the validated sessions.
+- Status: resolved.
+
 ## 2026-04-13
 
 ### Hidden Preview And Playout Ownership Was Still Split Between Gateway And Voice
@@ -21,6 +66,18 @@
 - Status: resolved.
 
 ## 2026-04-14
+
+### 2pass FunASR Cold Start Could Time Out The First Live Turn
+
+- Problem: when `AGENT_SERVER_FUNASR_ONLINE_MODEL` was enabled, the worker still lazily downloaded and initialized the online model on the first streamed request. On the local `agentd` path that meant the first `server-endpoint-preview` turn could block long enough to hit the default `30s` ASR HTTP timeout and fail outright instead of just running slowly.
+- Resolution: the worker now background-preloads configured final or online or preview-VAD or KWS models through `AGENT_SERVER_FUNASR_PRELOAD_MODELS=true`, and `/healthz` now reports `status=ok` only after the active path's configured dependencies are ready. `scripts/run-agentd-local.sh` also waits for that worker readiness before it starts `agentd` in `funasr_http` mode.
+- Status: resolved for local and systemd-backed bring-up.
+
+### Current FunASR Runtime Still Rejects The Short KWS Alias `fsmn-kws`
+
+- Problem: the KWS integration path is now wired and configurable, but the current local FunASR `1.3.1` runtime rejects the short model id `fsmn-kws` during preload with `fsmn-kws is not registered`. That means the architectural KWS boundary is ready, but the default short-name runtime configuration is not yet executable on this machine.
+- Resolution: this historical blocker is now superseded by the 2026-04-15 KWS calibration slice. The worker baseline was moved to `iic/speech_charctc_kws_phone-xiaoyun`, and the runtime path now initializes `AutoModel(...)` with `keywords` plus `output_dir` so the validated model preloads and detects correctly.
+- Status: resolved by the 2026-04-15 KWS calibration.
 
 ### Standalone Browser Client Was Filed Under `tools` Instead Of `clients`
 

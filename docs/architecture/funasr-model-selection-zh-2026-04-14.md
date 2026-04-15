@@ -74,6 +74,7 @@
 
 - `kws_enabled=false` 时，不影响现有主链路
 - `kws_enabled=true` 时，worker 才会执行 KWS 检测、发出 `kws_detected` 类 `audio_events`，并可选移除识别文本中的唤醒词前缀
+- 当前工程内已经校准出的可运行 KWS baseline 是 `iic/speech_charctc_kws_phone-xiaoyun`；短别名 `fsmn-kws` 在本机 `FunASR 1.3.1` runtime 下不能直接作为 worker 侧默认模型使用
 
 一句话总结当前现状：
 
@@ -217,8 +218,15 @@ FunASR 官方 model zoo 仍列出了 `fsmn-kws` 和 `fsmn-kws_mt`。
 项目内判断：
 
 - 当前项目不该继续把唤醒词稳定性押在 `SenseVoiceSmall` 的 transcript 上
-- 单唤醒词优先从 `fsmn-kws` 开始；如果后面要支持多别名、多触发词，再试 `fsmn-kws_mt`
+- 单唤醒词方向上优先从 `fsmn-kws` 这类独立 KWS 能力开始；落实到当前工程时，先用已校准可运行的 `iic/speech_charctc_kws_phone-xiaoyun`
 - 这里关于 `fsmn-kws` 与 `fsmn-kws_mt` 的细粒度排序，当前更多是基于模块定位而不是本仓库实测，需要后续 A/B
+
+2026-04-14 本仓库追加实测 caveat：
+
+- 当前本机 `FunASR 1.3.1` runtime 在 worker preload 阶段直接拒绝了短模型名 `fsmn-kws`，报错是 `fsmn-kws is not registered`
+- 当前 worker 已校准的可运行替代是 `iic/speech_charctc_kws_phone-xiaoyun`
+- 这个模型在 worker 里不能只靠 `generate(..., keywords=...)` 临时传参；必须在 `AutoModel(...)` 初始化时同时传入 `keywords` 和 `output_dir`，否则会报 `writer` 相关错误
+- 这不改变“KWS 方向值得优先投入”的判断，但意味着本项目在真正把 KWS 打开进主链路时，应先以 `iic/speech_charctc_kws_phone-xiaoyun` 这条已验证路径作为工程基线，再继续寻找更通用的 KWS model id
 
 ## 6. 说话人 / speaker-aware 能力
 
@@ -280,7 +288,7 @@ CosyVoice 官方 README 直接写明当前推荐模型，并强调：
 
 ## 方案 A：当前项目主推荐，兼顾效果与可落地性
 
-- Wake word：`fsmn-kws`
+- Wake word：`iic/speech_charctc_kws_phone-xiaoyun`（当前工程已校准可运行的 worker baseline）
 - Acoustic VAD：`fsmn-vad`
 - Online preview / partial：`Paraformer-large-online`
 - Final-ASR：`SenseVoiceSmall`
@@ -300,7 +308,7 @@ CosyVoice 官方 README 直接写明当前推荐模型，并强调：
 
 ## 方案 B：最终识别质量更激进的上限方案
 
-- Wake word：`fsmn-kws`
+- Wake word：`iic/speech_charctc_kws_phone-xiaoyun`（当前工程已校准可运行的 worker baseline）
 - Acoustic VAD：`fsmn-vad`
 - Online preview / partial：`Paraformer-large-online`
 - Final-ASR：`Fun-ASR-Nano-2512`
@@ -322,7 +330,7 @@ CosyVoice 官方 README 直接写明当前推荐模型，并强调：
 
 - 继续保留 `SenseVoiceSmall`
 - 把 `energy` endpoint 升级为 `fsmn-vad`
-- 加独立 `fsmn-kws`
+- 加独立 `iic/speech_charctc_kws_phone-xiaoyun` 这条已验证 KWS 路径
 - TTS 从 `CosyVoice-300M-SFT` 升级到 `CosyVoice2-0.5B` 或 `Fun-CosyVoice3-0.5B-2512`
 
 这个方案的定位：
@@ -332,7 +340,7 @@ CosyVoice 官方 README 直接写明当前推荐模型，并强调：
 
 ## 我对下一步实施顺序的建议
 
-1. 先接 `fsmn-kws`
+1. 先接 `iic/speech_charctc_kws_phone-xiaoyun` 这条已验证 KWS path
    - 目的：立刻把“唤醒词是否命中”从 ASR transcript 中解耦
 2. 再接 `fsmn-vad`
    - 目的：把当前声学 endpoint 从 heuristic 升级成模型
@@ -355,7 +363,7 @@ CosyVoice 官方 README 直接写明当前推荐模型，并强调：
 
 对于当前 `agent-server`，最值得优先投入的模型化升级是：
 
-- `fsmn-kws`
+- 已校准 KWS baseline：`iic/speech_charctc_kws_phone-xiaoyun`
 - `fsmn-vad`
 - `Paraformer-large-online`
 - `SenseVoiceSmall` 或 `Fun-ASR-Nano-2512` 作为 final-ASR

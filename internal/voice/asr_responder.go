@@ -250,13 +250,13 @@ func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req Turn
 		return agent.TurnOutput{}, nil, nil, err
 	}
 
-	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
 	if planner != nil {
 		if plannedStream := planner.Finalize(turn.Text); plannedStream != nil {
-			audioChunks = nil
-			audioStream = plannedStream
+			return turn, nil, plannedStream, nil
 		}
 	}
+
+	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
 	return turn, audioChunks, audioStream, nil
 }
 

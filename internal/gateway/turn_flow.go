@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-server/internal/voice"
@@ -93,7 +94,9 @@ func executeStreamingTurnResponse(
 	streamingResponder voice.StreamingResponder,
 ) (turnExecutionResult, error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Keep the responder-scoped context alive after RespondStream returns so any
+	// returned audio stream can continue synthesizing until playback closes it.
+	// We still cancel on early gateway errors below.
 
 	type streamedResponseResult struct {
 		response voice.TurnResponse
@@ -173,6 +176,15 @@ func executeStreamingTurnResponse(
 		}
 	}
 
+	if response.AudioStream != nil {
+		response.AudioStream = &cancelOnCloseAudioStream{
+			inner:  response.AudioStream,
+			cancel: cancel,
+		}
+	} else {
+		cancel()
+	}
+
 	return turnExecutionResult{
 		Trace:          trace,
 		Response:       response,
@@ -206,4 +218,32 @@ func emitTurnResponseDelta(responseID string, delta voice.ResponseDelta, emit fu
 		return nil
 	}
 	return emit(responseID, delta)
+}
+
+type cancelOnCloseAudioStream struct {
+	inner     voice.AudioStream
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+}
+
+func (s *cancelOnCloseAudioStream) Next(ctx context.Context) ([]byte, error) {
+	chunk, err := s.inner.Next(ctx)
+	if err != nil {
+		s.release()
+	}
+	return chunk, err
+}
+
+func (s *cancelOnCloseAudioStream) Close() error {
+	err := s.inner.Close()
+	s.release()
+	return err
+}
+
+func (s *cancelOnCloseAudioStream) release() {
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
 }

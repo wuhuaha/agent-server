@@ -6,7 +6,7 @@ This package hosts Python-side workers for `agent-server`.
 
 - `agent_server_workers.funasr_service`
   - local HTTP ASR worker
-  - designed for the existing `xiaozhi-esp32-server` conda environment
+  - defaults to the existing `xiaozhi-esp32-server` conda environment but can also run from an external Python runtime via `FUNASR_PYTHON_BIN`
   - accepts normalized PCM16LE audio from the Go server and returns text transcription
   - supports batch `/v1/asr/transcribe` plus the local streaming lifecycle under `/v1/asr/stream/*`
   - keeps backward-compatible `stream_preview_batch` as the default stream mode
@@ -44,7 +44,9 @@ The default script targets:
 - `trust_remote_code`: `false`
 
 CPU remains the default bring-up target so local runs do not claim the GPU unless requested.
-The current `xiaozhi-esp32-server` env on this machine has been upgraded to `torch 2.11.0+cu128` / `torchaudio 2.11.0+cu128`, and `SenseVoiceSmall` has been validated on `cuda:0` with the local RTX 5060.
+On the current 2026-04-15 Tesla V100 host, the old `xiaozhi-esp32-server` conda env should not be treated as the production GPU runtime: it drifted into a CPU-only or partially broken state during failed `torch` upgrades.
+The validated long-running GPU worker now uses `FUNASR_PYTHON_BIN=/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311/bin/python` with `torch 2.7.1+cu126` and `torchaudio 2.7.1+cu126`.
+That version change is required on V100 because the newer `torch 2.11.0+cu128` wheel family does not contain `sm_70` kernels and fails with `CUDA error: no kernel image is available for execution on the device`.
 `trust_remote_code` stays disabled for the local `SenseVoiceSmall` path because the downloaded model bundle does not include remote code files and local load fails when it is enabled.
 
 ## Manual Start
@@ -55,6 +57,23 @@ conda run -n xiaozhi-esp32-server python -m agent_server_workers.funasr_service 
 ```
 
 For GPU validation on this machine, switch the device argument to `cuda:0`.
+
+For the current V100 Linux host, prefer the dedicated data-volume runtime plus cache roots:
+
+```bash
+PYTHONPATH=/home/ubuntu/agent-server/workers/python/src \
+MODELSCOPE_CACHE=/home/ubuntu/kws-training/data/agent-server-cache/modelscope \
+HF_HOME=/home/ubuntu/kws-training/data/agent-server-cache/hf \
+TORCH_HOME=/home/ubuntu/kws-training/data/agent-server-cache/torch \
+/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311/bin/python \
+  -m agent_server_workers.funasr_service \
+  --host 127.0.0.1 \
+  --port 8091 \
+  --device cuda:0 \
+  --online-model paraformer-zh-streaming \
+  --final-vad-model fsmn-vad \
+  --stream-endpoint-vad-provider fsmn_vad
+```
 
 ## 2pass / Preview / KWS Tuning
 
@@ -73,6 +92,10 @@ The worker now supports two internal stream modes:
 - `AGENT_SERVER_FUNASR_ONLINE_MODEL`
   - empty by default, which keeps `stream_preview_batch`
   - set this to an online ASR model such as `paraformer-zh-streaming` to enable `stream_2pass_online_final`
+- `AGENT_SERVER_FUNASR_PRELOAD_MODELS`
+  - background-preloads every configured model at worker startup
+  - default: `true`
+  - keeps `/healthz` at `status=starting` until the configured final, online, KWS, and preview-VAD models are actually ready
 - `AGENT_SERVER_FUNASR_STREAM_CHUNK_SIZE`
   - FunASR online chunk tuple, default `0,10,5`
 - `AGENT_SERVER_FUNASR_STREAM_ENCODER_CHUNK_LOOK_BACK`
@@ -108,10 +131,14 @@ The worker now supports two internal stream modes:
   - default: `false`
 - `AGENT_SERVER_FUNASR_KWS_MODEL`
   - KWS model id used only when `KWS` is enabled
-  - default: `fsmn-kws`
+  - default: `iic/speech_charctc_kws_phone-xiaoyun`
+  - calibrated on the current `FunASR 1.3.1` runtime because the short alias `fsmn-kws` fails preload with `fsmn-kws is not registered`
 - `AGENT_SERVER_FUNASR_KWS_KEYWORDS`
   - comma-separated keyword list
   - default: empty
+- `AGENT_SERVER_FUNASR_KWS_OUTPUT_DIR`
+  - optional writable directory passed to `AutoModel(...)` during KWS init
+  - default: empty, which resolves to the worker-local temp path `/tmp/agent-server-funasr-kws`
 - `AGENT_SERVER_FUNASR_KWS_STRIP_MATCHED_PREFIX`
   - when `true`, strips the detected wake-word prefix from preview/final transcript text
   - default: `true`
@@ -125,6 +152,8 @@ The worker now supports two internal stream modes:
 KWS remains worker-internal:
 
 - it is off by default
+- when enabled, the worker now initializes the KWS `AutoModel` with both `keywords` and `output_dir`; passing keywords only at `generate(...)` time is not sufficient for the validated `iic/speech_charctc_kws_phone-xiaoyun` path
+- `/healthz` reports `status=error` and `ready=false` if `KWS` is enabled but the required `KWS_MODEL` or `KWS_KEYWORDS` config is still missing
 - it only annotates worker results with `audio_events` and optional prefix stripping
 - it does not change the public realtime or `xiaozhi` protocol shapes
 
@@ -165,6 +194,7 @@ The current stream path stays conservative by default:
 - `AGENT_SERVER_FUNASR_ONLINE_MODEL` stays empty, so existing bring-up still uses `stream_preview_batch`
 - `AGENT_SERVER_FUNASR_KWS_ENABLED=false`, so wake-word detection is opt-in
 - `energy` remains the default endpoint-hint source, so existing bring-up behavior does not change unexpectedly
+- configured models now warm in a background preload thread by default, so the first live turn no longer has to absorb the entire online-model download or initialization cost
 - worker-side `fsmn-vad`, `Silero VAD`, and `KWS` all stay behind the same HTTP worker boundary; they do not widen the public websocket or `xiaozhi` compatibility protocol
 - `/healthz` and `/v1/asr/info` now expose the active pipeline mode plus online/final/KWS/VAD config and runtime status
 
@@ -175,10 +205,16 @@ The current stream path stays conservative by default:
 
 `/v1/asr/info` now advertises the currently enabled batch and streaming routes together with:
 
+- `status` and `ready`
 - `pipeline_mode`
+- `preload_models`, `preload_started`, and `preload_completed`
+- `final_model_loaded`, `online_model_loaded`, `stream_endpoint_fsmn_vad_loaded`, and `kws_model_loaded`
 - `online_model`
 - `final_vad_model`
 - `final_punc_model`
 - `kws_enabled`
 - `kws_keywords`
+- `kws_configured`
+- `kws_output_dir`
+- `kws_last_error`
 - worker-side endpoint-hint provider and lazy runtime status

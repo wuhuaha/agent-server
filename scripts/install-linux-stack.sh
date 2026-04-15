@@ -15,8 +15,11 @@ Options:
   --skip-desktop-client          Skip desktop client editable install
   --skip-worker                  Skip worker env creation/update
   --skip-worker-torch            Do not auto-install torch/torchaudio into the worker env
+  --force-worker-torch           Force reinstall torch/torchaudio even when import checks pass
   --torch-index-url URL          PyTorch index URL used when torch install is needed.
                                  Default: https://download.pytorch.org/whl/cu128
+  --torch-version VER            Optional torch version pin, for example 2.7.1
+  --torchaudio-version VER       Optional torchaudio version pin, for example 2.7.1
   --help                         Show this message
 
 What this script installs:
@@ -39,6 +42,36 @@ require_cmd() {
   fi
 }
 
+worker_torch_healthy() {
+  TORCH_INDEX_URL="$TORCH_INDEX_URL" conda run -n "$CONDA_ENV" python - <<'PY'
+import os
+import sys
+
+try:
+    import torch
+    import torchaudio
+except Exception as exc:  # noqa: BLE001
+    print(f"worker torch import failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+index_url = os.environ.get("TORCH_INDEX_URL", "")
+need_cuda = "/whl/cu" in index_url
+cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
+if need_cuda and not cuda_tag:
+    print("worker torch is CPU-only while a CUDA wheel index was requested", file=sys.stderr)
+    raise SystemExit(2)
+
+if cuda_tag and torch.cuda.is_available():
+    try:
+        torch.zeros(1, device="cuda")
+    except Exception as exc:  # noqa: BLE001
+        print(f"worker torch CUDA runtime check failed: {exc}", file=sys.stderr)
+        raise SystemExit(3)
+
+print("worker torch ok", torch.__version__, torchaudio.__version__, cuda_tag or "cpu")
+PY
+}
+
 DESKTOP_PYTHON="python3"
 CONDA_ENV="xiaozhi-esp32-server"
 WORKER_PYTHON_VERSION="3.11"
@@ -47,7 +80,10 @@ SKIP_GO=0
 SKIP_DESKTOP_CLIENT=0
 SKIP_WORKER=0
 SKIP_WORKER_TORCH=0
+FORCE_WORKER_TORCH=0
 TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+TORCH_VERSION=""
+TORCHAUDIO_VERSION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -83,8 +119,20 @@ while [[ $# -gt 0 ]]; do
       SKIP_WORKER_TORCH=1
       shift
       ;;
+    --force-worker-torch)
+      FORCE_WORKER_TORCH=1
+      shift
+      ;;
     --torch-index-url)
       TORCH_INDEX_URL="$2"
+      shift 2
+      ;;
+    --torch-version)
+      TORCH_VERSION="$2"
+      shift 2
+      ;;
+    --torchaudio-version)
+      TORCHAUDIO_VERSION="$2"
       shift 2
       ;;
     --help|-h)
@@ -128,11 +176,20 @@ if [[ "$SKIP_WORKER" -eq 0 ]]; then
   conda run -n "$CONDA_ENV" python -m pip install --upgrade pip "setuptools<82" wheel "hatchling>=1.25.0" "editables>=0.5"
 
   if [[ "$SKIP_WORKER_TORCH" -eq 0 ]]; then
-    if ! conda run -n "$CONDA_ENV" python -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('torch') and u.find_spec('torchaudio') else 1)"; then
+    TORCH_SPEC="torch"
+    TORCHAUDIO_SPEC="torchaudio"
+    if [[ -n "$TORCH_VERSION" ]]; then
+      TORCH_SPEC="torch==${TORCH_VERSION}"
+    fi
+    if [[ -n "$TORCHAUDIO_VERSION" ]]; then
+      TORCHAUDIO_SPEC="torchaudio==${TORCHAUDIO_VERSION}"
+    fi
+
+    if [[ "$FORCE_WORKER_TORCH" -eq 1 ]] || ! worker_torch_healthy; then
       log "installing torch and torchaudio into ${CONDA_ENV} from ${TORCH_INDEX_URL}"
-      conda run -n "$CONDA_ENV" python -m pip install --index-url "$TORCH_INDEX_URL" torch torchaudio
+      conda run -n "$CONDA_ENV" python -m pip install --upgrade --force-reinstall --index-url "$TORCH_INDEX_URL" "$TORCH_SPEC" "$TORCHAUDIO_SPEC"
     else
-      log "torch and torchaudio already available in ${CONDA_ENV}"
+      log "torch and torchaudio already available and importable in ${CONDA_ENV}"
     fi
   fi
 

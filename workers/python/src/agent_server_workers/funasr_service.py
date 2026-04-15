@@ -49,6 +49,7 @@ class WorkerConfig:
     kws_strip_matched_prefix: bool
     kws_min_audio_ms: int
     kws_min_interval_ms: int
+    kws_output_dir: str
     stream_preview_min_audio_ms: int
     stream_preview_min_interval_ms: int
     stream_endpoint_tail_ms: int
@@ -57,6 +58,7 @@ class WorkerConfig:
     stream_endpoint_vad_threshold: float
     stream_endpoint_vad_min_silence_ms: int
     stream_endpoint_vad_speech_pad_ms: int
+    preload_models: bool
 
 
 @dataclass(slots=True)
@@ -97,6 +99,7 @@ class FunASREngine:
         self._kws_lock = threading.Lock()
         self._kws_model: Any | None = None
         self._kws_postprocess = None
+        self._kws_error = ""
         self._fsmn_vad_lock = threading.Lock()
         self._fsmn_vad_model: Any | None = None
         self._fsmn_vad_postprocess = None
@@ -107,6 +110,11 @@ class FunASREngine:
         self._silero_vad_runtime: tuple[Any, Any] | None = None
         self._silero_vad_attempted = False
         self._silero_vad_error = ""
+        self._preload_lock = threading.Lock()
+        self._preload_thread: threading.Thread | None = None
+        self._preload_started = False
+        self._preload_completed = False
+        self._preload_error = ""
         self._streams_lock = threading.Lock()
         self._streams: dict[str, StreamState] = {}
 
@@ -116,9 +124,44 @@ class FunASREngine:
 
     def health(self) -> dict[str, Any]:
         endpoint_provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
+        final_loaded = self._final_model is not None
+        online_required = self._online_preview_enabled()
+        online_loaded = self._online_model is not None
+        fsmn_vad_required = self._preview_endpoint_uses_fsmn_vad()
+        fsmn_vad_loaded = self._fsmn_vad_model is not None
+        kws_required = self.config.kws_enabled
+        kws_configured = self._kws_configured()
+        kws_config_error = self._kws_config_error()
+        kws_loaded = self._kws_model is not None
+        ready = (
+            final_loaded
+            and (not online_required or online_loaded)
+            and (not fsmn_vad_required or fsmn_vad_loaded)
+            and (not kws_required or (kws_configured and kws_loaded))
+        )
+        status = (
+            "ok"
+            if ready
+            else "error"
+            if self._last_error or self._preload_error or kws_config_error
+            else "starting"
+        )
         return {
-            "status": "ok" if self._final_model is not None else "starting",
-            "model_loaded": self._final_model is not None,
+            "status": status,
+            "ready": ready,
+            "model_loaded": final_loaded,
+            "final_model_loaded": final_loaded,
+            "online_model_required": online_required,
+            "online_model_loaded": online_loaded,
+            "stream_endpoint_fsmn_vad_required": fsmn_vad_required,
+            "stream_endpoint_fsmn_vad_loaded": fsmn_vad_loaded,
+            "kws_model_required": kws_required,
+            "kws_configured": kws_configured,
+            "kws_model_loaded": kws_loaded,
+            "preload_models": self.config.preload_models,
+            "preload_started": self._preload_started,
+            "preload_completed": self._preload_completed,
+            "preload_error": self._preload_error,
             "model": self.config.model,
             "pipeline_mode": self._stream_mode(),
             "online_model": self.config.online_model,
@@ -127,6 +170,8 @@ class FunASREngine:
             "kws_enabled": self.config.kws_enabled,
             "kws_model": self.config.kws_model if self.config.kws_enabled else "",
             "kws_keywords": list(self.config.kws_keywords),
+            "kws_output_dir": self._resolved_kws_output_dir() if self.config.kws_enabled else "",
+            "kws_last_error": self._kws_error or kws_config_error,
             "device": self.config.device,
             "language": self.config.language,
             "stream_chunk_size": list(self.config.stream_chunk_size),
@@ -144,6 +189,45 @@ class FunASREngine:
             "stream_endpoint_vad_last_error": self._stream_endpoint_vad_last_error(endpoint_provider),
             "last_error": self._last_error,
         }
+
+    def preload_models(self) -> None:
+        self._preload_started = True
+        self._preload_completed = False
+        self._preload_error = ""
+        try:
+            self._ensure_final_model()
+            if self._online_preview_enabled():
+                self._ensure_online_model()
+            if self._preview_endpoint_uses_fsmn_vad():
+                self._ensure_fsmn_vad_model()
+            if self.config.kws_enabled:
+                self._ensure_kws_model()
+        except Exception as exc:  # noqa: BLE001
+            self._preload_completed = False
+            self._preload_error = str(exc)
+            self._last_error = str(exc)
+            raise
+        self._preload_completed = True
+        self._preload_error = ""
+
+    def start_background_preload(self) -> None:
+        if not self.config.preload_models:
+            return
+        with self._preload_lock:
+            if self._preload_started:
+                return
+            self._preload_thread = threading.Thread(
+                target=self._run_preload_thread,
+                name="funasr-preload",
+                daemon=True,
+            )
+            self._preload_thread.start()
+
+    def _run_preload_thread(self) -> None:
+        try:
+            self.preload_models()
+        except Exception:
+            return
 
     def transcribe_pcm(
         self,
@@ -392,6 +476,38 @@ class FunASREngine:
     def _online_preview_enabled(self) -> bool:
         return bool(self.config.online_model.strip())
 
+    def _preview_endpoint_uses_fsmn_vad(self) -> bool:
+        if self.config.final_vad_model.strip() == "":
+            return False
+        provider = _normalize_stream_endpoint_vad_provider(self.config.stream_endpoint_vad_provider)
+        return provider in {"fsmn_vad", "auto"}
+
+    def _kws_model_required(self) -> bool:
+        return self.config.kws_enabled and self._kws_configured()
+
+    def _kws_configured(self) -> bool:
+        return self.config.kws_model.strip() != "" and bool(self.config.kws_keywords)
+
+    def _kws_config_error(self) -> str:
+        if not self.config.kws_enabled:
+            return ""
+        if self.config.kws_model.strip() == "":
+            return "KWS is enabled but AGENT_SERVER_FUNASR_KWS_MODEL is empty"
+        if not self.config.kws_keywords:
+            return "KWS is enabled but AGENT_SERVER_FUNASR_KWS_KEYWORDS is empty"
+        return ""
+
+    def _resolved_kws_output_dir(self) -> str:
+        configured = self.config.kws_output_dir.strip()
+        if configured:
+            return str(Path(configured))
+        return str(Path(tempfile.gettempdir()) / "agent-server-funasr-kws")
+
+    def _ensure_kws_output_dir(self) -> str:
+        output_dir = Path(self._resolved_kws_output_dir())
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return str(output_dir)
+
     def _maybe_preview_stream_online(self, state: StreamState, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if snapshot["duration_ms"] < self.config.stream_preview_min_audio_ms:
             return None
@@ -520,7 +636,7 @@ class FunASREngine:
     ) -> dict[str, Any]:
         _ = state
         detected = {"detected": False, "keyword": "", "score": 0.0}
-        if not self.config.kws_enabled or not self.config.kws_keywords or not audio_bytes:
+        if not self.config.kws_enabled or not audio_bytes:
             return detected
         model, _ = self._ensure_kws_model()
         wav_path = self._write_temp_wav(audio_bytes, sample_rate_hz, channels)
@@ -529,7 +645,6 @@ class FunASREngine:
                 result = model.generate(
                     input=wav_path,
                     cache={},
-                    keywords=",".join(self.config.kws_keywords),
                 )
         finally:
             Path(wav_path).unlink(missing_ok=True)
@@ -1023,18 +1138,25 @@ class FunASREngine:
         if self._kws_model is not None:
             return self._kws_model, self._kws_postprocess
         model_name = self.config.kws_model.strip()
-        if model_name == "":
-            raise ValueError("KWS is enabled but AGENT_SERVER_FUNASR_KWS_MODEL is empty")
+        if error := self._kws_config_error():
+            self._kws_error = error
+            self._last_error = error
+            raise ValueError(error)
         with self._kws_lock:
             if self._kws_model is not None:
                 return self._kws_model, self._kws_postprocess
             from funasr import AutoModel
 
             try:
-                self._kws_model = AutoModel(**self._base_model_kwargs(model_name))
+                kwargs = self._base_model_kwargs(model_name)
+                kwargs["keywords"] = ",".join(self.config.kws_keywords)
+                kwargs["output_dir"] = self._ensure_kws_output_dir()
+                self._kws_model = AutoModel(**kwargs)
                 self._kws_postprocess = None
+                self._kws_error = ""
                 self._last_error = ""
             except Exception as exc:  # noqa: BLE001
+                self._kws_error = str(exc)
                 self._last_error = str(exc)
                 raise
             return self._kws_model, self._kws_postprocess
@@ -1233,7 +1355,7 @@ def build_config() -> WorkerConfig:
     )
     parser.add_argument(
         "--kws-model",
-        default=os.getenv("AGENT_SERVER_FUNASR_KWS_MODEL", "fsmn-kws"),
+        default=os.getenv("AGENT_SERVER_FUNASR_KWS_MODEL", "iic/speech_charctc_kws_phone-xiaoyun"),
     )
     parser.add_argument(
         "--kws-keywords",
@@ -1248,6 +1370,10 @@ def build_config() -> WorkerConfig:
         "--kws-min-interval-ms",
         type=int,
         default=int(os.getenv("AGENT_SERVER_FUNASR_KWS_MIN_INTERVAL_MS", "400")),
+    )
+    parser.add_argument(
+        "--kws-output-dir",
+        default=os.getenv("AGENT_SERVER_FUNASR_KWS_OUTPUT_DIR", ""),
     )
     parser.add_argument(
         "--stream-preview-min-audio-ms",
@@ -1288,6 +1414,7 @@ def build_config() -> WorkerConfig:
         type=int,
         default=int(os.getenv("AGENT_SERVER_FUNASR_STREAM_ENDPOINT_VAD_SPEECH_PAD_MS", "30")),
     )
+    _add_bool_argument(parser, "preload-models", "AGENT_SERVER_FUNASR_PRELOAD_MODELS", True)
     _add_bool_argument(parser, "use-itn", "AGENT_SERVER_FUNASR_USE_ITN", True)
     _add_bool_argument(parser, "trust-remote-code", "AGENT_SERVER_FUNASR_TRUST_REMOTE_CODE", False)
     _add_bool_argument(parser, "disable-update", "AGENT_SERVER_FUNASR_DISABLE_UPDATE", True)
@@ -1324,6 +1451,7 @@ def build_config() -> WorkerConfig:
         kws_strip_matched_prefix=bool(args.kws_strip_matched_prefix),
         kws_min_audio_ms=max(int(args.kws_min_audio_ms), 0),
         kws_min_interval_ms=max(int(args.kws_min_interval_ms), 0),
+        kws_output_dir=str(args.kws_output_dir).strip(),
         stream_preview_min_audio_ms=max(int(args.stream_preview_min_audio_ms), 0),
         stream_preview_min_interval_ms=max(int(args.stream_preview_min_interval_ms), 0),
         stream_endpoint_tail_ms=max(int(args.stream_endpoint_tail_ms), 0),
@@ -1332,12 +1460,14 @@ def build_config() -> WorkerConfig:
         stream_endpoint_vad_threshold=float(args.stream_endpoint_vad_threshold),
         stream_endpoint_vad_min_silence_ms=max(int(args.stream_endpoint_vad_min_silence_ms), 0),
         stream_endpoint_vad_speech_pad_ms=max(int(args.stream_endpoint_vad_speech_pad_ms), 0),
+        preload_models=bool(args.preload_models),
     )
 
 
 def main() -> None:
     config = build_config()
     engine = FunASREngine(config)
+    engine.start_background_preload()
     server = ThreadingHTTPServer((config.host, config.port), FunASRRequestHandler)
     server.engine = engine  # type: ignore[attr-defined]
     print(f"[funasr-worker] listening on http://{config.host}:{config.port}")

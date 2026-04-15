@@ -1,11 +1,60 @@
 # Change Log
 
+## 2026-04-15
+
+- Fixed the current V100 GPU deployment path for the local FunASR worker:
+  - created a dedicated data-volume runtime at `/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311`
+  - moved the long-running worker caches to `/home/ubuntu/kws-training/data/agent-server-cache/*`
+  - switched the systemd worker to that runtime through `FUNASR_PYTHON_BIN`
+- Corrected the PyTorch selection for this host:
+  - `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128` imported but failed on `Tesla V100-SXM2-32GB` with `CUDA error: no kernel image is available for execution on the device`
+  - validated `torch 2.7.1+cu126` and `torchaudio 2.7.1+cu126` on `cuda:0` instead
+- Cut over the long-running FunASR worker to the GPU 2pass path with:
+  - final ASR `iic/SenseVoiceSmall`
+  - online preview `paraformer-zh-streaming`
+  - final/preview VAD `fsmn-vad`
+  - KWS still disabled by default
+- Calibrated the worker-side KWS path without changing the default runtime behavior:
+  - replaced the unusable short alias baseline `fsmn-kws` with `iic/speech_charctc_kws_phone-xiaoyun` for enabled-KWS configurations
+  - initialized the KWS `AutoModel(...)` with `keywords` and `output_dir` so the validated FunASR `1.3.1` path no longer fails with the `writer` error
+  - tightened worker health so `KWS_ENABLED=true` plus missing `KWS_MODEL` or `KWS_KEYWORDS` now reports `status=error`
+- Revalidated the public edge on the current machine:
+  - `http://101.33.235.154/healthz` and `https://101.33.235.154/healthz` both return `status=ok`
+  - a realtime websocket text smoke and an audio smoke both succeed through the public IP while `nginx` fronts `agentd`
+- Brought up the first long-running local CosyVoice GPU TTS runtime on the current V100 host:
+  - extended the launcher so runtime-minimal staging preserves the upstream `org/model` cache shape under `MODELSCOPE` storage instead of creating a second parallel cache path
+  - corrected the runtime expectation that `openai-whisper` is required for the current CosyVoice v1 stack because `cosyvoice.yaml` references `whisper.tokenizer.get_tokenizer`
+  - installed the required runtime dependencies in `/home/ubuntu/kws-training/data/agent-server-runtime/cosyvoice-py310`, including `python-multipart`, `diffusers`, `pyarrow`, `pyworld`, `matplotlib`, and `openai-whisper`
+  - added and deployed `agent-server-cosyvoice-fastapi.service` with `/etc/agent-server/cosyvoice-fastapi.env`
+- Cut the long-running `agentd` service over to `cosyvoice_http` and revalidated the live path:
+  - direct `POST /inference_sft` now returns non-empty raw PCM on `cuda:0`
+  - local systemd-backed realtime text and audio smoke runs both return audio with `tts_provider=cosyvoice_http`
+  - public-IP realtime text smoke now also returns audio with `tts_provider=cosyvoice_http`
+- Fixed the realtime TTS regression that appeared after the CosyVoice cutover:
+  - `internal/gateway/turn_flow.go` now keeps the responder-scoped streaming context alive until the returned `AudioStream` closes, instead of canceling it immediately after `RespondStream(...)` returns
+  - `internal/voice/asr_responder.go` and `internal/voice/bootstrap_responder.go` now skip the old duplicate full-response synthesis path when the speech planner already produced an incremental audio stream
+  - added regression coverage in `internal/gateway/realtime_ws_test.go`, `internal/voice/speech_planner_test.go`, and `internal/voice/asr_responder_test.go`
+  - validated the repaired path with `go test ./internal/voice ./internal/gateway`, targeted `go test -tags integration ./internal/gateway`, and new live smoke successes for:
+    - `artifacts/live-smoke/20260415/local-systemd-cosyvoice-audio-postfix/run_120700_3677/run_935960053343`
+    - `artifacts/live-smoke/20260415/public-edge-cosyvoice-audio-postfix/run_120710_10469/run_846a70c2f15d`
+    - `artifacts/live-smoke/20260415/public-edge-cosyvoice-text-postfix/run_120720_31537/run_3db52dc40d16`
+- Updated `scripts/run-agentd-local.sh` so long-running `systemd` launches can prefer a repo-local `.runtime/bin/agentd` override when `/etc/agent-server/agentd.env` still points at the default root-owned binary path; this keeps unprivileged service refresh possible on the current host.
+- Updated the install script and deployment docs so future bring-up can pin torch versions and reject broken CPU-only or CUDA-runtime-invalid worker envs instead of trusting package presence alone.
+
 ## 2026-04-14
 
 - Added `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`, a Chinese research note focused on the current phase-1 voice-agent demo goal of improving realtime fluency, naturalness, and vividness.
 - Indexed that new note from `docs/architecture/overview.md` and `plan.md` so the current optimization priority is discoverable from the main architecture and planning entrypoints.
 - Updated `AGENTS.md`, `docs/architecture/agent-server-guardrails.md`, `docs/codex/harness-workflow.md`, `.claude/context.md`, and `.codex/project-memory.md` to make deep-analysis and research conclusions land in `docs/` by default instead of remaining only in chat.
 - Hardened the shared voice turn detector so standalone hesitation and backchannel-like partials now stay on the lexical-hold path instead of auto-ending too aggressively, and added unit plus integration coverage for that behavior in `internal/voice/turn_detector.go` and `internal/voice/turn_detector_test.go`.
+- Hardened the local FunASR worker for real 2pass bring-up:
+  - added background model preload through `AGENT_SERVER_FUNASR_PRELOAD_MODELS`
+  - tightened `/healthz` and `/v1/asr/info` so `status=ok` now means the configured final, online, preview-VAD, and KWS dependencies are actually ready
+  - added worker tests for preload and readiness reporting in `workers/python/tests/test_funasr_service.py`
+- Updated `scripts/run-agentd-local.sh` so local and systemd-backed `funasr_http` bring-up waits for the worker health endpoint to reach `status=ok` before `agentd` starts serving traffic.
+- Recorded the new live CPU benchmark results in `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md` and `docs/architecture/local-funasr-asr.md`:
+  - `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` now runs reliably after preload, but on CPU it raises response-start latency from about `2.05 s` to about `3.5 s` without fixing the wake-word-prefixed sample
+  - the current FunASR `1.3.1` runtime rejects the short KWS alias `fsmn-kws` during preload with `fsmn-kws is not registered`
 
 - Completed the requested first phase-1 voice-demo implementation loop in order:
   - added shared adaptive barge-in staging and thresholds in `internal/voice/barge_in.go`

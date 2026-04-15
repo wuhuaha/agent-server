@@ -63,12 +63,15 @@ func (r BootstrapResponder) RespondStream(ctx context.Context, req TurnRequest, 
 		return TurnResponse{}, err
 	}
 
-	audioChunks, audioStream := r.audioOutput(ctx, req, userText, turn.Text)
+	var audioChunks [][]byte
+	var audioStream AudioStream
 	if planner != nil {
 		if plannedStream := planner.Finalize(turn.Text); plannedStream != nil {
-			audioChunks = nil
 			audioStream = plannedStream
 		}
+	}
+	if audioStream == nil {
+		audioChunks, audioStream = r.audioOutput(ctx, req, userText, turn.Text)
 	}
 	response := TurnResponse{
 		InputText:   userText,

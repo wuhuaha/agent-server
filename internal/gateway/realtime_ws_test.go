@@ -113,6 +113,35 @@ func (s *fixedPartialPreviewSession) Close() error {
 	return nil
 }
 
+type ctxBoundAudioStream struct {
+	sourceCtx context.Context
+	delay     time.Duration
+	chunk     []byte
+	emitted   bool
+}
+
+func (s *ctxBoundAudioStream) Next(ctx context.Context) ([]byte, error) {
+	if s.emitted {
+		return nil, io.EOF
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.sourceCtx.Done():
+		return nil, s.sourceCtx.Err()
+	case <-time.After(s.delay):
+	}
+
+	s.emitted = true
+	return append([]byte(nil), s.chunk...), nil
+}
+
+func (s *ctxBoundAudioStream) Close() error {
+	s.emitted = true
+	return nil
+}
+
 type testInboundEvent struct {
 	Type      string         `json:"type"`
 	SessionID string         `json:"session_id"`
@@ -660,6 +689,80 @@ func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *test
 	}
 	if !sawSecondResponse {
 		t.Fatal("expected second response after explicit audio.in.commit")
+	}
+}
+
+func TestRealtimeWSAudioCommitKeepsReturnedAudioStreamAliveAfterResponderReturns(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := streamingResponderFunc(func(ctx context.Context, req voice.TurnRequest, sink voice.ResponseDeltaSink) (voice.TurnResponse, error) {
+		if sink != nil {
+			if err := sink.EmitResponseDelta(ctx, voice.ResponseDelta{
+				Kind: voice.ResponseDeltaKindText,
+				Text: "streamed audio response",
+			}); err != nil {
+				return voice.TurnResponse{}, err
+			}
+		}
+		return voice.TurnResponse{
+			InputText: "语音输入",
+			Text:      "streamed audio response",
+			AudioStream: &ctxBoundAudioStream{
+				sourceCtx: ctx,
+				delay:     40 * time.Millisecond,
+				chunk:     make([]byte, 640),
+			},
+		}, nil
+	})
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write audio frame failed: %v", err)
+	}
+	writeControlEvent(t, conn, "audio.in.commit", sessionID, 2, map[string]any{"reason": "end_of_speech"})
+
+	sawSpeaking := false
+	sawAudio := false
+	sawActive := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			sawAudio = true
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		if event.Type != "session.update" {
+			continue
+		}
+
+		switch stringValue(event.Payload["state"]) {
+		case "speaking":
+			sawSpeaking = true
+		case "active":
+			if sawAudio {
+				sawActive = true
+				goto done
+			}
+		}
+	}
+
+done:
+	if !sawSpeaking {
+		t.Fatal("expected audio commit turn to enter speaking")
+	}
+	if !sawAudio {
+		t.Fatal("expected returned audio stream to stay alive long enough to emit audio")
+	}
+	if !sawActive {
+		t.Fatal("expected session to return to active after audio playback completed")
 	}
 }
 

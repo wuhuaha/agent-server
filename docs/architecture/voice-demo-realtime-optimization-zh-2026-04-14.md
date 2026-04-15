@@ -314,6 +314,81 @@
 - 这说明当前阶段 hidden preview 的时延链路已可用，但 wake-word 前缀样本在本地 ASR 路径上的鲁棒性仍需继续补强
 - 这个问题更偏向 `ASR / endpoint / speech understanding` 质量，不是本轮 websocket 生命周期或 preview 机制的问题
 
+### 2026-04-14 主线追加对照：CPU 上的 2pass + `fsmn-vad` + KWS readiness
+
+为了回到当前主线“提升实时语音 demo 主观体验”，本轮又补做了一个更贴近真实部署的问题验证：
+
+- 如果把 worker 切到 `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad`
+- 并保持当前 hidden `server-endpoint-preview` 场景不变
+- 在这台机器的 `cpu` 路径上，它到底是更适合作为默认主链路，还是更适合作为后续 GPU / 更小 online 模型的候选
+
+这轮对照首先暴露了一个真实阻塞：
+
+- 过去 worker 是按需懒加载模型
+- 第一次进入 `online preview` 时会把在线模型下载/加载时间压到首轮流式请求里
+- 在 `agentd` 当前默认 `30s` ASR HTTP 超时下，这会直接把首轮 turn 打挂，而不是只“慢一点”
+
+因此本轮先补了两个工程性兜底，再继续跑归档验证：
+
+- worker 现在会在启动后后台 preload 已配置的 final / online / preview-VAD / KWS 模型，并把 `/healthz` 的 `status` 从“final 模型存在”收紧成“当前链路所需模型全部 ready”
+- 本地 `run-agentd-local.sh` 现在会在 `funasr_http` 模式下等待 worker `/healthz` 到 `status=ok` 再拉起 `agentd`
+
+归档结果：
+
+- 2pass 命令样本：
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-2pass-command-only-v2/report.json`
+- 2pass 唤醒词前缀样本：
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-2pass-wake-command-v2/report.json`
+- 2pass + KWS 预热失败记录：
+  - `artifacts/live-baseline/20260414/desktop-server-endpoint-preview-2pass-kws-wake-command-v1/worker-health.json`
+
+关键观察：
+
+- `2pass + fsmn-vad` 在命令样本上**没有提升最终文本质量**：
+  - baseline：`打开客厅灯。`
+  - 2pass：`打开客厅灯。`
+- 但在这台机器的 `cpu` 路径上，它让时延明显变差：
+  - baseline `response_start_latency_ms`：约 `2058 ms`
+  - 2pass `response_start_latency_ms`：约 `3485 ms`
+  - agentd 侧同轮日志记录：
+    - `stream_elapsed_ms=2041`
+    - `result_elapsed_ms=477`
+    - `partials=3`
+    - `mode=stream_2pass_online_final`
+- `2pass + fsmn-vad` 在唤醒词前缀样本上也**没有修复当前识别短板**：
+  - baseline：`调管家。`
+  - 2pass：仍然是 `调管家。`
+  - 对应 `response_start_latency_ms` 还从约 `2052 ms` 升到了约 `3572 ms`
+- 这说明：
+  - 2pass 架构作为后续演进方向是对的
+  - 但“当前 CPU demo 默认就切 2pass”这件事并不成立
+  - 当前这条链路更适合作为：
+    - `GPU` 路径 benchmark
+    - 更小 online 模型对照 benchmark
+    - 更强 final-ASR 的第二阶段 benchmark 底座
+
+关于 KWS，这轮还有一个比识别效果更靠前的现实问题：
+
+- 当按当前设计直接启用 `AGENT_SERVER_FUNASR_KWS_ENABLED=true` 且沿用短模型名 `fsmn-kws` 时
+- worker preload 会直接报错：
+  - `fsmn-kws is not registered`
+- 也就是说，在这台机器当前 FunASR `1.3.1` runtime 里：
+  - `KWS` 的接口边界和开关已经接好
+  - 但默认短模型名还**没有完成可运行性闭环**
+
+因此，这轮主线结论要更务实一些：
+
+1. **工程主线先保住 ready-to-serve**
+   - preload + readiness gate 是必须项，不是锦上添花
+2. **CPU demo 默认先不要切 2pass**
+   - 现阶段收益没有覆盖代价
+3. **2pass 先保留为内部可选路径**
+   - 下一步优先去跑 `GPU` 或更小 online 模型
+4. **wake-word 问题仍然是当前最该继续补的质量缺口**
+   - 单靠当前 `SenseVoiceSmall + cpu` 或这轮 2pass 还不够
+5. **KWS 的下一步不是先调阈值，而是先把模型 id / runtime 对齐跑通**
+   - 否则它还不能进入当前阶段的主推荐组合
+
 ### D4：做 preview-driven shadow planning
 
 - partial 足够稳定时先做预取和预热
