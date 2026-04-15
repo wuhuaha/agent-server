@@ -89,11 +89,24 @@ func (r ASRResponder) Respond(ctx context.Context, req TurnRequest) (TurnRespons
 	return collectTurnResponse(ctx, req, r.RespondStream)
 }
 
+func (r ASRResponder) RespondOrchestrated(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponseFuture, error) {
+	future := newAsyncTurnResponseFuture()
+	go func() {
+		response, err := r.respondWithOptionalPlanning(ctx, req, sink, future)
+		future.Resolve(response, err)
+	}()
+	return future, nil
+}
+
 func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponse, error) {
+	return r.respondWithOptionalPlanning(ctx, req, sink, nil)
+}
+
+func (r ASRResponder) respondWithOptionalPlanning(ctx context.Context, req TurnRequest, sink ResponseDeltaSink, future *asyncTurnResponseFuture) (TurnResponse, error) {
 	switch {
 	case strings.TrimSpace(req.Text) != "":
 		userText := strings.TrimSpace(req.Text)
-		turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink)
+		turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink, future)
 		if err != nil {
 			return TurnResponse{}, err
 		}
@@ -127,7 +140,7 @@ func (r ASRResponder) RespondStream(ctx context.Context, req TurnRequest, sink R
 	}
 
 	req.Metadata = turnMetadataWithTranscription(req.Metadata, result)
-	turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink)
+	turn, audioChunks, audioStream, err := r.executeTurnWithPlannedSpeech(ctx, req, userText, sink, future)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -214,6 +227,10 @@ func (r ASRResponder) NewSessionOrchestrator() *SessionOrchestrator {
 	return NewSessionOrchestrator(r.MemoryStore)
 }
 
+func (r ASRResponder) MayStreamAudioResponse() bool {
+	return r.Synthesizer != nil || r.EmitPlaceholderAudio
+}
+
 func (r ASRResponder) speechPlannerConfig() SpeechPlannerConfig {
 	return NormalizeSpeechPlannerConfig(SpeechPlannerConfig{
 		Enabled:          r.SpeechPlannerEnabled,
@@ -222,7 +239,7 @@ func (r ASRResponder) speechPlannerConfig() SpeechPlannerConfig {
 	})
 }
 
-func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req TurnRequest, userText string, sink ResponseDeltaSink) (agent.TurnOutput, [][]byte, AudioStream, error) {
+func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req TurnRequest, userText string, sink ResponseDeltaSink, future *asyncTurnResponseFuture) (agent.TurnOutput, [][]byte, AudioStream, error) {
 	planner := newPlannedSpeechSynthesis(ctx, r.Synthesizer, SynthesisRequest{
 		SessionID: req.SessionID,
 		TurnID:    req.TurnID,
@@ -233,6 +250,14 @@ func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req Turn
 
 	emitSink := sink
 	if planner != nil {
+		if future != nil {
+			go func() {
+				start, ok, err := planner.WaitAudioStart(ctx)
+				if err == nil && ok {
+					future.PublishAudioStart(start)
+				}
+			}()
+		}
 		emitSink = ResponseDeltaSinkFunc(func(ctx context.Context, delta ResponseDelta) error {
 			if err := emitResponseDelta(ctx, sink, delta); err != nil {
 				return err

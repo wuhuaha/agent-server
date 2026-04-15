@@ -131,6 +131,9 @@ func TestLLMTurnExecutorUsesModelAndMemoryContext(t *testing.T) {
 	if got := model.requests[0].SystemPrompt; !strings.Contains(got, "请用简洁中文回答。") {
 		t.Fatalf("expected custom prompt prefix, got %q", got)
 	}
+	if got := model.requests[0].SystemPrompt; !strings.Contains(got, "当前本地时间：") {
+		t.Fatalf("expected prompt to include local time context, got %q", got)
+	}
 	if got := model.requests[0].SystemPrompt; !strings.Contains(got, "当前执行模式：live_control") {
 		t.Fatalf("expected live_control policy, got %q", got)
 	}

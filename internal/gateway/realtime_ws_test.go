@@ -6,10 +6,12 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -641,6 +643,7 @@ func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *test
 	sawEarlyActive := false
 	sawEarlyInterruptResponse := false
 	sawSecondResponse := false
+	sawSpeakingPreview := false
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -663,6 +666,15 @@ func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *test
 		}
 
 		event := decodeJSONEvent(t, payload)
+		if interrupted && !commitSent && event.Type == "session.update" && stringValue(event.Payload["state"]) == "speaking" {
+			if got := stringValue(event.Payload["input_state"]); got != "previewing" {
+				t.Fatalf("expected speaking preview input_state, got %q", got)
+			}
+			if got := stringValue(event.Payload["output_state"]); got != "speaking" {
+				t.Fatalf("expected speaking preview output_state, got %q", got)
+			}
+			sawSpeakingPreview = true
+		}
 		if !commitSent && event.Type == "session.update" && stringValue(event.Payload["state"]) == "active" {
 			sawEarlyActive = true
 		}
@@ -681,6 +693,9 @@ func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *test
 	if continuedFirstAudio < 3 {
 		t.Fatalf("expected the first response audio to continue before commit, got %d extra chunks", continuedFirstAudio)
 	}
+	if !sawSpeakingPreview {
+		t.Fatal("expected speaking-time preview update before explicit commit")
+	}
 	if sawEarlyActive {
 		t.Fatal("expected short incomplete preview to stay in speaking state until commit")
 	}
@@ -689,6 +704,252 @@ func TestRealtimeWSAdaptiveBargeInHoldsShortIncompletePreviewUntilCommit(t *test
 	}
 	if !sawSecondResponse {
 		t.Fatal("expected second response after explicit audio.in.commit")
+	}
+}
+
+func TestRealtimeWSBackchannelDucksButDoesNotInterruptSpeaking(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	baseChunk := pcm16ConstantChunk(2400, 320)
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			switch {
+			case strings.TrimSpace(req.Text) == "first":
+				return voice.TurnResponse{Text: "first response", AudioChunks: repeatAudioChunks(baseChunk, 20)}, nil
+			default:
+				return voice.TurnResponse{Text: "fallback"}, nil
+			}
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{partial: "好的"}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "first"})
+
+	firstAmplitude := 0
+	duckedAmplitude := 0
+	postBargeChunks := 0
+	sentBackchannel := false
+	sawSpeakingPreview := false
+	sawEarlyActive := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			amplitude := maxPCM16Abs(payload)
+			if amplitude <= 0 {
+				continue
+			}
+			if firstAmplitude == 0 {
+				firstAmplitude = amplitude
+				sentBackchannel = true
+				if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 2560)); err != nil {
+					t.Fatalf("write backchannel frame failed: %v", err)
+				}
+				continue
+			}
+			if sentBackchannel {
+				postBargeChunks++
+				if amplitude < firstAmplitude {
+					duckedAmplitude = amplitude
+				}
+				if duckedAmplitude > 0 && postBargeChunks >= 3 {
+					break
+				}
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		if !sentBackchannel || event.Type != "session.update" {
+			continue
+		}
+		if stringValue(event.Payload["state"]) == "active" {
+			sawEarlyActive = true
+		}
+		if stringValue(event.Payload["state"]) == "speaking" &&
+			stringValue(event.Payload["input_state"]) == "previewing" &&
+			stringValue(event.Payload["output_state"]) == "speaking" {
+			sawSpeakingPreview = true
+		}
+	}
+
+	if firstAmplitude <= 0 {
+		t.Fatal("expected initial speaking audio before backchannel")
+	}
+	if !sentBackchannel {
+		t.Fatal("expected to send a speaking-time backchannel frame")
+	}
+	if postBargeChunks < 3 {
+		t.Fatalf("expected speaking audio to continue after backchannel, got %d chunks", postBargeChunks)
+	}
+	if duckedAmplitude <= 0 || duckedAmplitude >= firstAmplitude {
+		t.Fatalf("expected ducked amplitude below %d, got %d", firstAmplitude, duckedAmplitude)
+	}
+	if !sawSpeakingPreview {
+		t.Fatal("expected speaking preview session.update during soft backchannel")
+	}
+	if sawEarlyActive {
+		t.Fatal("expected backchannel to stay on speaking path instead of returning active")
+	}
+}
+
+func TestRealtimeWSBargeInPreviewSurvivesNaturalOutputCompletion(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			switch {
+			case strings.TrimSpace(req.Text) == "first":
+				return voice.TurnResponse{Text: "first response", AudioChunks: repeatAudioChunks(make([]byte, 640), 6)}, nil
+			case req.InputFrames > 0:
+				return voice.TurnResponse{Text: "interrupt response", AudioChunks: repeatAudioChunks(make([]byte, 640), 2)}, nil
+			default:
+				return voice.TurnResponse{Text: "fallback"}, nil
+			}
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{partial: "嗯"}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "first"})
+
+	interruptSent := false
+	commitSent := false
+	sawPreservedPreview := false
+	sawInterruptResponse := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			if !interruptSent {
+				interruptSent = true
+				if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 640)); err != nil {
+					t.Fatalf("write overlap preview frame failed: %v", err)
+				}
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "session.update":
+			if interruptSent && !commitSent && stringValue(event.Payload["state"]) == "active" {
+				if got := stringValue(event.Payload["input_state"]); got != "previewing" {
+					t.Fatalf("expected preview to survive into active state, got %q", got)
+				}
+				if got := stringValue(event.Payload["output_state"]); got != "idle" {
+					t.Fatalf("expected output to return idle after completion, got %q", got)
+				}
+				sawPreservedPreview = true
+				writeControlEvent(t, conn, "audio.in.commit", sessionID, 3, map[string]any{"reason": "barge_in_after_completion"})
+				commitSent = true
+			}
+		case "response.chunk":
+			switch stringValue(event.Payload["text"]) {
+			case "interrupt response":
+				sawInterruptResponse = true
+				goto done
+			case "fallback":
+				t.Fatal("expected preserved overlap audio to remain available after playback completion")
+			}
+		}
+	}
+
+done:
+	if !interruptSent {
+		t.Fatal("expected to preview overlap audio while the first response was speaking")
+	}
+	if !sawPreservedPreview {
+		t.Fatal("expected previewing input to survive natural playback completion")
+	}
+	if !sawInterruptResponse {
+		t.Fatal("expected preserved overlap audio to drive the next committed turn")
+	}
+}
+
+func TestRealtimeWSTextInputDuringSpeakingCarriesAcceptReason(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		switch strings.TrimSpace(req.Text) {
+		case "first":
+			return voice.TurnResponse{Text: "first response", AudioChunks: repeatAudioChunks(make([]byte, 640), 10)}, nil
+		case "second":
+			return voice.TurnResponse{Text: "second response"}, nil
+		default:
+			return voice.TurnResponse{Text: "fallback"}, nil
+		}
+	})
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "first"})
+
+	secondSent := false
+	sawTextAccept := false
+	sawSecondResponse := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			if !secondSent {
+				secondSent = true
+				writeControlEvent(t, conn, "text.in", sessionID, 3, map[string]any{"text": "second"})
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "session.update":
+			if secondSent && stringValue(event.Payload["state"]) == "thinking" && stringValue(event.Payload["accept_reason"]) == "text_input" {
+				if got := stringValue(event.Payload["input_state"]); got != "committed" {
+					t.Fatalf("expected text input accept to commit the input lane, got %q", got)
+				}
+				if got := stringValue(event.Payload["output_state"]); got != "thinking" {
+					t.Fatalf("expected text input accept to switch output lane to thinking, got %q", got)
+				}
+				sawTextAccept = true
+			}
+		case "response.chunk":
+			if stringValue(event.Payload["text"]) == "second response" {
+				sawSecondResponse = true
+				goto textDone
+			}
+		}
+	}
+
+textDone:
+	if !secondSent {
+		t.Fatal("expected to inject a second text turn while the first response was speaking")
+	}
+	if !sawTextAccept {
+		t.Fatal("expected thinking session.update with accept_reason=text_input for the second turn")
+	}
+	if !sawSecondResponse {
+		t.Fatal("expected second text turn to complete after interrupting speaking")
 	}
 }
 
@@ -766,6 +1027,144 @@ done:
 	}
 }
 
+func TestRealtimeWSLogsPreviewAndFirstOutputMilestones(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	profile.ServerEndpointEnabled = true
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	responder := previewResponder{
+		respond: func(_ context.Context, _ voice.TurnRequest) (voice.TurnResponse, error) {
+			return voice.TurnResponse{
+				Text:        "好的，已经收到。",
+				AudioChunks: repeatAudioChunks(make([]byte, 640), 2),
+			}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &timedInputPreviewSession{threshold: 60 * time.Millisecond}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	_ = startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write audio frame failed: %v", err)
+	}
+
+	sawActive := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		if event.Type == "session.update" && stringValue(event.Payload["state"]) == "active" {
+			sawActive = true
+			break
+		}
+	}
+	if !sawActive {
+		t.Fatal("expected session to return to active after auto-committed preview turn")
+	}
+
+	logs := logBuffer.String()
+	for _, want := range []string{
+		`"msg":"gateway input preview updated"`,
+		`"msg":"gateway input preview commit suggested"`,
+		`"msg":"gateway turn accepted"`,
+		`"msg":"gateway response.start sent"`,
+		`"msg":"gateway speaking update sent"`,
+		`"msg":"gateway turn first text delta"`,
+		`"msg":"gateway turn first audio chunk"`,
+		`"preview_id":"preview_`,
+		`"preview_first_partial_latency_ms":`,
+		`"preview_commit_suggest_latency_ms":`,
+		`"first_text_delta_latency_ms":`,
+		`"first_audio_chunk_latency_ms":`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected logs to contain %s, got:\n%s", want, logs)
+		}
+	}
+}
+
+func TestRealtimeWSLogsAcceptedBargeIn(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	profile.BargeInMinAudioMs = 20
+	profile.BargeInHoldAudioMs = 40
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			switch {
+			case strings.TrimSpace(req.Text) == "first":
+				return voice.TurnResponse{Text: "first response", AudioChunks: repeatAudioChunks(make([]byte, 640), 20)}, nil
+			case req.InputFrames > 0:
+				return voice.TurnResponse{Text: "interrupt response", AudioChunks: repeatAudioChunks(make([]byte, 640), 2)}, nil
+			default:
+				return voice.TurnResponse{Text: "fallback"}, nil
+			}
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{partial: "打断一下"}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "first"})
+
+	interrupted := false
+	sawInterruptResponse := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 2*time.Second)
+		if messageType == websocket.BinaryMessage {
+			if !interrupted {
+				interrupted = true
+				if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 640)); err != nil {
+					t.Fatalf("write interrupt frame failed: %v", err)
+				}
+				writeControlEvent(t, conn, "audio.in.commit", sessionID, 3, map[string]any{"reason": "barge_in"})
+			}
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		if event.Type == "response.chunk" && stringValue(event.Payload["text"]) == "interrupt response" {
+			sawInterruptResponse = true
+			break
+		}
+	}
+	if !interrupted {
+		t.Fatal("expected to send an interrupt frame during speaking")
+	}
+	if !sawInterruptResponse {
+		t.Fatal("expected interrupt response after accepted barge-in")
+	}
+
+	logs := logBuffer.String()
+	for _, want := range []string{
+		`"msg":"gateway barge-in preview updated"`,
+		`"msg":"gateway barge-in accepted"`,
+		`"barge_in_reason":"accepted_complete_preview"`,
+		`"preview_id":"preview_`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected logs to contain %s, got:\n%s", want, logs)
+		}
+	}
+}
+
 func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.ServerEndpointEnabled = true
@@ -806,6 +1205,15 @@ func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testin
 				t.Fatalf("unexpected session id %q", event.SessionID)
 			}
 			if stringValue(event.Payload["state"]) == "thinking" {
+				if got := stringValue(event.Payload["input_state"]); got != "committed" {
+					t.Fatalf("expected server endpoint auto-commit input_state committed, got %q", got)
+				}
+				if got := stringValue(event.Payload["output_state"]); got != "thinking" {
+					t.Fatalf("expected server endpoint auto-commit output_state thinking, got %q", got)
+				}
+				if got := stringValue(event.Payload["accept_reason"]); got != "server_endpoint" {
+					t.Fatalf("expected server endpoint accept_reason, got %q", got)
+				}
 				sawThinking = true
 			}
 		case "response.chunk":
@@ -936,6 +1344,12 @@ func startTestSession(t *testing.T, conn *websocket.Conn, profile RealtimeProfil
 	if got := stringValue(event.Payload["state"]); got != "active" {
 		t.Fatalf("expected initial state active, got %q", got)
 	}
+	if got := stringValue(event.Payload["input_state"]); got != "active" {
+		t.Fatalf("expected initial input_state active, got %q", got)
+	}
+	if got := stringValue(event.Payload["output_state"]); got != "idle" {
+		t.Fatalf("expected initial output_state idle, got %q", got)
+	}
 	return event.SessionID
 }
 
@@ -1020,6 +1434,31 @@ func waitForConnectionClose(t *testing.T, conn *websocket.Conn, timeout time.Dur
 	if _, _, err := conn.ReadMessage(); err == nil {
 		t.Fatal("expected websocket read to fail after server-side close")
 	}
+}
+
+func pcm16ConstantChunk(level int16, samples int) []byte {
+	if samples <= 0 {
+		samples = 320
+	}
+	chunk := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		binary.LittleEndian.PutUint16(chunk[i*2:], uint16(level))
+	}
+	return chunk
+}
+
+func maxPCM16Abs(chunk []byte) int {
+	maxAbs := 0
+	for i := 0; i+1 < len(chunk); i += 2 {
+		value := int(int16(binary.LittleEndian.Uint16(chunk[i:])))
+		if value < 0 {
+			value = -value
+		}
+		if value > maxAbs {
+			maxAbs = value
+		}
+	}
+	return maxAbs
 }
 
 func assertNoServerPanic(t *testing.T, serverLog *bytes.Buffer) {

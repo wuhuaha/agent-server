@@ -115,12 +115,14 @@ The detailed task breakdown for this track now lives in:
 
 - `docs/architecture/project-optimization-roadmap-zh-2026-04.md`
 - `docs/architecture/voice-demo-realtime-optimization-zh-2026-04-14.md`
+- `docs/architecture/realtime-full-duplex-gap-review-zh-2026-04-15.md`
 - `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md`
 - `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md`
 
 Current planning note:
 
 - the current phase-1 voice demo focus is perceived realtime quality first: true streaming ASR, stronger endpointing, adaptive interruption handling, earlier incremental TTS start, and spoken-style response planning should outrank broader capability surface
+- the latest S1/S2/S3/S4 review now makes the main structural bottleneck explicit: current realtime quality is limited more by the single-track session state machine than by missing endpoint heuristics, so the next architecture slice should prioritize an internal input/output dual-track session model before more endpoint or planner tuning is treated as the primary fix
 - for the next full-duplex voice stage, the primary execution route is now explicitly `local / open-source first`
 - hosted realtime speech providers remain comparison baselines, not the main implementation target
 - the initial modular local FunASR worker slice is now landed: the worker can stay on backward-compatible buffered preview or switch internally to `online preview + final-ASR correction`, and worker-side `KWS` remains optional plus default-off
@@ -137,6 +139,28 @@ Current planning note:
   - `artifacts/live-smoke/20260415/local-systemd-cosyvoice-audio-postfix/run_120700_3677/run_935960053343`
   - `artifacts/live-smoke/20260415/public-edge-cosyvoice-audio-postfix/run_120710_10469/run_846a70c2f15d`
   - `artifacts/live-smoke/20260415/public-edge-cosyvoice-text-postfix/run_120720_31537/run_3db52dc40d16`
+- the current mainline observability slice for phase-1 realtime quality is now landed in shared gateway code instead of adapter-local patches:
+  - preview lifecycle logs now emit `preview_id`, `preview_first_partial_latency_ms`, `preview_commit_suggest_latency_ms`, `preview_audio_bytes`, and `preview_endpoint_reason`
+  - turn lifecycle logs now emit `first_text_delta_latency_ms` and `first_audio_chunk_latency_ms`
+  - accepted speaking-state interruption now logs a structured barge-in decision including acceptance reason, candidate audio duration, lexical completeness, and the linked preview trace
+- the current device-path debug baseline now also includes websocket downlink lifecycle markers:
+  - inbound websocket termination logs now include `ws_close_code`, `ws_close_text`, and `remote_addr`
+  - outbound lifecycle logs now explicitly report send success or failure for `response.start`, speaking updates, streamed text chunks, audio binary chunks, return-to-active updates, and `session.end`
+  - when a real-device turn shows `asr transcription stream completed` and `agent turn completed` before `tts stream setup failed`, the next diagnosis focus should stay on downlink/TTS lifecycle rather than ASR
+- the first S1/S2/S3/S4 convergence slice for realtime duplexing is now landed in the shared stack:
+  - `internal/session` now keeps separate `input_state` and `output_state` lanes, while `state` stays as a derived compatibility view
+  - server-emitted `session.update` may now carry `input_state`, `output_state`, and `accept_reason`
+  - `server_endpoint` now drives accepted-turn updates through that same compatibility contract, with preview speech-start and endpoint-candidate observability kept as runtime logs instead of new public v0 events
+  - speaking-time preview and staged overlap audio now survive natural playback completion instead of being dropped when the current output ends first
+  - interruption strategy is now shared runtime behavior with `ignore`, `backchannel`, `duck_only`, and `hard_interrupt`, although only hard interrupt currently changes playout
+- the next realtime duplex follow-up should now move from state-shape plumbing to behavior depth:
+  - keep extending the new soft-output policy path beyond native realtime into the remaining adapters and resume/continue policy
+  - keep pushing earlier audio start deeper into the output lane, with adapter coverage and latency measurement becoming the next bottleneck instead of basic hook shape
+  - native realtime now already applies true soft ducking for `duck_only/backchannel` and can start planned audio before final turn settlement through the shared orchestrator hook
+- the current local LLM cutover path keeps the shared runtime boundary unchanged:
+  - the new local worker exposes an OpenAI-compatible `chat/completions` surface behind the existing `deepseek_chat` executor path
+  - the current machine-first model target is `Qwen/Qwen3-4B-Instruct-2507`, not `8B`, because this V100 host already shares one GPU across ASR, TTS, and now LLM
+  - the built-in prompt now includes current local time/date context so relative-date questions such as `明天周几` do not depend only on model priors
 - for this host's unprivileged deployment loop, `scripts/run-agentd-local.sh` now supports a repo-local override binary at `.runtime/bin/agentd`, which lets `systemd` restart onto a new user-built binary even when `/etc/agent-server/agentd.env` still points at the root-owned default path
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context
@@ -156,6 +180,43 @@ Detailed historical execution history now lives in:
 - `docs/codex/execution-log-archive-2026-04.md`
 
 Keep this root ledger focused on active direction, recent execution context, and next-step decisions. When a completed slice stops affecting immediate work, summarize it in the archive instead of extending the root plan.
+
+### 2026-04-15 Realtime Dual-Track And Interruption Slice Complete
+
+- Scope:
+  - implement the first integrated `S1` to `S4` slice across shared session, gateway, voice runtime, protocol docs, and schema
+  - keep the published v0 websocket contract backward compatible while making server-endpoint, speaking-time preview, and interruption orchestration materially more capable
+- Target files:
+  - `internal/session/realtime_session.go`
+  - `internal/session/types.go`
+  - `internal/gateway/realtime_ws.go`
+  - `internal/gateway/output_flow.go`
+  - `internal/gateway/barge_in_runtime.go`
+  - `internal/gateway/xiaozhi_ws.go`
+  - `internal/voice/barge_in.go`
+  - `internal/voice/session_orchestrator.go`
+  - `docs/protocols/realtime-session-v0.md`
+  - `docs/protocols/rtos-device-ws-v0.md`
+  - `schemas/realtime/session-envelope.schema.json`
+- Acceptance for this execution step:
+  - shared session snapshots expose separate input/output lanes while preserving compatibility `state`
+  - `session.update` documents and emits lane fields plus accepted-turn attribution without breaking older clients
+  - server-endpoint accepted turns, speaking-time preview, and interruption arbitration now share one runtime path instead of adapter-local special cases
+  - natural playback completion no longer drops staged speaking-time preview or overlap audio
+- Validation recorded for this execution step:
+  - `go test ./internal/session ./internal/gateway ./internal/voice`
+  - `go test ./internal/gateway ./internal/voice`
+  - `go test ./internal/session ./internal/gateway`
+  - `go test ./internal/voice ./internal/gateway -run 'BargeIn|SessionOrchestrator|Realtime'`
+  - `go test -tags integration ./internal/gateway -run 'Realtime|Xiaozhi'`
+- Observed outcome:
+  - native realtime and `xiaozhi` now share the same dual-track-compatible output completion path
+  - accepted turns can now explain whether they came from `audio_commit`, `server_endpoint`, or `text_input`
+  - softer interruption policies remain visible to runtime memory and observability without forcing a wire-level protocol change
+- Recorded follow-through:
+  - updated shared protocol docs and schema for lane fields and accepted-turn attribution
+  - expanded gateway/session/voice test coverage for speaking-time preview, preserved overlap input, and interruption-policy boundaries
+  - updated `.codex` durable records with the new duplex-state baseline and remaining follow-up gaps
 
 ### 2026-04-14 Client Directory Taxonomy Slice Complete
 
@@ -538,6 +599,13 @@ Recorded follow-through:
   - default bring-up remains conservative and backward-compatible: `stream_preview_batch`, `energy` endpoint hint, and `KWS` disabled
   - added worker tests, runtime/config docs, Docker env examples, and ADR `0028`
   - validation: worker `py_compile`, targeted Python worker unit tests, and live `/healthz` restart of `agentd + FunASR worker`
+
+- `2026-04-15 Server Endpoint Promoted To Main-Path Candidate`
+  - kept the shared runtime boundary unchanged while upgrading discovery and info surfaces to expose a structured `server_endpoint` candidate profile
+  - `turn_mode` still stays `client_wakeup_client_commit`, but tooling can now see whether shared preview-driven auto-commit is unsupported, available-but-disabled, or enabled on the current instance
+  - browser debug surfaces and desktop runner reports now surface the candidate state instead of relying only on hidden env knowledge
+  - architecture/protocol follow-through: `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, and ADR `0029`
+  - validation: targeted Go tests for `/v1/realtime` and `/v1/info`, plus desktop-client protocol/runner unit tests
 
 - `2026-04-14 FunASR Model Selection Research`
   - recorded the current repository truth: the main local FunASR path still uses one `SenseVoiceSmall` ASR worker plus heuristic or external endpoint signals instead of a modular FunASR stack

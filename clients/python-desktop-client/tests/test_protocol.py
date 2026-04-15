@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from agent_server_desktop_client.protocol import (
+    DiscoveryInfo,
     build_event,
     http_base_to_ws_base,
     join_ws_url,
@@ -35,6 +36,35 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(event["seq"], 7)
         self.assertEqual(event["session_id"], "sess_abc")
         self.assertEqual(event["payload"]["text"], "hi")
+
+    def test_discovery_info_parses_server_endpoint_candidate(self) -> None:
+        info = DiscoveryInfo.from_dict(
+            {
+                "protocol_version": "rtos-ws-v0",
+                "ws_path": "/v1/realtime/ws",
+                "subprotocol": "agent-server.realtime.v0",
+                "auth_mode": "disabled",
+                "turn_mode": "client_wakeup_client_commit",
+                "llm_provider": "deepseek_chat",
+                "voice_provider": "funasr_http",
+                "tts_provider": "cosyvoice_http",
+                "server_endpoint": {
+                    "available": True,
+                    "main_path_candidate": True,
+                    "enabled": True,
+                    "mode": "server_vad_assisted",
+                    "client_commit_compatible": True,
+                },
+                "input_audio": {"codec": "pcm16le", "sample_rate_hz": 16000, "channels": 1},
+                "output_audio": {"codec": "pcm16le", "sample_rate_hz": 16000, "channels": 1},
+                "capabilities": {"allow_opus": True, "allow_text_input": True, "allow_image_input": False},
+            }
+        )
+        self.assertTrue(info.server_endpoint_available)
+        self.assertTrue(info.server_endpoint_enabled)
+        self.assertEqual(info.server_endpoint_mode, "server_vad_assisted")
+        self.assertTrue(info.server_endpoint_main_path_candidate)
+        self.assertTrue(info.server_endpoint_client_commit_compatible)
 
 
 if __name__ == "__main__":

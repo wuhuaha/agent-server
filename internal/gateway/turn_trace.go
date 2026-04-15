@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,7 +14,9 @@ type turnTrace struct {
 	Source            string
 	AcceptedAt        time.Time
 	ResponseStartedAt time.Time
+	FirstTextDeltaAt  time.Time
 	SpeakingAt        time.Time
+	FirstAudioChunkAt time.Time
 	ActiveAt          time.Time
 	InterruptedAt     time.Time
 	CompletedAt       time.Time
@@ -69,6 +72,34 @@ func (s *turnTraceState) MarkSpeaking() turnTrace {
 	return s.current
 }
 
+func (s *turnTraceState) MarkFirstTextDelta() (turnTrace, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.current.TurnID == "" {
+		return turnTrace{}, false
+	}
+	if !s.current.FirstTextDeltaAt.IsZero() {
+		return s.current, false
+	}
+	s.current.FirstTextDeltaAt = time.Now().UTC()
+	return s.current, true
+}
+
+func (s *turnTraceState) MarkFirstAudioChunk() (turnTrace, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.current.TurnID == "" {
+		return turnTrace{}, false
+	}
+	if !s.current.FirstAudioChunkAt.IsZero() {
+		return s.current, false
+	}
+	s.current.FirstAudioChunkAt = time.Now().UTC()
+	return s.current, true
+}
+
 func (s *turnTraceState) MarkActive() turnTrace {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,8 +150,16 @@ func (t turnTrace) ResponseStartLatencyMs() int64 {
 	return t.AcceptedElapsedMs(t.ResponseStartedAt)
 }
 
+func (t turnTrace) FirstTextDeltaLatencyMs() int64 {
+	return t.AcceptedElapsedMs(t.FirstTextDeltaAt)
+}
+
 func (t turnTrace) SpeakingLatencyMs() int64 {
 	return t.AcceptedElapsedMs(t.SpeakingAt)
+}
+
+func (t turnTrace) FirstAudioChunkLatencyMs() int64 {
+	return t.AcceptedElapsedMs(t.FirstAudioChunkAt)
 }
 
 func (t turnTrace) ActiveReturnLatencyMs() int64 {
@@ -162,4 +201,32 @@ func logTurnTraceError(logger *slog.Logger, msg string, sessionID string, trace 
 	attrs := turnTraceLogAttrs(sessionID, trace, extra...)
 	attrs = append(attrs, "error", err)
 	logger.Error(msg, attrs...)
+}
+
+func markTurnFirstTextDelta(runtime *connectionRuntime, logger *slog.Logger, sessionID string, deltaText string) {
+	if runtime == nil || strings.TrimSpace(deltaText) == "" {
+		return
+	}
+	trace, recorded := runtime.turnTrace.MarkFirstTextDelta()
+	if !recorded {
+		return
+	}
+	logTurnTraceInfo(logger, "gateway turn first text delta", sessionID, trace,
+		"first_text_delta_latency_ms", trace.FirstTextDeltaLatencyMs(),
+		"delta_text", strings.TrimSpace(deltaText),
+	)
+}
+
+func markTurnFirstAudioChunk(runtime *connectionRuntime, logger *slog.Logger, sessionID string, chunkBytes int) {
+	if runtime == nil || chunkBytes <= 0 {
+		return
+	}
+	trace, recorded := runtime.turnTrace.MarkFirstAudioChunk()
+	if !recorded {
+		return
+	}
+	logTurnTraceInfo(logger, "gateway turn first audio chunk", sessionID, trace,
+		"first_audio_chunk_latency_ms", trace.FirstAudioChunkLatencyMs(),
+		"audio_chunk_bytes", chunkBytes,
+	)
 }

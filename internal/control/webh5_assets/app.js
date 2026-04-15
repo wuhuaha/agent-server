@@ -469,6 +469,7 @@ function hasPCM16OutputSupport() {
 }
 
 function updateDiscoverySummary(discovery) {
+  const serverEndpoint = discovery.server_endpoint || {};
   refs.profileValue.textContent = `${discovery.protocol_version} / ${discovery.subprotocol}`;
   refs.inputAudioValue.textContent =
     `${discovery.input_audio.codec} / ${discovery.input_audio.sample_rate_hz} Hz / ${discovery.input_audio.channels} ch`;
@@ -492,6 +493,13 @@ function updateDiscoverySummary(discovery) {
   }
   if ((discovery.tts_provider || "").trim() === "none") {
     notes.push("Current server TTS provider is none, so text-only responses are expected.");
+  }
+  if (serverEndpoint.main_path_candidate) {
+    if (serverEndpoint.enabled) {
+      notes.push("Server-endpoint is enabled as a main-path candidate, so spoken turns may auto-commit after shared preview silence while explicit commit still works.");
+    } else {
+      notes.push("Server-endpoint is now exposed as a main-path candidate, but this instance still defaults to explicit client commit.");
+    }
   }
 
   refs.requirementNote.textContent = notes.length > 0

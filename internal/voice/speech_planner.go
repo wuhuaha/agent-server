@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -105,6 +106,11 @@ type plannedSpeechSynthesis struct {
 	baseReq     SynthesisRequest
 	synthesizer Synthesizer
 	enqueued    bool
+	startOnce   sync.Once
+	startReady  chan struct{}
+	startMu     sync.Mutex
+	startText   string
+	started     bool
 }
 
 func newPlannedSpeechSynthesis(ctx context.Context, synthesizer Synthesizer, req SynthesisRequest, cfg SpeechPlannerConfig) *plannedSpeechSynthesis {
@@ -122,6 +128,7 @@ func newPlannedSpeechSynthesis(ctx context.Context, synthesizer Synthesizer, req
 		planner:     NewSpeechPlanner(cfg),
 		baseReq:     req,
 		synthesizer: synthesizer,
+		startReady:  make(chan struct{}),
 	}
 	go planner.runWorker()
 	return planner
@@ -145,6 +152,7 @@ func (p *plannedSpeechSynthesis) Finalize(responseText string) AudioStream {
 	}
 	p.closeQueue()
 	if !p.enqueued {
+		p.resolveStart("")
 		p.stream.Close()
 		return nil
 	}
@@ -156,6 +164,7 @@ func (p *plannedSpeechSynthesis) Close() {
 		return
 	}
 	p.closeQueue()
+	p.resolveStart("")
 	p.stream.Close()
 }
 
@@ -177,10 +186,50 @@ func (p *plannedSpeechSynthesis) enqueue(segment string) {
 		return
 	}
 	p.enqueued = true
+	p.stream.addPlannedText(trimmed)
+	p.resolveStart(trimmed)
 	select {
 	case <-p.workerCtx.Done():
 	case p.queue <- trimmed:
 	}
+}
+
+func (p *plannedSpeechSynthesis) WaitAudioStart(ctx context.Context) (ResponseAudioStart, bool, error) {
+	if p == nil {
+		return ResponseAudioStart{}, false, nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ResponseAudioStart{}, false, ctx.Err()
+	case <-p.startReady:
+	}
+
+	p.startMu.Lock()
+	defer p.startMu.Unlock()
+	if !p.started {
+		return ResponseAudioStart{}, false, nil
+	}
+	return ResponseAudioStart{
+		Stream:      p.stream,
+		Text:        p.startText,
+		Incremental: true,
+		Source:      ResponseAudioStartSourceSpeechPlanner,
+	}, true, nil
+}
+
+func (p *plannedSpeechSynthesis) resolveStart(text string) {
+	if p == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(text)
+	p.startOnce.Do(func() {
+		p.startMu.Lock()
+		p.startText = trimmed
+		p.started = trimmed != ""
+		p.startMu.Unlock()
+		close(p.startReady)
+	})
 }
 
 func (p *plannedSpeechSynthesis) runWorker() {
@@ -224,6 +273,8 @@ type queuedSpeechAudioStream struct {
 	results   chan queuedSpeechAudioResult
 	current   AudioStream
 	closeOnce sync.Once
+	mu        sync.Mutex
+	planned   time.Duration
 }
 
 func newQueuedSpeechAudioStream(cancel context.CancelFunc) *queuedSpeechAudioStream {
@@ -290,6 +341,42 @@ func (s *queuedSpeechAudioStream) Close() error {
 		}
 	})
 	return nil
+}
+
+func (s *queuedSpeechAudioStream) addPlannedText(text string) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return
+	}
+	s.mu.Lock()
+	s.planned += estimatePlannedSpeechDuration(trimmed)
+	s.mu.Unlock()
+}
+
+func (s *queuedSpeechAudioStream) PlaybackDuration(_ time.Duration) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.planned
+}
+
+func estimatePlannedSpeechDuration(text string) time.Duration {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return 0
+	}
+
+	// Keep this intentionally simple: we want a stable heard-text estimate for
+	// incremental audio streams, not phoneme-accurate duration prediction.
+	duration := time.Duration(len(runes)) * 110 * time.Millisecond
+	for _, r := range runes {
+		switch r {
+		case '，', ',', '、':
+			duration += 120 * time.Millisecond
+		case '。', '.', '！', '!', '？', '?', ';', '；', ':', '：':
+			duration += 220 * time.Millisecond
+		}
+	}
+	return duration
 }
 
 func nextPlannedSpeechSegment(text string, cfg SpeechPlannerConfig, flush bool) (string, string) {
@@ -435,11 +522,4 @@ func plannerRemainingTail(observed, final string) string {
 		return ""
 	}
 	return string(finalRunes[match:])
-}
-
-func maxInt(value, fallback int) int {
-	if value > fallback {
-		return value
-	}
-	return fallback
 }

@@ -14,6 +14,12 @@ runtime = [
   "funasr==1.3.1",
   "modelscope==1.24.1",
 ]
+llm = [
+  "fastapi>=0.115.0",
+  "huggingface_hub>=0.30.0",
+  "transformers>=4.51.0",
+  "uvicorn>=0.30.0",
+]
 stream-vad = [
   "onnxruntime",
   "silero-vad",
@@ -21,6 +27,7 @@ stream-vad = [
 
 [project.scripts]
 agent-server-funasr-worker = "agent_server_workers.funasr_service:main"
+agent-server-local-llm-worker = "agent_server_workers.local_llm_service:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_server_workers"]

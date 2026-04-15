@@ -34,7 +34,20 @@ func (r BootstrapResponder) Respond(ctx context.Context, req TurnRequest) (TurnR
 	return collectTurnResponse(ctx, req, r.RespondStream)
 }
 
+func (r BootstrapResponder) RespondOrchestrated(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponseFuture, error) {
+	future := newAsyncTurnResponseFuture()
+	go func() {
+		response, err := r.respondWithSpeechPlanner(ctx, req, sink, future)
+		future.Resolve(response, err)
+	}()
+	return future, nil
+}
+
 func (r BootstrapResponder) RespondStream(ctx context.Context, req TurnRequest, sink ResponseDeltaSink) (TurnResponse, error) {
+	return r.respondWithSpeechPlanner(ctx, req, sink, nil)
+}
+
+func (r BootstrapResponder) respondWithSpeechPlanner(ctx context.Context, req TurnRequest, sink ResponseDeltaSink, future *asyncTurnResponseFuture) (TurnResponse, error) {
 	userText := strings.TrimSpace(req.Text)
 	planner := newPlannedSpeechSynthesis(ctx, r.Synthesizer, SynthesisRequest{
 		SessionID: req.SessionID,
@@ -46,6 +59,14 @@ func (r BootstrapResponder) RespondStream(ctx context.Context, req TurnRequest, 
 
 	emitSink := sink
 	if planner != nil {
+		if future != nil {
+			go func() {
+				start, ok, err := planner.WaitAudioStart(ctx)
+				if err == nil && ok {
+					future.PublishAudioStart(start)
+				}
+			}()
+		}
 		emitSink = ResponseDeltaSinkFunc(func(ctx context.Context, delta ResponseDelta) error {
 			if err := emitResponseDelta(ctx, sink, delta); err != nil {
 				return err
@@ -113,6 +134,10 @@ func (r BootstrapResponder) WithSpeechPlannerConfig(cfg SpeechPlannerConfig) Boo
 
 func (r BootstrapResponder) NewSessionOrchestrator() *SessionOrchestrator {
 	return NewSessionOrchestrator(r.MemoryStore)
+}
+
+func (r BootstrapResponder) MayStreamAudioResponse() bool {
+	return true
 }
 
 func (r BootstrapResponder) speechPlannerConfig() SpeechPlannerConfig {

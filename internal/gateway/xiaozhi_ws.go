@@ -234,6 +234,7 @@ func (h *xiaozhiWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *xiaozhiWSHandler) handleInboundMessage(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, inbound websocketInboundMessage) error {
 	if inbound.err != nil {
+		logWebsocketInboundTermination(h.logger, runtime, runtime.turnTrace.Current(), inbound.err)
 		if handled, handleErr := h.handleReadError(runtime, peer, state, inbound.err); handled {
 			return handleErr
 		}
@@ -267,6 +268,15 @@ func (h *xiaozhiWSHandler) handleReadError(runtime *connectionRuntime, peer *xia
 	snapshot := runtime.session.Snapshot()
 	now := time.Now().UTC()
 	reason, shouldClose := deadlineCloseReason(snapshot, h.runtimeProfile(), now)
+	trace := runtime.turnTrace.Current()
+	logTurnTraceInfo(h.logger, "gateway websocket read timeout", snapshot.SessionID, trace,
+		"remote_addr", runtime.remoteAddr,
+		"session_state", snapshot.State,
+		"idle_timeout_ms", h.runtimeProfile().IdleTimeoutMs,
+		"max_session_ms", h.runtimeProfile().MaxSessionMs,
+		"deadline_close", shouldClose,
+		"close_reason", string(reason),
+	)
 	if !shouldClose && snapshot.SessionID != "" {
 		reason = session.CloseReasonError
 	}
@@ -286,17 +296,36 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive || !state.audioTurnOpen {
 		return nil
 	}
-	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
-	if !active {
+	observation := runtime.pollInputPreview(now)
+	if !observation.Active {
 		return nil
 	}
-	if partialChanged {
-		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
-			"partial_text", preview.PartialText,
-			"audio_bytes", preview.AudioBytes,
+	if observation.PartialChanged {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
 		)
 	}
-	if commitSuggested && snapshot.AudioBytes > 0 {
+	if observation.SpeechStartedObserved {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
+			"audio_bytes", observation.Preview.AudioBytes,
+		)
+	}
+	if observation.EndpointCandidateObserved {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+			"endpoint_reason", observation.Preview.EndpointReason,
+		)
+	}
+	if observation.CommitSuggested {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+			"endpoint_reason", observation.Preview.EndpointReason,
+		)
+	}
+	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
 		state.audioTurnOpen = false
 		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
@@ -307,15 +336,17 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 			return err
 		}
 		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
-		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+		attrs := []any{
 			"input_type", "audio",
 			"audio_bytes", len(turn.AudioPCM),
 			"input_codec", turn.Snapshot.InputCodec,
 			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 			"input_channels", turn.Snapshot.InputChannels,
 			"turn_index", turn.Snapshot.Turns,
-			"endpoint_reason", preview.EndpointReason,
-		)
+			"endpoint_reason", observation.Preview.EndpointReason,
+		}
+		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, now)
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace, attrs...)
 		if err := h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, ""); err != nil {
 			return err
 		}
@@ -542,14 +573,35 @@ func (h *xiaozhiWSHandler) handleBinary(runtime *connectionRuntime, peer *xiaozh
 		if err := runtime.ensureInputPreview(context.Background(), h.responder, snapshot, ""); err != nil {
 			h.logger.Warn("gateway input preview start failed", "session_id", snapshot.SessionID, "error", err)
 		} else {
-			preview, partialChanged, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalized)
+			observation, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalized)
 			if pushErr != nil {
 				h.logger.Warn("gateway input preview push failed", "session_id", snapshot.SessionID, "error", pushErr)
-			} else if partialChanged {
-				logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
-					"partial_text", preview.PartialText,
-					"audio_bytes", preview.AudioBytes,
-				)
+			} else {
+				if observation.PartialChanged {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+					)
+				}
+				if observation.SpeechStartedObserved {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
+						"audio_bytes", observation.Preview.AudioBytes,
+					)
+				}
+				if observation.EndpointCandidateObserved {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+						"endpoint_reason", observation.Preview.EndpointReason,
+					)
+				}
+				if observation.CommitSuggested {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+						"endpoint_reason", observation.Preview.EndpointReason,
+					)
+				}
 			}
 		}
 	}
@@ -626,6 +678,8 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 			Logger:    h.logger,
 			SessionID: state.sessionID,
 			OnEndSession: func(_ turnTrace, _ session.CloseReason, _ string) error {
+				runtime.resetPendingBargeInAudio()
+				runtime.clearInputPreview()
 				runtime.session.Reset()
 				return runtime.conn.Close()
 			},
@@ -659,7 +713,11 @@ func (h *xiaozhiWSHandler) finalizeTurnResponse(ctx context.Context, runtime *co
 			if runtime.voiceSession != nil {
 				runtime.voiceSession.StartPlayback(aggregatedText, time.Duration(maxInt(h.profile.OutputFrameDurationMs, 60))*time.Millisecond, plannedPlaybackDurationForResponse(response, outputFrameInterval))
 			}
-			h.startAudioStream(ctx, runtime, peer, state, trace, aggregatedText, encoded, response.EndSession, response.EndReason, response.EndMessage)
+			h.startAudioStream(ctx, runtime, peer, state, trace, aggregatedText, encoded, resolvedTurnOutputOutcome(turnOutputOutcome{
+				EndSession: response.EndSession,
+				EndReason:  response.EndReason,
+				EndMessage: response.EndMessage,
+			}))
 			return nil
 		},
 	})
@@ -688,12 +746,10 @@ func (h *xiaozhiWSHandler) startAudioStream(
 	trace turnTrace,
 	text string,
 	audioStream voice.AudioStream,
-	endSession bool,
-	endReason string,
-	endMessage string,
+	completion *turnOutputOutcomeFuture,
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream := runtime.installOutput(cancel)
+	stream := runtime.installOutput(cancel, completion)
 	frameDuration := time.Duration(maxInt(h.profile.OutputFrameDurationMs, 60)) * time.Millisecond
 
 	go func() {
@@ -732,6 +788,7 @@ func (h *xiaozhiWSHandler) startAudioStream(
 			if err := peer.WriteCompatBinary(chunk, state.binaryProtocolVersion); err != nil {
 				return
 			}
+			markTurnFirstAudioChunk(runtime, h.logger, state.sessionID, len(chunk))
 			if runtime.voiceSession != nil {
 				runtime.voiceSession.ObservePlaybackChunk()
 			}
@@ -750,13 +807,18 @@ func (h *xiaozhiWSHandler) startAudioStream(
 		if runtime.voiceSession != nil {
 			runtime.voiceSession.CompletePlayback()
 		}
-		runtime.resetPendingBargeInAudio()
-		runtime.clearInputPreview()
-		_ = completeTurnReturnOrClose(trace, endSession, endReason, endMessage, turnCompletionHooks{
+		outcome, err := stream.completion.Wait(streamCtx)
+		if err != nil {
+			return
+		}
+		_ = completeTurnReturnOrClose(trace, outcome.EndSession, outcome.EndReason, outcome.EndMessage, turnCompletionHooks{
 			Runtime:   runtime,
 			Profile:   h.runtimeProfile(),
 			Logger:    h.logger,
 			SessionID: state.sessionID,
+			ResolveReturnActive: func() (session.Snapshot, bool, error) {
+				return runtime.resolvePostPlaybackActiveSnapshot()
+			},
 			OnEndSession: func(_ turnTrace, _ session.CloseReason, _ string) error {
 				runtime.session.Reset()
 				return runtime.conn.Close()

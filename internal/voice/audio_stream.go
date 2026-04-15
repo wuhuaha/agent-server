@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 type staticAudioStream struct {
@@ -30,6 +31,13 @@ func (s *staticAudioStream) Next(context.Context) ([]byte, error) {
 
 func (s *staticAudioStream) Close() error {
 	return nil
+}
+
+func (s *staticAudioStream) PlaybackDuration(frameDuration time.Duration) time.Duration {
+	if frameDuration <= 0 {
+		return 0
+	}
+	return time.Duration(len(s.chunks)) * frameDuration
 }
 
 func collectAudioStream(ctx context.Context, stream AudioStream) ([]byte, error) {

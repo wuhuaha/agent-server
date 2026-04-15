@@ -225,6 +225,38 @@ func TestBootstrapResponderSpeechPlannerDoesNotDoubleSynthesizeFinalResponse(t *
 	}
 }
 
+func TestSpeechPlannerQueuedAudioStreamExposesEstimatedPlaybackDuration(t *testing.T) {
+	planner := newPlannedSpeechSynthesis(context.Background(), &recordingSynthesizer{}, SynthesisRequest{
+		SessionID: "sess_duration",
+		TurnID:    "turn_duration",
+		TraceID:   "trace_duration",
+		DeviceID:  "dev_duration",
+		UserText:  "打开客厅灯",
+	}, SpeechPlannerConfig{
+		Enabled:          true,
+		MinChunkRunes:    2,
+		TargetChunkRunes: 6,
+	})
+	if planner == nil {
+		t.Fatal("expected planner")
+	}
+
+	planner.ObserveDelta(ResponseDelta{Kind: ResponseDeltaKindText, Text: "好的，"})
+	stream := planner.Finalize("好的，已经打开客厅灯。")
+	if stream == nil {
+		t.Fatal("expected planned audio stream")
+	}
+	defer stream.Close()
+
+	aware, ok := stream.(interface{ PlaybackDuration(time.Duration) time.Duration })
+	if !ok {
+		t.Fatal("expected planned stream to expose playback duration")
+	}
+	if got := aware.PlaybackDuration(20 * time.Millisecond); got <= 0 {
+		t.Fatalf("expected positive playback duration, got %s", got)
+	}
+}
+
 type staticTurnExecutor struct {
 	text string
 }

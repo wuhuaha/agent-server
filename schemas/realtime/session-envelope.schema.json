@@ -117,16 +117,46 @@
                   "state": {
                     "type": "string",
                     "enum": [
+                      "idle",
                       "active",
                       "thinking",
-                      "speaking"
-                    ]
+                      "speaking",
+                      "closing"
+                    ],
+                    "description": "Top-level compatibility state. Newer servers may also expose input_state and output_state for split-lane details."
+                  },
+                  "input_state": {
+                    "type": "string",
+                    "enum": [
+                      "idle",
+                      "active",
+                      "previewing",
+                      "committed",
+                      "closing"
+                    ],
+                    "description": "Optional input-lane substate for richer realtime UX."
+                  },
+                  "output_state": {
+                    "type": "string",
+                    "enum": [
+                      "idle",
+                      "thinking",
+                      "speaking",
+                      "closing"
+                    ],
+                    "description": "Optional output-lane substate for split input/output orchestration."
                   },
                   "barge_in_enabled": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "description": "Whether the current session runtime allows speaking-time interruption attempts."
                   },
                   "turn_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Optional correlation identifier for the current turn lifecycle. Its presence alone does not mean a new user turn was accepted."
+                  },
+                  "accept_reason": {
+                    "type": "string",
+                    "description": "Optional accepted-turn reason such as audio_commit, server_endpoint, or text_input. Omitted on preview-only or compatibility updates that did not accept a new turn."
                   }
                 },
                 "additionalProperties": true

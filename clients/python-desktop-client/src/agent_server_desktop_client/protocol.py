@@ -87,6 +87,11 @@ class DiscoveryInfo:
     llm_provider: str
     voice_provider: str
     tts_provider: str
+    server_endpoint_available: bool
+    server_endpoint_enabled: bool
+    server_endpoint_mode: str
+    server_endpoint_main_path_candidate: bool
+    server_endpoint_client_commit_compatible: bool
     input_codec: str
     input_sample_rate_hz: int
     input_channels: int
@@ -108,6 +113,7 @@ class DiscoveryInfo:
         input_audio = payload.get("input_audio", {})
         output_audio = payload.get("output_audio", {})
         capabilities = payload.get("capabilities", {})
+        server_endpoint = payload.get("server_endpoint", {})
         return cls(
             protocol_version=str(payload.get("protocol_version", "rtos-ws-v0")),
             ws_path=str(payload.get("ws_path", "/v1/realtime/ws")),
@@ -117,6 +123,11 @@ class DiscoveryInfo:
             llm_provider=str(payload.get("llm_provider", "")),
             voice_provider=str(payload.get("voice_provider", "")),
             tts_provider=str(payload.get("tts_provider", "")),
+            server_endpoint_available=bool(server_endpoint.get("available", False)),
+            server_endpoint_enabled=bool(server_endpoint.get("enabled", False)),
+            server_endpoint_mode=str(server_endpoint.get("mode", "unsupported")),
+            server_endpoint_main_path_candidate=bool(server_endpoint.get("main_path_candidate", False)),
+            server_endpoint_client_commit_compatible=bool(server_endpoint.get("client_commit_compatible", True)),
             input_codec=str(input_audio.get("codec", "pcm16le")),
             input_sample_rate_hz=int(input_audio.get("sample_rate_hz", 16000)),
             input_channels=int(input_audio.get("channels", 1)),

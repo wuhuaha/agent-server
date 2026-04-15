@@ -2,31 +2,44 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"agent-server/internal/voice"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 	handler := NewRealtimeHandler(RealtimeProfile{
-		WSPath:           "/v1/realtime/ws",
-		ProtocolVersion:  "rtos-ws-v0",
-		Subprotocol:      "agent-server.realtime.v0",
-		LLMProvider:      "deepseek_chat",
-		AuthMode:         "disabled",
-		TurnMode:         "client_wakeup_client_commit",
-		IdleTimeoutMs:    15000,
-		MaxSessionMs:     300000,
-		MaxFrameBytes:    4096,
-		InputCodec:       "pcm16le",
-		InputSampleRate:  16000,
-		InputChannels:    1,
-		OutputCodec:      "pcm16le",
-		OutputSampleRate: 16000,
-		OutputChannels:   1,
-		AllowOpus:        true,
-		AllowTextInput:   true,
-		AllowImageInput:  false,
+		WSPath:                         "/v1/realtime/ws",
+		ProtocolVersion:                "rtos-ws-v0",
+		Subprotocol:                    "agent-server.realtime.v0",
+		LLMProvider:                    "deepseek_chat",
+		ServerEndpointAvailable:        true,
+		ServerEndpointEnabled:          true,
+		ServerEndpointMinAudioMs:       320,
+		ServerEndpointSilenceMs:        480,
+		ServerEndpointLexicalMode:      "conservative",
+		ServerEndpointIncompleteHoldMs: 720,
+		ServerEndpointHintSilenceMs:    160,
+		AuthMode:                       "disabled",
+		TurnMode:                       "client_wakeup_client_commit",
+		IdleTimeoutMs:                  15000,
+		MaxSessionMs:                   300000,
+		MaxFrameBytes:                  4096,
+		InputCodec:                     "pcm16le",
+		InputSampleRate:                16000,
+		InputChannels:                  1,
+		OutputCodec:                    "pcm16le",
+		OutputSampleRate:               16000,
+		OutputChannels:                 1,
+		AllowOpus:                      true,
+		AllowTextInput:                 true,
+		AllowImageInput:                false,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
@@ -54,18 +67,156 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 	if got := body["turn_mode"]; got != "client_wakeup_client_commit" {
 		t.Fatalf("expected turn_mode client_wakeup_client_commit, got %v", got)
 	}
+	serverEndpoint, ok := body["server_endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected server_endpoint object, got %#v", body["server_endpoint"])
+	}
+	if got := serverEndpoint["mode"]; got != "server_vad_assisted" {
+		t.Fatalf("expected server_endpoint mode server_vad_assisted, got %v", got)
+	}
+	if got := serverEndpoint["main_path_candidate"]; got != true {
+		t.Fatalf("expected server endpoint candidate flag true, got %v", got)
+	}
 	notes, ok := body["notes"].([]any)
 	if !ok || len(notes) == 0 {
 		t.Fatalf("expected discovery notes, got %#v", body["notes"])
 	}
-	foundCommitNote := false
+	foundCandidateNote := false
 	for _, item := range notes {
-		if item == "user turns currently complete only after explicit audio.in.commit or text.in" {
-			foundCommitNote = true
+		if item == "audio turns may auto-commit through the shared server-endpoint candidate after preview silence; explicit audio.in.commit stays supported" {
+			foundCandidateNote = true
 			break
 		}
 	}
-	if !foundCommitNote {
-		t.Fatalf("expected discovery notes to mention explicit client commit, got %#v", notes)
+	if !foundCandidateNote {
+		t.Fatalf("expected discovery notes to mention the server-endpoint candidate, got %#v", notes)
+	}
+}
+
+func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
+	var state inputPreviewTraceState
+	startedAt := time.Unix(1700000000, 0).UTC()
+
+	trace := state.ObserveAudio("sess_trace", 640, startedAt)
+	if trace.PreviewID == "" {
+		t.Fatal("expected preview trace id after first audio")
+	}
+	if trace.AudioBytes != 640 {
+		t.Fatalf("expected preview audio bytes 640, got %d", trace.AudioBytes)
+	}
+
+	trace, firstPartial, speechStarted, endpointCandidate, commitSuggested := state.ObservePreview("sess_trace", voice.InputPreview{
+		PartialText:   "打开客厅灯",
+		AudioBytes:    1280,
+		SpeechStarted: true,
+	}, startedAt.Add(120*time.Millisecond))
+	if !firstPartial {
+		t.Fatal("expected first partial observation to be recorded")
+	}
+	if !speechStarted {
+		t.Fatal("expected speech start observation to be recorded")
+	}
+	if endpointCandidate {
+		t.Fatal("did not expect endpoint candidate on first partial")
+	}
+	if commitSuggested {
+		t.Fatal("did not expect commit suggestion on first partial")
+	}
+	if got := trace.SpeechStartLatencyMs(); got != 120 {
+		t.Fatalf("expected speech start latency 120ms, got %d", got)
+	}
+	if got := trace.FirstPartialLatencyMs(); got != 120 {
+		t.Fatalf("expected first partial latency 120ms, got %d", got)
+	}
+
+	trace, firstPartial, speechStarted, endpointCandidate, commitSuggested = state.ObservePreview("sess_trace", voice.InputPreview{
+		PartialText:     "打开客厅灯",
+		AudioBytes:      1920,
+		SpeechStarted:   true,
+		CommitSuggested: true,
+		EndpointReason:  "preview_tail_silence",
+	}, startedAt.Add(420*time.Millisecond))
+	if firstPartial {
+		t.Fatal("expected first partial to stay one-shot")
+	}
+	if speechStarted {
+		t.Fatal("expected speech start observation to stay one-shot")
+	}
+	if !endpointCandidate {
+		t.Fatal("expected endpoint candidate observation to be recorded")
+	}
+	if !commitSuggested {
+		t.Fatal("expected commit suggestion observation to be recorded")
+	}
+	if got := trace.EndpointCandidateLatencyMs(); got != 420 {
+		t.Fatalf("expected endpoint candidate latency 420ms, got %d", got)
+	}
+	if got := trace.CommitSuggestedLatencyMs(); got != 420 {
+		t.Fatalf("expected commit latency 420ms, got %d", got)
+	}
+	if trace.EndpointReason != "preview_tail_silence" {
+		t.Fatalf("expected endpoint reason to persist, got %q", trace.EndpointReason)
+	}
+
+	cleared := state.Clear()
+	if cleared.PreviewID == "" {
+		t.Fatal("expected clear to return the previous trace")
+	}
+	if state.Current().PreviewID != "" {
+		t.Fatal("expected preview trace state to reset after clear")
+	}
+}
+
+func TestTurnTraceTracksFirstOutputMilestones(t *testing.T) {
+	var state turnTraceState
+	trace := state.Begin("sess_turn", "audio_commit")
+
+	markedText, firstTextRecorded := state.MarkFirstTextDelta()
+	if !firstTextRecorded {
+		t.Fatal("expected first text delta milestone to be recorded")
+	}
+	if markedText.FirstTextDeltaAt.IsZero() {
+		t.Fatal("expected first text delta timestamp to be set")
+	}
+	if _, firstTextRecorded = state.MarkFirstTextDelta(); firstTextRecorded {
+		t.Fatal("expected first text delta milestone to be idempotent")
+	}
+
+	markedAudio, firstAudioRecorded := state.MarkFirstAudioChunk()
+	if !firstAudioRecorded {
+		t.Fatal("expected first audio chunk milestone to be recorded")
+	}
+	if markedAudio.FirstAudioChunkAt.IsZero() {
+		t.Fatal("expected first audio chunk timestamp to be set")
+	}
+	if _, firstAudioRecorded = state.MarkFirstAudioChunk(); firstAudioRecorded {
+		t.Fatal("expected first audio chunk milestone to be idempotent")
+	}
+	if markedAudio.FirstAudioChunkLatencyMs() < 0 || markedText.FirstTextDeltaLatencyMs() < 0 || trace.ResponseStartLatencyMs() < 0 {
+		t.Fatal("expected milestone latencies to stay non-negative")
+	}
+}
+
+func TestAppendWebsocketErrorLogAttrsIncludesCloseMetadata(t *testing.T) {
+	attrs := appendWebsocketErrorLogAttrs(nil, &websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "bye"})
+	rendered := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, _ := attrs[i].(string)
+		rendered[key] = attrs[i+1]
+	}
+	if rendered["ws_close_code"] != websocket.CloseNormalClosure {
+		t.Fatalf("expected ws_close_code %d, got %#v", websocket.CloseNormalClosure, rendered["ws_close_code"])
+	}
+	if rendered["ws_close_text"] != "bye" {
+		t.Fatalf("expected ws_close_text bye, got %#v", rendered["ws_close_text"])
+	}
+}
+
+func TestIsExpectedWebsocketClosureRecognizesNormalClose(t *testing.T) {
+	if !isExpectedWebsocketClosure(&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "done"}) {
+		t.Fatal("expected normal close to be treated as expected")
+	}
+	if isExpectedWebsocketClosure(errors.New("broken pipe")) {
+		t.Fatal("expected broken pipe to stay unexpected")
 	}
 }

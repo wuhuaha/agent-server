@@ -40,6 +40,7 @@ type turnExecutionOptions struct {
 	ResponseID        string
 	EmitResponseStart func(trace turnTrace, responseID string, modalities []string, response voice.TurnResponse) error
 	EmitResponseDelta func(responseID string, delta voice.ResponseDelta) error
+	StartResponseAudio func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error
 }
 
 type turnExecutionResult struct {
@@ -49,10 +50,17 @@ type turnExecutionResult struct {
 	AggregatedText string
 }
 
+type responseAudioHintProvider interface {
+	MayStreamAudioResponse() bool
+}
+
 func executeTurnResponse(ctx context.Context, request voice.TurnRequest, trace turnTrace, opts turnExecutionOptions) (turnExecutionResult, error) {
 	responseID := strings.TrimSpace(opts.ResponseID)
 	if responseID == "" {
 		responseID = fmt.Sprintf("resp_%d", time.Now().UTC().UnixNano())
+	}
+	if orchestratingResponder, ok := opts.Responder.(voice.OrchestratingResponder); ok {
+		return executeOrchestratedTurnResponse(ctx, request, trace, responseID, opts, orchestratingResponder)
 	}
 	if streamingResponder, ok := opts.Responder.(voice.StreamingResponder); ok {
 		return executeStreamingTurnResponse(ctx, request, trace, responseID, opts, streamingResponder)
@@ -71,12 +79,208 @@ func executeTurnResponse(ctx context.Context, request voice.TurnRequest, trace t
 			return turnExecutionResult{}, err
 		}
 	}
-	if err := emitTurnResponseDeltas(responseID, deltas, opts.EmitResponseDelta); err != nil {
-		return turnExecutionResult{}, err
+	for _, delta := range deltas {
+		if delta.Kind == voice.ResponseDeltaKindText {
+			markTurnFirstTextDelta(opts.Runtime, opts.Logger, opts.SessionID, delta.Text)
+		}
+		if err := emitTurnResponseDelta(responseID, delta, opts.EmitResponseDelta); err != nil {
+			return turnExecutionResult{}, err
+		}
 	}
 
 	var collector collectedTurnText
 	collector.AddAll(deltas)
+	return turnExecutionResult{
+		Trace:          trace,
+		Response:       response,
+		ResponseID:     responseID,
+		AggregatedText: collector.Joined(),
+	}, nil
+}
+
+func executeOrchestratedTurnResponse(
+	ctx context.Context,
+	request voice.TurnRequest,
+	trace turnTrace,
+	responseID string,
+	opts turnExecutionOptions,
+	orchestratingResponder voice.OrchestratingResponder,
+) (turnExecutionResult, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+
+	deltaCh := make(chan voice.ResponseDelta, 8)
+	future, err := orchestratingResponder.RespondOrchestrated(streamCtx, request, voice.ResponseDeltaSinkFunc(func(ctx context.Context, delta voice.ResponseDelta) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case deltaCh <- delta:
+			return nil
+		}
+	}))
+	if err != nil {
+		cancel()
+		return turnExecutionResult{}, err
+	}
+
+	type streamedResponseResult struct {
+		response voice.TurnResponse
+		err      error
+	}
+	type audioStartResult struct {
+		start voice.ResponseAudioStart
+		ok    bool
+		err   error
+	}
+
+	responseCh := make(chan streamedResponseResult, 1)
+	go func() {
+		response, err := future.Wait(streamCtx)
+		responseCh <- streamedResponseResult{response: response, err: err}
+		close(deltaCh)
+	}()
+
+	var audioCh <-chan audioStartResult
+	if opts.StartResponseAudio != nil {
+		startCh := make(chan audioStartResult, 1)
+		audioCh = startCh
+		go func() {
+			start, ok, err := future.WaitAudioStart(streamCtx)
+			startCh <- audioStartResult{start: start, ok: ok, err: err}
+		}()
+	}
+
+	var (
+		collector         collectedTurnText
+		response          voice.TurnResponse
+		responseReady     bool
+		sentResponseStart bool
+		seenAnyDelta      bool
+		completion        *turnOutputOutcomeFuture
+	)
+	responseChRef := (<-chan streamedResponseResult)(responseCh)
+	audioChRef := audioCh
+
+	resolveCompletion := func() {
+		if completion == nil || !responseReady {
+			return
+		}
+		completion.Resolve(turnOutputOutcome{
+			EndSession: response.EndSession,
+			EndReason:  response.EndReason,
+			EndMessage: response.EndMessage,
+		})
+	}
+
+	for responseChRef != nil || deltaCh != nil || audioChRef != nil {
+		select {
+		case delta, ok := <-deltaCh:
+			if !ok {
+				deltaCh = nil
+				continue
+			}
+			seenAnyDelta = true
+			collector.Add(delta)
+			if !sentResponseStart {
+				modalities := []string{"text"}
+				if opts.StartResponseAudio != nil {
+					if hinted, ok := opts.Responder.(responseAudioHintProvider); ok && hinted.MayStreamAudioResponse() {
+						modalities = append(modalities, "audio")
+					}
+				}
+				trace = markTurnResponseStart(opts.Runtime, opts.Logger, opts.SessionID, trace, responseID, modalities, response)
+				if opts.EmitResponseStart != nil {
+					if err := opts.EmitResponseStart(trace, responseID, modalities, response); err != nil {
+						cancel()
+						return turnExecutionResult{}, err
+					}
+				}
+				sentResponseStart = true
+			}
+			if delta.Kind == voice.ResponseDeltaKindText {
+				markTurnFirstTextDelta(opts.Runtime, opts.Logger, opts.SessionID, delta.Text)
+			}
+			if err := emitTurnResponseDelta(responseID, delta, opts.EmitResponseDelta); err != nil {
+				cancel()
+				return turnExecutionResult{}, err
+			}
+		case startResult := <-audioChRef:
+			audioChRef = nil
+			if startResult.err != nil {
+				cancel()
+				return turnExecutionResult{}, startResult.err
+			}
+			if !startResult.ok {
+				resolveCompletion()
+				continue
+			}
+			if !sentResponseStart {
+				modalities := []string{"audio"}
+				if seenAnyDelta {
+					modalities = append([]string{"text"}, modalities...)
+				}
+				trace = markTurnResponseStart(opts.Runtime, opts.Logger, opts.SessionID, trace, responseID, modalities, response)
+				if opts.EmitResponseStart != nil {
+					if err := opts.EmitResponseStart(trace, responseID, modalities, response); err != nil {
+						cancel()
+						return turnExecutionResult{}, err
+					}
+				}
+				sentResponseStart = true
+			}
+			start := wrapResponseAudioStart(startResult.start, cancel)
+			completion = newTurnOutputOutcomeFuture()
+			if err := opts.StartResponseAudio(trace, responseID, start, collector.Joined(), completion); err != nil {
+				cancel()
+				return turnExecutionResult{}, err
+			}
+			response = markResponseAudioTransferred(response)
+			resolveCompletion()
+		case result := <-responseChRef:
+			responseChRef = nil
+			if result.err != nil {
+				cancel()
+				return turnExecutionResult{}, result.err
+			}
+			response = result.response
+			responseReady = true
+			if completion != nil {
+				response = markResponseAudioTransferred(response)
+			}
+			resolveCompletion()
+			if !sentResponseStart {
+				deltas := responseDeltasForEmission(response, true)
+				modalities := responseModalities(deltas, response)
+				trace = markTurnResponseStart(opts.Runtime, opts.Logger, opts.SessionID, trace, responseID, modalities, response)
+				if opts.EmitResponseStart != nil {
+					if err := opts.EmitResponseStart(trace, responseID, modalities, response); err != nil {
+						cancel()
+						return turnExecutionResult{}, err
+					}
+				}
+				for _, delta := range deltas {
+					if delta.Kind == voice.ResponseDeltaKindText {
+						markTurnFirstTextDelta(opts.Runtime, opts.Logger, opts.SessionID, delta.Text)
+					}
+					if err := emitTurnResponseDelta(responseID, delta, opts.EmitResponseDelta); err != nil {
+						cancel()
+						return turnExecutionResult{}, err
+					}
+				}
+				collector.AddAll(deltas)
+				sentResponseStart = true
+			}
+		}
+	}
+
+	if response.AudioStream != nil && !response.AudioStreamTransferred {
+		response.AudioStream = &cancelOnCloseAudioStream{
+			inner:  response.AudioStream,
+			cancel: cancel,
+		}
+	} else if !response.AudioStreamTransferred {
+		cancel()
+	}
+
 	return turnExecutionResult{
 		Trace:          trace,
 		Response:       response,
@@ -144,6 +348,9 @@ func executeStreamingTurnResponse(
 				}
 				sentResponseStart = true
 			}
+			if delta.Kind == voice.ResponseDeltaKindText {
+				markTurnFirstTextDelta(opts.Runtime, opts.Logger, opts.SessionID, delta.Text)
+			}
 			if err := emitTurnResponseDelta(responseID, delta, opts.EmitResponseDelta); err != nil {
 				cancel()
 				return turnExecutionResult{}, err
@@ -166,9 +373,14 @@ func executeStreamingTurnResponse(
 						return turnExecutionResult{}, err
 					}
 				}
-				if err := emitTurnResponseDeltas(responseID, deltas, opts.EmitResponseDelta); err != nil {
-					cancel()
-					return turnExecutionResult{}, err
+				for _, delta := range deltas {
+					if delta.Kind == voice.ResponseDeltaKindText {
+						markTurnFirstTextDelta(opts.Runtime, opts.Logger, opts.SessionID, delta.Text)
+					}
+					if err := emitTurnResponseDelta(responseID, delta, opts.EmitResponseDelta); err != nil {
+						cancel()
+						return turnExecutionResult{}, err
+					}
 				}
 				collector.AddAll(deltas)
 				sentResponseStart = true
@@ -218,6 +430,26 @@ func emitTurnResponseDelta(responseID string, delta voice.ResponseDelta, emit fu
 		return nil
 	}
 	return emit(responseID, delta)
+}
+
+func wrapResponseAudioStart(start voice.ResponseAudioStart, cancel context.CancelFunc) voice.ResponseAudioStart {
+	if start.Stream != nil {
+		start.Stream = &cancelOnCloseAudioStream{
+			inner:  start.Stream,
+			cancel: cancel,
+		}
+	}
+	return start
+}
+
+func markResponseAudioTransferred(response voice.TurnResponse) voice.TurnResponse {
+	if response.AudioStream == nil && len(response.AudioChunks) == 0 {
+		return response
+	}
+	response.AudioStream = nil
+	response.AudioChunks = nil
+	response.AudioStreamTransferred = true
+	return response
 }
 
 type cancelOnCloseAudioStream struct {

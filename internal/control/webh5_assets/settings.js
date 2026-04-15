@@ -74,6 +74,7 @@ async function refreshDiscovery() {
   }
 
   const payload = await response.json();
+  const serverEndpoint = payload.server_endpoint || {};
   refs.profileValue.textContent = `${payload.protocol_version} / ${payload.subprotocol}`;
   refs.inputAudioValue.textContent =
     `${payload.input_audio.codec} / ${payload.input_audio.sample_rate_hz} Hz / ${payload.input_audio.channels} ch`;
@@ -88,6 +89,13 @@ async function refreshDiscovery() {
   }
   if (payload.tts_provider === "none") {
     notes.push("当前服务端未启用 TTS，因此调试页的文本回包不会伴随二进制音频。");
+  }
+  if (serverEndpoint.main_path_candidate) {
+    if (serverEndpoint.enabled) {
+      notes.push("当前服务端已启用 server-endpoint 主路径候选：共享 preview/silence 会尝试自动收尾音频轮次，同时仍兼容显式 audio.in.commit。");
+    } else {
+      notes.push("当前服务端已将 server-endpoint 暴露为主路径候选，但该实例尚未启用；默认仍走 client commit。");
+    }
   }
   if (!payload.output_audio || payload.output_audio.codec !== "pcm16le" || payload.output_audio.channels !== 1) {
     notes.push("当前浏览器调试页只直接支持 mono pcm16le 输出播放。");

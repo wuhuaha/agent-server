@@ -41,7 +41,10 @@ Current discovery note:
 
 - `turn_mode` is currently advertised as `client_wakeup_client_commit`
 - this means the device starts the session after local wakeup or explicit action, then ends each user audio turn with `audio.in.commit`
-- the current bootstrap profile does not yet expose a server-side VAD commit path
+- discovery may now also publish a `server_endpoint` object that marks shared server endpointing as a main-path candidate
+- if that candidate object reports `enabled=true`, the server may auto-accept a spoken turn after shared preview, silence, and lexical-hold detection, but devices may still keep explicit `audio.in.commit` for compatibility
+- the public event names do not change during this candidate stage; the server still reports accepted turns through `session.update`, `response.start`, `response.chunk`, and binary audio downlink
+- preview speech-start, partial-update, and endpoint-candidate observations are not separate public RTOS events in v0
 
 ## Connection
 
@@ -91,9 +94,17 @@ When the local wake word or explicit user action fires, the client sends `sessio
 
 The client streams binary audio frames immediately after `session.start`. For `pcm16le`, each binary frame carries raw PCM bytes. For `opus`, each binary frame carries one encoded packet or packet bundle and the server normalizes it before ASR.
 
-### 4. Turn Commit
+### 4. Turn Accept Or Client Commit
 
-When local VAD or UI logic decides the user turn is complete, the client sends `audio.in.commit`.
+Baseline compatibility path:
+
+- when local VAD or UI logic decides the user turn is complete, the client sends `audio.in.commit`
+
+Server-endpoint candidate path:
+
+- if discovery reports `server_endpoint.enabled=true`, the server may accept the current audio turn without waiting for `audio.in.commit`
+- the accepted-turn `session.update` then carries the usual `state` compatibility field and may additionally include `accept_reason=server_endpoint`
+- devices should still support explicit `audio.in.commit` until the candidate path graduates further
 
 ### 5. Server Response
 
@@ -279,10 +290,75 @@ Common server states:
 - `thinking`
 - `speaking`
 
-Optional hints:
+Compatibility rules:
 
+- `state` remains the required top-level compatibility field
+- newer servers may additionally include `input_state` and `output_state`
+- older clients may ignore those lane fields and continue to drive UX from `state` only
+- `turn_id` is an optional correlation field and must not be treated by itself as proof that a new user turn was accepted
+
+Optional fields:
+
+- `input_state`
+- `output_state`
 - `barge_in_enabled`
 - `turn_id`
+- `accept_reason`
+
+Current lane meanings:
+
+- `input_state=active`: the server is accepting user input
+- `input_state=previewing`: the server is previewing speech for server-endpoint or interruption decisions
+- `input_state=committed`: the current user turn has been accepted
+- `output_state=idle`: no active reply output is streaming
+- `output_state=thinking`: the accepted turn is being prepared for reply generation
+- `output_state=speaking`: output is being streamed
+
+Current `accept_reason` usage:
+
+- `audio_commit`: explicit `audio.in.commit`
+- `server_endpoint`: shared server endpointing accepted the turn
+- `text_input`: `text.in` created the turn
+- a runtime-specific or client-supplied reason string may also appear
+
+Accepted-turn example:
+
+```json
+{
+  "type": "session.update",
+  "session_id": "sess_01HQ...",
+  "seq": 9,
+  "ts": "2026-04-15T08:00:02Z",
+  "payload": {
+    "state": "thinking",
+    "input_state": "committed",
+    "output_state": "thinking",
+    "barge_in_enabled": true,
+    "turn_id": "turn_01HQ...",
+    "accept_reason": "server_endpoint"
+  }
+}
+```
+
+Speaking-time preview example:
+
+```json
+{
+  "type": "session.update",
+  "session_id": "sess_01HQ...",
+  "seq": 14,
+  "ts": "2026-04-15T08:00:04Z",
+  "payload": {
+    "state": "speaking",
+    "input_state": "previewing",
+    "output_state": "speaking",
+    "barge_in_enabled": true,
+    "turn_id": "turn_01HQ..."
+  }
+}
+```
+
+That means the server is still speaking for compatibility, but it has already started previewing new inbound speech. The turn is not accepted until a later update includes `accept_reason` or otherwise moves into a committed lane.
 
 ### `response.start`
 
@@ -457,17 +533,26 @@ Client behaviour:
 
 Server behaviour:
 
-1. stop the current TTS downlink as soon as the interrupt is observed
-2. switch state back to `active` or `thinking`
-3. process the new user turn
+1. start previewing the new input while deciding whether to ignore, duck, or hard-interrupt the current output
+2. if a hard interrupt is accepted, stop the current TTS downlink and return the output lane to `idle`
+3. process the new accepted user turn through the same `session.update -> response.start -> response.chunk -> audio` flow
+
+Current compatibility note:
+
+- the public client contract is still the same: new audio and optional `session.update { "interrupt": true }`
+- the server may internally classify an interruption attempt as `ignore`, `backchannel`, `duck_only`, or `hard_interrupt`
+- those policy names are not yet required wire fields in `rtos-ws-v0`
+- clients therefore must not assume that the first interrupting frame always stops TTS immediately
+- preview-related observations may advance on the server before any accepted-turn update is emitted
 
 Current implemented policy:
 
-- immediate-stop policy: the server cancels the current downlink stream instead of draining it
 - first interrupt signal can be either:
   - the first new inbound binary audio frame while the session is `speaking`
   - `session.update` with `payload.interrupt = true`
-- after the interrupt is accepted, the server sends `session.update(state=active, barge_in_enabled=true)` and starts buffering the new turn
+- before a hard interrupt is accepted, the server may emit `session.update(state=speaking, input_state=previewing, output_state=speaking)` while it previews the new speech
+- after a hard interrupt is accepted, the server sends `session.update(state=active, output_state=idle, barge_in_enabled=true)`; `input_state` may still be `previewing` briefly if the interrupting audio is still staged, or `active` once buffered audio has been ingested back into the main input lane
+- a later accepted-turn update may then move to `state=thinking` with `accept_reason=audio_commit`, `accept_reason=server_endpoint`, or another runtime-defined reason
 
 ## Timeout Policy
 
@@ -494,7 +579,7 @@ To qualify as `rtos-ws-v0` compatible, a client must:
 1. open a WebSocket with subprotocol `agent-server.realtime.v0`
 2. send `session.start` after wakeup
 3. stream `pcm16le/16k/mono` audio as binary frames, or stream supported `opus` packets after advertising `audio.codec=opus` in `session.start`
-4. send `audio.in.commit` after end-of-speech
+4. send `audio.in.commit` after end-of-speech as the baseline compatibility path, even if discovery also reports `server_endpoint.enabled=true`
 5. receive `response.start`, `response.chunk`, and binary TTS audio
 6. support both client-initiated and server-initiated `session.end`
 
@@ -505,7 +590,7 @@ Client -> Server : session.start
 Client -> Server : binary audio frame
 Client -> Server : binary audio frame
 Client -> Server : audio.in.commit
-Server -> Client : session.update(state=thinking)
+Server -> Client : session.update(state=thinking, input_state=committed, output_state=thinking, accept_reason=audio_commit)
 Server -> Client : response.start
 Server -> Client : response.chunk("好的")
 Server -> Client : binary audio frame

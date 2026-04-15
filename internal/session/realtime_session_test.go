@@ -25,6 +25,9 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	if started.State != StateActive {
 		t.Fatalf("expected active state, got %s", started.State)
 	}
+	if started.InputState != InputStateActive || started.OutputState != OutputStateIdle {
+		t.Fatalf("expected active/idle lanes on start, got input=%s output=%s", started.InputState, started.OutputState)
+	}
 	if started.SessionID == "" {
 		t.Fatal("expected generated session id")
 	}
@@ -38,6 +41,9 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	}
 	if audio.InputFrames != 1 || audio.AudioBytes != len(firstFrame) {
 		t.Fatalf("unexpected audio counters: %+v", audio)
+	}
+	if audio.State != StateActive || audio.InputState != InputStateActive || audio.OutputState != OutputStateIdle {
+		t.Fatalf("expected active compat state while ingesting, got state=%s input=%s output=%s", audio.State, audio.InputState, audio.OutputState)
 	}
 
 	audio, err = rt.IngestAudioFrame(secondFrame)
@@ -55,6 +61,9 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	if thinking.Snapshot.State != StateThinking {
 		t.Fatalf("expected thinking state, got %s", thinking.Snapshot.State)
 	}
+	if thinking.Snapshot.InputState != InputStateCommitted || thinking.Snapshot.OutputState != OutputStateThinking {
+		t.Fatalf("expected committed/thinking lanes after commit, got input=%s output=%s", thinking.Snapshot.InputState, thinking.Snapshot.OutputState)
+	}
 	expectedAudio := append(append([]byte(nil), firstFrame...), secondFrame...)
 	if !bytes.Equal(thinking.AudioPCM, expectedAudio) {
 		t.Fatalf("expected committed audio length %d, got %d", len(expectedAudio), len(thinking.AudioPCM))
@@ -67,6 +76,20 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	if speaking.State != StateSpeaking {
 		t.Fatalf("expected speaking state, got %s", speaking.State)
 	}
+	if speaking.InputState != InputStateCommitted || speaking.OutputState != OutputStateSpeaking {
+		t.Fatalf("expected committed/speaking lanes, got input=%s output=%s", speaking.InputState, speaking.OutputState)
+	}
+
+	active, err := rt.SetState(StateActive)
+	if err != nil {
+		t.Fatalf("return active failed: %v", err)
+	}
+	if active.State != StateActive {
+		t.Fatalf("expected active state on return, got %s", active.State)
+	}
+	if active.InputState != InputStateActive || active.OutputState != OutputStateIdle {
+		t.Fatalf("expected active/idle lanes after active return, got input=%s output=%s", active.InputState, active.OutputState)
+	}
 
 	closing, err := rt.End(CloseReasonCompleted)
 	if err != nil {
@@ -74,6 +97,9 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	}
 	if closing.CloseReason != CloseReasonCompleted {
 		t.Fatalf("expected close reason %s, got %s", CloseReasonCompleted, closing.CloseReason)
+	}
+	if closing.State != StateClosing || closing.InputState != InputStateClosing || closing.OutputState != OutputStateClosing {
+		t.Fatalf("expected closing/closing lanes, got state=%s input=%s output=%s", closing.State, closing.InputState, closing.OutputState)
 	}
 
 	rt.ClearTurn()
@@ -83,8 +109,12 @@ func TestRealtimeSessionLifecycle(t *testing.T) {
 	}
 
 	rt.Reset()
-	if rt.Snapshot().State != StateIdle {
-		t.Fatalf("expected idle state after reset, got %s", rt.Snapshot().State)
+	reset := rt.Snapshot()
+	if reset.State != StateIdle {
+		t.Fatalf("expected idle state after reset, got %s", reset.State)
+	}
+	if reset.InputState != InputStateIdle || reset.OutputState != OutputStateIdle {
+		t.Fatalf("expected idle lanes after reset, got input=%s output=%s", reset.InputState, reset.OutputState)
 	}
 }
 
@@ -151,6 +181,71 @@ func TestRealtimeSessionCommitReturnsIndependentAudioCopy(t *testing.T) {
 	}
 	if nextTurn.AudioPCM[0] != 0x01 {
 		t.Fatalf("expected internal turn buffer to stay independent, got %x", nextTurn.AudioPCM[0])
+	}
+}
+
+func TestRealtimeSessionSupportsConcurrentInputAndOutputLanes(t *testing.T) {
+	rt := NewRealtimeSession()
+	if _, err := rt.Start(StartRequest{
+		DeviceID:        "rtos-002",
+		ClientType:      "rtos",
+		Mode:            "voice",
+		InputCodec:      "pcm16le",
+		InputSampleRate: 16000,
+		InputChannels:   1,
+	}); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	initialFrame := bytes.Repeat([]byte{0x03}, 320)
+	if _, err := rt.IngestAudioFrame(initialFrame); err != nil {
+		t.Fatalf("initial ingest failed: %v", err)
+	}
+	if _, err := rt.CommitTurn(); err != nil {
+		t.Fatalf("initial commit failed: %v", err)
+	}
+	rt.ClearTurn()
+
+	speaking, err := rt.SetState(StateSpeaking)
+	if err != nil {
+		t.Fatalf("set speaking failed: %v", err)
+	}
+	if speaking.InputState != InputStateCommitted || speaking.OutputState != OutputStateSpeaking {
+		t.Fatalf("expected committed/speaking lanes before overlap, got input=%s output=%s", speaking.InputState, speaking.OutputState)
+	}
+
+	bargeInFrame := bytes.Repeat([]byte{0x04}, 320)
+	overlap, err := rt.IngestAudioFrame(bargeInFrame)
+	if err != nil {
+		t.Fatalf("overlap ingest failed: %v", err)
+	}
+	if overlap.State != StateSpeaking {
+		t.Fatalf("expected compat speaking state during overlap, got %s", overlap.State)
+	}
+	if overlap.InputState != InputStateActive || overlap.OutputState != OutputStateSpeaking {
+		t.Fatalf("expected active/speaking lanes during overlap, got input=%s output=%s", overlap.InputState, overlap.OutputState)
+	}
+
+	accepted, err := rt.CommitTurn()
+	if err != nil {
+		t.Fatalf("overlap commit failed: %v", err)
+	}
+	if accepted.Snapshot.State != StateSpeaking {
+		t.Fatalf("expected speaking compat state when output keeps running, got %s", accepted.Snapshot.State)
+	}
+	if accepted.Snapshot.InputState != InputStateCommitted || accepted.Snapshot.OutputState != OutputStateSpeaking {
+		t.Fatalf("expected committed/speaking lanes after overlap commit, got input=%s output=%s", accepted.Snapshot.InputState, accepted.Snapshot.OutputState)
+	}
+	if !bytes.Equal(accepted.AudioPCM, bargeInFrame) {
+		t.Fatalf("expected overlap commit audio length %d, got %d", len(bargeInFrame), len(accepted.AudioPCM))
+	}
+
+	active, err := rt.SetState(StateActive)
+	if err != nil {
+		t.Fatalf("set active failed: %v", err)
+	}
+	if active.State != StateActive || active.InputState != InputStateActive || active.OutputState != OutputStateIdle {
+		t.Fatalf("expected active/idle lanes after output return, got state=%s input=%s output=%s", active.State, active.InputState, active.OutputState)
 	}
 }
 

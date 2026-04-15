@@ -76,9 +76,12 @@ type sessionEndPayload struct {
 }
 
 type sessionUpdatePayload struct {
-	State          session.State `json:"state"`
-	BargeInEnabled bool          `json:"barge_in_enabled,omitempty"`
-	TurnID         string        `json:"turn_id,omitempty"`
+	State          session.State       `json:"state"`
+	InputState     session.InputState  `json:"input_state,omitempty"`
+	OutputState    session.OutputState `json:"output_state,omitempty"`
+	BargeInEnabled bool                `json:"barge_in_enabled,omitempty"`
+	TurnID         string              `json:"turn_id,omitempty"`
+	AcceptReason   string              `json:"accept_reason,omitempty"`
 }
 
 type clientSessionUpdatePayload struct {
@@ -107,6 +110,17 @@ type errorPayload struct {
 	Code        string `json:"code"`
 	Message     string `json:"message"`
 	Recoverable bool   `json:"recoverable"`
+}
+
+func sessionUpdateFromSnapshot(snapshot session.Snapshot, turnID, acceptReason string) sessionUpdatePayload {
+	return sessionUpdatePayload{
+		State:          snapshot.State,
+		InputState:     snapshot.InputState,
+		OutputState:    snapshot.OutputState,
+		BargeInEnabled: true,
+		TurnID:         turnID,
+		AcceptReason:   strings.TrimSpace(acceptReason),
+	}
 }
 
 type wsPeer struct {
@@ -232,6 +246,7 @@ func (h *realtimeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *realtimeWSHandler) handleInboundMessage(ctx context.Context, runtime *connectionRuntime, peer *wsPeer, inbound websocketInboundMessage) error {
 	if inbound.err != nil {
+		logWebsocketInboundTermination(h.logger, runtime, runtime.turnTrace.Current(), inbound.err)
 		if handled, handleErr := h.handleReadError(runtime, inbound.err); handled {
 			return handleErr
 		}
@@ -272,6 +287,15 @@ func (h *realtimeWSHandler) handleReadError(runtime *connectionRuntime, err erro
 	snapshot := runtime.session.Snapshot()
 	now := time.Now().UTC()
 	reason, shouldClose := deadlineCloseReason(snapshot, h.profile, now)
+	trace := runtime.turnTrace.Current()
+	logTurnTraceInfo(h.logger, "gateway websocket read timeout", snapshot.SessionID, trace,
+		"remote_addr", runtime.remoteAddr,
+		"session_state", snapshot.State,
+		"idle_timeout_ms", h.profile.IdleTimeoutMs,
+		"max_session_ms", h.profile.MaxSessionMs,
+		"deadline_close", shouldClose,
+		"close_reason", string(reason),
+	)
 	if !shouldClose {
 		if snapshot.SessionID == "" {
 			return true, nil
@@ -290,17 +314,36 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 	if !h.profile.ServerEndpointEnabled || snapshot.SessionID == "" || snapshot.State != session.StateActive {
 		return nil
 	}
-	preview, active, partialChanged, commitSuggested := runtime.pollInputPreview(now)
-	if !active {
+	observation := runtime.pollInputPreview(now)
+	if !observation.Active {
 		return nil
 	}
-	if partialChanged {
-		logTurnTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, runtime.turnTrace.Current(),
-			"partial_text", preview.PartialText,
-			"audio_bytes", preview.AudioBytes,
+	if observation.PartialChanged {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
 		)
 	}
-	if commitSuggested && snapshot.AudioBytes > 0 {
+	if observation.SpeechStartedObserved {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
+			"audio_bytes", observation.Preview.AudioBytes,
+		)
+	}
+	if observation.EndpointCandidateObserved {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+			"endpoint_reason", observation.Preview.EndpointReason,
+		)
+	}
+	if observation.CommitSuggested {
+		logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+			"endpoint_reason", observation.Preview.EndpointReason,
+		)
+	}
+	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
 		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
@@ -310,20 +353,18 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 			return err
 		}
 		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "server_endpoint")
-		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+		attrs := []any{
 			"input_type", "audio",
 			"audio_bytes", len(turn.AudioPCM),
 			"input_codec", turn.Snapshot.InputCodec,
 			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 			"input_channels", turn.Snapshot.InputChannels,
 			"turn_index", turn.Snapshot.Turns,
-			"endpoint_reason", preview.EndpointReason,
-		)
-		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{
-			State:          session.StateThinking,
-			BargeInEnabled: true,
-			TurnID:         trace.TurnID,
-		}); err != nil {
+			"endpoint_reason", observation.Preview.EndpointReason,
+		}
+		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, now)
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace, attrs...)
+		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(turn.Snapshot, trace.TurnID, "server_endpoint")); err != nil {
 			return err
 		}
 		if err := h.emitTurnResponse(ctx, runtime, turn, trace, ""); err != nil {
@@ -351,25 +392,85 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 
 	if previous.State == session.StateSpeaking {
 		runtime.stagePendingBargeInAudio(normalizedPayload)
-		preview := runtime.previewForBargeIn(context.Background(), h.responder, previous, normalizedPayload)
-		if !voice.ShouldAcceptBargeIn(preview, previous.InputSampleRate, previous.InputChannels, voice.BargeInConfig{
+		observation := runtime.previewForBargeIn(context.Background(), h.responder, previous, normalizedPayload)
+		if observation.PartialChanged {
+			logInputPreviewTraceInfo(h.logger, "gateway barge-in preview updated", previous.SessionID, observation.Trace,
+				"partial_text", observation.Preview.PartialText,
+				"audio_bytes", observation.Preview.AudioBytes,
+			)
+		}
+		if observation.SpeechStartedObserved {
+			logInputPreviewTraceInfo(h.logger, "gateway barge-in speech started", previous.SessionID, observation.Trace,
+				"audio_bytes", observation.Preview.AudioBytes,
+			)
+		}
+		if observation.EndpointCandidateObserved {
+			logInputPreviewTraceInfo(h.logger, "gateway barge-in endpoint candidate", previous.SessionID, observation.Trace,
+				"partial_text", observation.Preview.PartialText,
+				"audio_bytes", observation.Preview.AudioBytes,
+				"endpoint_reason", observation.Preview.EndpointReason,
+			)
+		}
+		if observation.SpeechStartedObserved || observation.EndpointCandidateObserved {
+			if previewing, stateErr := runtime.session.SetInputState(session.InputStatePreviewing); stateErr == nil {
+				_ = runtime.peer.WriteEvent(events.TypeSessionUpdate, previewing.SessionID, sessionUpdateFromSnapshot(previewing, runtime.turnTrace.Current().TurnID, ""))
+			}
+		}
+		decision := voice.EvaluateBargeIn(observation.Preview, previous.InputSampleRate, previous.InputChannels, voice.BargeInConfig{
 			MinAudioMs:       h.profile.BargeInMinAudioMs,
 			IncompleteHoldMs: h.profile.BargeInHoldAudioMs,
-		}) {
+		})
+		if runtime.voiceSession != nil {
+			runtime.voiceSession.RecordInterruptionDecision(decision)
+		}
+		directive := decision.PlaybackDirective()
+		if directive.ShouldDuckOutput() {
+			runtime.applyOutputDirective(directive)
+			attrs := []any{
+				"barge_in_policy", decision.Policy,
+				"barge_in_reason", decision.Reason,
+				"barge_in_audio_ms", decision.AudioMs,
+				"barge_in_lexically_complete", decision.LexicallyComplete,
+				"barge_in_action", directive.Action,
+				"output_gain", directive.Gain,
+				"duck_hold_ms", directive.Hold.Milliseconds(),
+			}
+			attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
+			logTurnTraceInfo(h.logger, "gateway barge-in soft directive applied", previous.SessionID, runtime.turnTrace.Current(), attrs...)
+		}
+		if !directive.ShouldInterruptOutput() {
+			if decision.Policy != voice.InterruptionPolicyIgnore {
+				attrs := []any{
+					"barge_in_policy", decision.Policy,
+					"barge_in_reason", decision.Reason,
+					"barge_in_audio_ms", decision.AudioMs,
+					"barge_in_lexically_complete", decision.LexicallyComplete,
+					"barge_in_min_audio_ms", decision.MinAudioMs,
+					"barge_in_hold_audio_ms", decision.HoldAudioMs,
+				}
+				attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
+				logTurnTraceInfo(h.logger, "gateway barge-in policy observed", previous.SessionID, runtime.turnTrace.Current(), attrs...)
+			}
 			if err := applyReadDeadline(runtime, previous, h.profile); err != nil {
 				return err
 			}
 			return nil
 		}
+		attrs := []any{
+			"barge_in_reason", decision.Reason,
+			"barge_in_audio_ms", decision.AudioMs,
+			"barge_in_lexically_complete", decision.LexicallyComplete,
+			"barge_in_min_audio_ms", decision.MinAudioMs,
+			"barge_in_hold_audio_ms", decision.HoldAudioMs,
+		}
+		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
+		logTurnTraceInfo(h.logger, "gateway barge-in accepted", previous.SessionID, runtime.turnTrace.Current(), attrs...)
 		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
 			ClearPreview: false,
 			ClearPending: false,
+			Decision:     &decision,
 		}, nil, func(trace turnTrace, active session.Snapshot) error {
-			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-				State:          active.State,
-				BargeInEnabled: true,
-				TurnID:         trace.TurnID,
-			})
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
 		}); err != nil {
 			return err
 		}
@@ -398,14 +499,35 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 		if err := runtime.ensureInputPreview(context.Background(), h.responder, current, ""); err != nil {
 			h.logger.Warn("gateway input preview start failed", "session_id", current.SessionID, "error", err)
 		} else {
-			preview, partialChanged, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalizedPayload)
+			observation, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalizedPayload)
 			if pushErr != nil {
 				h.logger.Warn("gateway input preview push failed", "session_id", current.SessionID, "error", pushErr)
-			} else if partialChanged {
-				logTurnTraceInfo(h.logger, "gateway input preview updated", current.SessionID, runtime.turnTrace.Current(),
-					"partial_text", preview.PartialText,
-					"audio_bytes", preview.AudioBytes,
-				)
+			} else {
+				if observation.PartialChanged {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview updated", current.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+					)
+				}
+				if observation.SpeechStartedObserved {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", current.SessionID, observation.Trace,
+						"audio_bytes", observation.Preview.AudioBytes,
+					)
+				}
+				if observation.EndpointCandidateObserved {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", current.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+						"endpoint_reason", observation.Preview.EndpointReason,
+					)
+				}
+				if observation.CommitSuggested {
+					logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", current.SessionID, observation.Trace,
+						"partial_text", observation.Preview.PartialText,
+						"audio_bytes", observation.Preview.AudioBytes,
+						"endpoint_reason", observation.Preview.EndpointReason,
+					)
+				}
 			}
 		}
 	}
@@ -415,10 +537,7 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 	}
 
 	if previous.State == session.StateSpeaking {
-		return runtime.peer.WriteEvent(events.TypeSessionUpdate, current.SessionID, sessionUpdatePayload{
-			State:          current.State,
-			BargeInEnabled: true,
-		})
+		return runtime.peer.WriteEvent(events.TypeSessionUpdate, current.SessionID, sessionUpdateFromSnapshot(current, runtime.turnTrace.Current().TurnID, ""))
 	}
 
 	return nil
@@ -506,10 +625,7 @@ func (h *realtimeWSHandler) handleSessionStart(runtime *connectionRuntime, envel
 		return err
 	}
 
-	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{
-		State:          session.StateActive,
-		BargeInEnabled: true,
-	})
+	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(snapshot, "", ""))
 }
 
 func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -527,12 +643,10 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
 			ClearPreview: false,
 			ClearPending: false,
+			Policy:       voice.InterruptionPolicyHardInterrupt,
+			Reason:       firstNonEmpty(strings.TrimSpace(payload.Reason), "explicit_commit_during_speaking"),
 		}, nil, func(trace turnTrace, active session.Snapshot) error {
-			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-				State:          active.State,
-				BargeInEnabled: true,
-				TurnID:         trace.TurnID,
-			})
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
 		}); err != nil {
 			return err
 		}
@@ -549,6 +663,7 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 			Recoverable: true,
 		})
 	}
+	previewTrace := runtime.currentInputPreviewTrace()
 	runtime.clearInputPreview()
 	turn, err := runtime.session.CommitTurn()
 	if err != nil {
@@ -565,15 +680,17 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 	}
 
 	turnMeta := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "audio_commit")
-	logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, turnMeta,
+	attrs := []any{
 		"input_type", "audio",
 		"audio_bytes", len(turn.AudioPCM),
 		"input_codec", turn.Snapshot.InputCodec,
 		"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 		"input_channels", turn.Snapshot.InputChannels,
 		"turn_index", turn.Snapshot.Turns,
-	)
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking, TurnID: turnMeta.TurnID}); err != nil {
+	}
+	attrs = appendInputPreviewTraceLogAttrs(attrs, previewTrace, time.Now().UTC())
+	logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, turnMeta, attrs...)
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(turn.Snapshot, turnMeta.TurnID, firstNonEmpty(strings.TrimSpace(payload.Reason), "audio_commit"))); err != nil {
 		return err
 	}
 
@@ -599,7 +716,16 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 	}
 
 	if runtime.session.Snapshot().State == session.StateSpeaking {
-		runtime.interruptOutput(100 * time.Millisecond)
+		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
+			ClearPreview: true,
+			ClearPending: true,
+			Policy:       voice.InterruptionPolicyHardInterrupt,
+			Reason:       "text_input_during_speaking",
+		}, nil, func(trace turnTrace, active session.Snapshot) error {
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
+		}); err != nil {
+			return err
+		}
 	}
 
 	if _, err := runtime.session.AcceptText(); err != nil {
@@ -630,7 +756,7 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		"text_len", len(strings.TrimSpace(payload.Text)),
 		"turn_index", turn.Snapshot.Turns,
 	)
-	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdatePayload{State: session.StateThinking, TurnID: turnMeta.TurnID}); err != nil {
+	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(turn.Snapshot, turnMeta.TurnID, "text_input")); err != nil {
 		return err
 	}
 
@@ -684,41 +810,88 @@ func (h *realtimeWSHandler) handleSessionUpdate(runtime *connectionRuntime, enve
 	}
 
 	if payload.Interrupt && snapshot.State == session.StateSpeaking {
-		return interruptSpeakingFlow(runtime, h.profile, h.logger, nil, func(trace turnTrace, active session.Snapshot) error {
-			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-				State:          active.State,
-				BargeInEnabled: true,
-				TurnID:         trace.TurnID,
-			})
+		return interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
+			ClearPreview: true,
+			ClearPending: true,
+			Policy:       voice.InterruptionPolicyHardInterrupt,
+			Reason:       "client_interrupt_hint",
+		}, nil, func(trace turnTrace, active session.Snapshot) error {
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
 		})
 	}
 
-	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{
-		State:          snapshot.State,
-		BargeInEnabled: true,
-	})
+	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(snapshot, "", ""))
 }
 
 func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string) error {
 	request := buildTurnRequest(turn, runtime, trace, text)
+	if runtime.voiceSession != nil {
+		runtime.voiceSession.PrepareTurn(request, strings.TrimSpace(text), "")
+	}
 	result, err := executeTurnResponse(ctx, request, trace, turnExecutionOptions{
 		Runtime:   runtime,
 		Responder: h.responder,
 		Logger:    h.logger,
 		SessionID: turn.Snapshot.SessionID,
 		EmitResponseStart: func(trace turnTrace, responseID string, modalities []string, _ voice.TurnResponse) error {
-			return runtime.peer.WriteEvent(events.TypeResponseStart, turn.Snapshot.SessionID, responseStartPayload{
+			if err := runtime.peer.WriteEvent(events.TypeResponseStart, turn.Snapshot.SessionID, responseStartPayload{
 				ResponseID: responseID,
 				Modalities: modalities,
 				TurnID:     trace.TurnID,
 				TraceID:    trace.TraceID,
-			})
+			}); err != nil {
+				logTurnTraceError(h.logger, "gateway response.start write failed", turn.Snapshot.SessionID, trace, err,
+					"remote_addr", runtime.remoteAddr,
+					"response_id", responseID,
+					"modalities", strings.Join(modalities, ","),
+					"ws_stage", "response_start",
+				)
+				return err
+			}
+			logTurnTraceInfo(h.logger, "gateway response.start sent", turn.Snapshot.SessionID, trace,
+				"remote_addr", runtime.remoteAddr,
+				"response_id", responseID,
+				"modalities", strings.Join(modalities, ","),
+			)
+			return nil
 		},
 		EmitResponseDelta: func(responseID string, delta voice.ResponseDelta) error {
 			return h.emitResponseDelta(runtime, turn.Snapshot.SessionID, responseID, delta)
 		},
+		StartResponseAudio: func(trace turnTrace, _ string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error {
+			speaking, err := runtime.session.SetOutputState(session.OutputStateSpeaking)
+			if err != nil {
+				return err
+			}
+			trace = runtime.turnTrace.MarkSpeaking()
+			logTurnTraceInfo(h.logger, "gateway turn speaking", turn.Snapshot.SessionID, trace,
+				"speaking_latency_ms", trace.SpeakingLatencyMs(),
+				"audio_start_source", string(audioStart.Source),
+				"audio_start_incremental", audioStart.Incremental,
+			)
+			if runtime.voiceSession != nil {
+				runtime.voiceSession.StartPlayback(aggregatedText, outputFrameInterval, plannedPlaybackDurationForAudioStream(audioStart.Stream, outputFrameInterval))
+			}
+			if err := applyReadDeadline(runtime, speaking, h.profile); err != nil {
+				return err
+			}
+			if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(speaking, trace.TurnID, "")); err != nil {
+				logTurnTraceError(h.logger, "gateway speaking update write failed", turn.Snapshot.SessionID, trace, err,
+					"remote_addr", runtime.remoteAddr,
+					"ws_stage", "session_update_speaking",
+				)
+				return err
+			}
+			logTurnTraceInfo(h.logger, "gateway speaking update sent", turn.Snapshot.SessionID, trace,
+				"remote_addr", runtime.remoteAddr,
+				"audio_start_source", string(audioStart.Source),
+			)
+			h.startAudioStream(ctx, runtime, turn.Snapshot.SessionID, trace, audioStart.Stream, completion)
+			return nil
+		},
 	})
 	if err != nil {
+		runtime.interruptOutput(100 * time.Millisecond)
 		return h.terminateWithError(runtime, "response_generation_failed", err.Error())
 	}
 	inputText := strings.TrimSpace(result.Response.InputText)
@@ -731,6 +904,12 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 	}
 	if runtime.voiceSession != nil {
 		runtime.voiceSession.PrepareTurn(request, inputText, strings.TrimSpace(result.Response.Text))
+		if result.Response.AudioStreamTransferred {
+			runtime.voiceSession.UpdatePlayback(deliveredText, 0)
+		}
+	}
+	if result.Response.AudioStreamTransferred {
+		return nil
 	}
 	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.Response, deliveredText)
 }
@@ -793,11 +972,7 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 			Logger:    h.logger,
 			SessionID: snapshot.SessionID,
 			OnReturnActive: func(trace turnTrace, active session.Snapshot) error {
-				return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-					State:          active.State,
-					BargeInEnabled: true,
-					TurnID:         trace.TurnID,
-				})
+				return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
 			},
 			OnEndSession: func(_ turnTrace, reason session.CloseReason, message string) error {
 				return h.endSession(runtime, reason, message)
@@ -813,13 +988,25 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 			if runtime.voiceSession != nil {
 				runtime.voiceSession.StartPlayback(deliveredText, outputFrameInterval, plannedPlaybackDurationForResponse(response, outputFrameInterval))
 			}
-			return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdatePayload{
-				State:  session.StateSpeaking,
-				TurnID: trace.TurnID,
-			})
+			speaking := runtime.session.Snapshot()
+			if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(speaking, trace.TurnID, "")); err != nil {
+				logTurnTraceError(h.logger, "gateway speaking update write failed", snapshot.SessionID, trace, err,
+					"remote_addr", runtime.remoteAddr,
+					"ws_stage", "session_update_speaking",
+				)
+				return err
+			}
+			logTurnTraceInfo(h.logger, "gateway speaking update sent", snapshot.SessionID, trace,
+				"remote_addr", runtime.remoteAddr,
+			)
+			return nil
 		},
 		StartAudioStream: func(trace turnTrace, audioStream voice.AudioStream, response voice.TurnResponse, _ string) error {
-			h.startAudioStream(ctx, runtime, snapshot.SessionID, trace, audioStream, response.EndSession, response.EndReason, response.EndMessage)
+			h.startAudioStream(ctx, runtime, snapshot.SessionID, trace, audioStream, resolvedTurnOutputOutcome(turnOutputOutcome{
+				EndSession: response.EndSession,
+				EndReason:  response.EndReason,
+				EndMessage: response.EndMessage,
+			}))
 			return nil
 		},
 	})
@@ -831,12 +1018,11 @@ func (h *realtimeWSHandler) startAudioStream(
 	sessionID string,
 	trace turnTrace,
 	audioStream voice.AudioStream,
-	endSession bool,
-	endReason string,
-	endMessage string,
+	completion *turnOutputOutcomeFuture,
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream := runtime.installOutput(cancel)
+	stream := runtime.installOutput(cancel, completion)
+	audioStream = newPCM16EffectAudioStream(audioStream, &stream.effects)
 
 	go func() {
 		defer close(stream.done)
@@ -845,6 +1031,7 @@ func (h *realtimeWSHandler) startAudioStream(
 
 		ticker := time.NewTicker(outputFrameInterval)
 		defer ticker.Stop()
+		audioChunkIndex := 0
 
 		for {
 			if streamCtx.Err() != nil {
@@ -873,9 +1060,17 @@ func (h *realtimeWSHandler) startAudioStream(
 			if len(chunk) == 0 {
 				continue
 			}
+			audioChunkIndex++
 			if err := runtime.peer.WriteBinary(chunk); err != nil {
+				logTurnTraceError(h.logger, "gateway audio binary write failed", sessionID, runtime.turnTrace.Current(), err,
+					"remote_addr", runtime.remoteAddr,
+					"audio_chunk_index", audioChunkIndex,
+					"audio_chunk_bytes", len(chunk),
+					"ws_stage", "audio_binary",
+				)
 				return
 			}
+			markTurnFirstAudioChunk(runtime, h.logger, sessionID, len(chunk))
 			if runtime.voiceSession != nil {
 				runtime.voiceSession.ObservePlaybackChunk()
 			}
@@ -899,11 +1094,14 @@ func (h *realtimeWSHandler) startAudioStream(
 		if runtime.voiceSession != nil {
 			runtime.voiceSession.CompletePlayback()
 		}
-		runtime.resetPendingBargeInAudio()
-		runtime.clearInputPreview()
 
-		if endSession {
-			_ = completeTurnReturnOrClose(trace, true, endReason, endMessage, turnCompletionHooks{
+		outcome, err := stream.completion.Wait(streamCtx)
+		if err != nil {
+			return
+		}
+
+		if outcome.EndSession {
+			_ = completeTurnReturnOrClose(trace, true, outcome.EndReason, outcome.EndMessage, turnCompletionHooks{
 				Runtime:   runtime,
 				Profile:   h.profile,
 				Logger:    h.logger,
@@ -915,17 +1113,16 @@ func (h *realtimeWSHandler) startAudioStream(
 			return
 		}
 
-		_ = completeTurnReturnOrClose(trace, false, endReason, endMessage, turnCompletionHooks{
+		_ = completeTurnReturnOrClose(trace, false, outcome.EndReason, outcome.EndMessage, turnCompletionHooks{
 			Runtime:   runtime,
 			Profile:   h.profile,
 			Logger:    h.logger,
 			SessionID: sessionID,
+			ResolveReturnActive: func() (session.Snapshot, bool, error) {
+				return runtime.resolvePostPlaybackActiveSnapshot()
+			},
 			OnReturnActive: func(trace turnTrace, active session.Snapshot) error {
-				return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdatePayload{
-					State:          active.State,
-					BargeInEnabled: true,
-					TurnID:         trace.TurnID,
-				})
+				return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
 			},
 		})
 	}()
@@ -966,6 +1163,11 @@ func (h *realtimeWSHandler) endSession(runtime *connectionRuntime, reason sessio
 	}
 
 	if err := runtime.peer.WriteEvent(events.TypeSessionEnd, snapshot.SessionID, sessionEndPayload{Reason: string(reason), Message: message}); err != nil {
+		logTurnTraceError(h.logger, "gateway session.end write failed", snapshot.SessionID, runtime.turnTrace.Current(), err,
+			"remote_addr", runtime.remoteAddr,
+			"end_reason", string(reason),
+			"ws_stage", "session_end",
+		)
 		return err
 	}
 
@@ -1024,7 +1226,19 @@ func (h *realtimeWSHandler) emitResponseDelta(runtime *connectionRuntime, sessio
 	if payload.DeltaType == "" {
 		payload.DeltaType = string(voice.ResponseDeltaKindText)
 	}
-	return runtime.peer.WriteEvent(events.TypeResponseChunk, sessionID, payload)
+	if err := runtime.peer.WriteEvent(events.TypeResponseChunk, sessionID, payload); err != nil {
+		logTurnTraceError(h.logger, "gateway response.chunk write failed", sessionID, runtime.turnTrace.Current(), err,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", responseID,
+			"delta_type", payload.DeltaType,
+			"text_len", len(payload.Text),
+			"tool_name", payload.ToolName,
+			"tool_status", payload.ToolStatus,
+			"ws_stage", "response_chunk",
+		)
+		return err
+	}
+	return nil
 }
 
 func responseCloseDirective(response voice.TurnResponse) (session.CloseReason, string) {

@@ -69,6 +69,10 @@ type TurnResponse struct {
 	Deltas      []ResponseDelta
 	AudioChunks [][]byte
 	AudioStream AudioStream
+	// AudioStreamTransferred marks that audio ownership moved onto the
+	// orchestrated early-audio path and should not be started again from the
+	// final response envelope.
+	AudioStreamTransferred bool
 	EndSession  bool
 	EndReason   string
 	EndMessage  string
@@ -90,6 +94,33 @@ func (f ResponseDeltaSinkFunc) EmitResponseDelta(ctx context.Context, delta Resp
 
 type StreamingResponder interface {
 	RespondStream(context.Context, TurnRequest, ResponseDeltaSink) (TurnResponse, error)
+}
+
+type ResponseAudioStartSource string
+
+const (
+	ResponseAudioStartSourceSpeechPlanner ResponseAudioStartSource = "speech_planner"
+	ResponseAudioStartSourceFinalResponse ResponseAudioStartSource = "final_response"
+)
+
+type ResponseAudioStart struct {
+	// Stream ownership transfers to the caller when returned from WaitAudioStart.
+	Stream      AudioStream
+	Text        string
+	Incremental bool
+	Source      ResponseAudioStartSource
+}
+
+// TurnResponseFuture separates early audio startup from the final response
+// envelope so the gateway can begin speaking before turn execution fully
+// settles.
+type TurnResponseFuture interface {
+	Wait(context.Context) (TurnResponse, error)
+	WaitAudioStart(context.Context) (ResponseAudioStart, bool, error)
+}
+
+type OrchestratingResponder interface {
+	RespondOrchestrated(context.Context, TurnRequest, ResponseDeltaSink) (TurnResponseFuture, error)
 }
 
 type TranscriptionRequest struct {

@@ -10,17 +10,21 @@ import (
 )
 
 type turnCompletionHooks struct {
-	Runtime        *connectionRuntime
-	Profile        RealtimeProfile
-	Logger         *slog.Logger
-	SessionID      string
-	OnReturnActive func(trace turnTrace, active session.Snapshot) error
-	OnEndSession   func(trace turnTrace, reason session.CloseReason, message string) error
+	Runtime             *connectionRuntime
+	Profile             RealtimeProfile
+	Logger              *slog.Logger
+	SessionID           string
+	ResolveReturnActive func() (session.Snapshot, bool, error)
+	OnReturnActive      func(trace turnTrace, active session.Snapshot) error
+	OnEndSession        func(trace turnTrace, reason session.CloseReason, message string) error
 }
 
 type interruptSpeakingOptions struct {
 	ClearPreview bool
 	ClearPending bool
+	Decision     *voice.BargeInDecision
+	Policy       voice.InterruptionPolicy
+	Reason       string
 }
 
 type turnFinalizeHooks struct {
@@ -30,12 +34,16 @@ type turnFinalizeHooks struct {
 	StartAudioStream func(trace turnTrace, audioStream voice.AudioStream, response voice.TurnResponse, aggregatedText string) error
 }
 
+type playbackDurationAware interface {
+	PlaybackDuration(frameDuration time.Duration) time.Duration
+}
+
 func finalizeTurnLifecycle(trace turnTrace, response voice.TurnResponse, aggregatedText string, hooks turnFinalizeHooks) error {
 	hooks.Completion.Runtime.session.ClearTurn()
 
 	audioStream := audioStreamForTurnResponse(response)
 	if audioStream != nil {
-		speaking, err := hooks.Completion.Runtime.session.SetState(session.StateSpeaking)
+		speaking, err := hooks.Completion.Runtime.session.SetOutputState(session.OutputStateSpeaking)
 		if err != nil {
 			return err
 		}
@@ -83,9 +91,27 @@ func completeTurnReturnOrClose(trace turnTrace, endSession bool, endReason, endM
 		return hooks.OnEndSession(trace, reason, message)
 	}
 
-	active, err := hooks.Runtime.session.SetState(session.StateActive)
-	if err != nil {
-		return err
+	var (
+		active session.Snapshot
+		err    error
+	)
+	if hooks.ResolveReturnActive != nil {
+		var resolved bool
+		active, resolved, err = hooks.ResolveReturnActive()
+		if err != nil {
+			return err
+		}
+		if !resolved {
+			active, err = hooks.Runtime.session.SetState(session.StateActive)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		active, err = hooks.Runtime.session.SetState(session.StateActive)
+		if err != nil {
+			return err
+		}
 	}
 	if err := applyReadDeadline(hooks.Runtime, active, hooks.Profile); err != nil {
 		return err
@@ -101,7 +127,17 @@ func completeTurnReturnOrClose(trace turnTrace, endSession bool, endReason, endM
 	if hooks.OnReturnActive == nil {
 		return nil
 	}
-	return hooks.OnReturnActive(trace, active)
+	if err := hooks.OnReturnActive(trace, active); err != nil {
+		logTurnTraceError(hooks.Logger, "gateway active update write failed", hooks.SessionID, trace, err,
+			"remote_addr", hooks.Runtime.remoteAddr,
+			"ws_stage", "session_update_active",
+		)
+		return err
+	}
+	logTurnTraceInfo(hooks.Logger, "gateway active update sent", hooks.SessionID, trace,
+		"remote_addr", hooks.Runtime.remoteAddr,
+	)
+	return nil
 }
 
 func interruptSpeakingFlow(runtime *connectionRuntime, profile RealtimeProfile, logger *slog.Logger, onInterrupted func() error, onReturnActive func(turnTrace, session.Snapshot) error) error {
@@ -116,7 +152,15 @@ func interruptSpeakingFlowWithOptions(runtime *connectionRuntime, profile Realti
 	if snapshot.State != session.StateSpeaking && runtime.output == nil {
 		return nil
 	}
-	interrupted := runtime.interruptOutput(100 * time.Millisecond)
+	var interrupted bool
+	switch {
+	case opts.Decision != nil:
+		interrupted = runtime.interruptOutputWithDecision(*opts.Decision, 100*time.Millisecond)
+	case opts.Policy != "":
+		interrupted = runtime.interruptOutputWithPolicy(opts.Policy, opts.Reason, 100*time.Millisecond)
+	default:
+		interrupted = runtime.interruptOutput(100 * time.Millisecond)
+	}
 	if interrupted && onInterrupted != nil {
 		if err := onInterrupted(); err != nil {
 			return err
@@ -125,7 +169,7 @@ func interruptSpeakingFlowWithOptions(runtime *connectionRuntime, profile Realti
 	if snapshot.SessionID == "" || snapshot.State != session.StateSpeaking {
 		return nil
 	}
-	active, err := runtime.session.SetState(session.StateActive)
+	active, err := runtime.session.SetOutputState(session.OutputStateIdle)
 	if err != nil {
 		return err
 	}
@@ -146,7 +190,17 @@ func interruptSpeakingFlowWithOptions(runtime *connectionRuntime, profile Realti
 	if onReturnActive == nil {
 		return nil
 	}
-	return onReturnActive(trace, active)
+	if err := onReturnActive(trace, active); err != nil {
+		logTurnTraceError(logger, "gateway barge-in active update write failed", active.SessionID, trace, err,
+			"remote_addr", runtime.remoteAddr,
+			"ws_stage", "session_update_active_barge_in",
+		)
+		return err
+	}
+	logTurnTraceInfo(logger, "gateway barge-in active update sent", active.SessionID, trace,
+		"remote_addr", runtime.remoteAddr,
+	)
+	return nil
 }
 
 func audioStreamForTurnResponse(response voice.TurnResponse) voice.AudioStream {
@@ -165,6 +219,16 @@ func plannedPlaybackDurationForResponse(response voice.TurnResponse, chunkDurati
 	}
 	if len(response.AudioChunks) > 0 {
 		return time.Duration(len(response.AudioChunks)) * chunkDuration
+	}
+	return plannedPlaybackDurationForAudioStream(response.AudioStream, chunkDuration)
+}
+
+func plannedPlaybackDurationForAudioStream(audioStream voice.AudioStream, chunkDuration time.Duration) time.Duration {
+	if chunkDuration <= 0 || audioStream == nil {
+		return 0
+	}
+	if aware, ok := audioStream.(playbackDurationAware); ok {
+		return aware.PlaybackDuration(chunkDuration)
 	}
 	return 0
 }

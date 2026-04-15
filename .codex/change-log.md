@@ -2,6 +2,45 @@
 
 ## 2026-04-15
 
+- Recorded the current realtime full-duplex gap review against the device-side `S1` to `S4` suggestions:
+  - added `docs/architecture/realtime-full-duplex-gap-review-zh-2026-04-15.md`, a code-grounded review of what is already done versus still missing in server endpointing, dual-track session state, overlapping TTS, and interruption policy
+  - updated `docs/architecture/overview.md` and `plan.md` so this review is part of the main architecture/planning entrypoints
+  - added ADR `0030-true-full-duplex-requires-dual-track-session-state-before-more-endpoint-tuning.md` to freeze the current architectural conclusion that true full duplex now depends primarily on a dual-track input/output session core
+- Promoted shared server endpointing from a hidden experiment to a discovery-advertised main-path candidate without changing the default v0 turn contract:
+  - `GET /v1/realtime` and `GET /v1/info` now expose a structured `server_endpoint` object with availability, enabled state, candidate status, compatibility, and shared threshold metadata
+  - the browser debug/settings pages now surface whether the candidate path is merely available or already enabled on the current instance
+  - the desktop runner report now records `server_endpoint_mode`, `server_endpoint_enabled`, and `server_endpoint_main_path_candidate`
+  - updated protocol/runtime/architecture docs plus ADR `0029` so the repository now treats this path as a serious mainline candidate while `turn_mode` remains `client_wakeup_client_commit`
+  - validation: `PYTHONPATH=clients/python-desktop-client/src python3 -m unittest clients.python-desktop-client.tests.test_protocol clients.python-desktop-client.tests.test_runner` and `go test ./internal/control ./internal/gateway ./internal/app`
+- Started the local GPU LLM cutover for the household voice assistant path:
+  - added `workers/python/src/agent_server_workers/local_llm_service.py`, a local OpenAI-compatible `/chat/completions` worker that can sit behind the existing Go-side `deepseek_chat` executor path
+  - added `workers/python/tests/test_local_llm_service.py` plus `workers/python/pyproject.toml` wiring for the new worker script and optional `llm` dependencies
+  - added machine-level bring-up helpers:
+    - `scripts/run-local-llm-worker.sh`
+    - `scripts/download-local-llm-model.sh`
+    - `scripts/provision-local-qwen-agent.sh`
+    - `deploy/systemd/agent-server-local-llm.service`
+    - `deploy/systemd/agent-server-local-llm.env.example`
+  - hardened `scripts/download-local-llm-model.sh` so `modelscope` integrity-failed temp shards are removed and retried automatically instead of requiring fully manual cleanup
+  - updated runtime and env docs so the existing `deepseek_chat` executor can now be pointed at a local OpenAI-compatible worker such as `Qwen/Qwen3-4B-Instruct-2507`
+  - updated `scripts/run-agentd-local.sh` so long-running `agentd` waits for a local LLM worker health endpoint before serving when the `deepseek_chat` base URL is local
+- Hardened the built-in LLM prompt composition for relative-date questions:
+  - `internal/agent/llm.go` now injects a current local time/date context section into the shared system prompt
+  - added Go coverage in `internal/agent/llm_executor_test.go` so future prompt changes still keep local-time context available to the model
+- Added the next realtime downlink-debug slice for the RTOS/device path:
+  - added shared websocket diagnostics in `internal/gateway/websocket_debug.go` so close codes and close text render consistently in structured logs
+  - native realtime and `xiaozhi` now log inbound websocket termination, `response.start` send success or failure, speaking-state update success or failure, streamed text chunk write failure, audio binary write failure, return-to-active update failure, and `session.end` write failure
+  - the shared logs now carry `remote_addr` plus `ws_stage`, which makes it much easier to distinguish early device disconnects from server-side downlink failures
+  - refreshed the long-running `agentd` service onto repo-local `.runtime/bin/agentd`, and both `http://127.0.0.1:8080/healthz` and `https://101.33.235.154/healthz` currently return `status=ok`
+- Added the next mainline debug-observability slice for phase-1 realtime voice optimization:
+  - shared preview tracing in `internal/gateway` now records `preview_id`, first-partial latency, commit-suggestion latency, preview audio bytes, and endpoint reason
+  - shared turn tracing now records first text-delta latency and first audio-chunk latency
+  - accepted speaking-state interruption now logs a structured barge-in decision instead of leaving that path mostly opaque
+  - added gateway unit and integration coverage for the new trace milestones and emitted logs
+- Recorded the current-machine Git push baseline for later sessions:
+  - HTTPS push to GitHub is not usable on this host without additional credentials
+  - the validated path is SSH via the local alias `github-wuhuaha-kws-trainint`
+  - the repo-local `origin` now keeps fetch on HTTPS and push on `github-wuhuaha-kws-trainint:wuhuaha/agent-server.git`
 - Fixed the current V100 GPU deployment path for the local FunASR worker:
   - created a dedicated data-volume runtime at `/home/ubuntu/kws-training/data/agent-server-runtime/funasr-gpu-py311`
   - moved the long-running worker caches to `/home/ubuntu/kws-training/data/agent-server-cache/*`
@@ -757,3 +796,35 @@
   - `deploy/nginx/agent-server.conf`
   - `README.md` and `docs/architecture/runtime-configuration.md` now document the systemd + nginx path
 - The current machine now runs `agentd` and the local FunASR worker under `systemd`, and `nginx` exposes the stack on `80/443` while preserving direct `8080` access
+- Landed the first integrated `S1` to `S4` realtime duplex slice while keeping the v0 wire contract backward compatible:
+  - `internal/session` now exposes split `input_state` and `output_state` lanes with `state` kept as the compatibility-derived top-level view
+  - server-emitted `session.update` may now include `input_state`, `output_state`, and `accept_reason`
+  - `server_endpoint` accepted turns now flow through the same shared accepted-turn path used by `audio_commit` and `text_input`
+  - speaking-time preview and staged overlap audio now survive natural playback completion instead of being dropped when current output ends first
+  - shared interruption strategy now distinguishes `ignore`, `backchannel`, `duck_only`, and `hard_interrupt`, while only hard interrupt currently cuts playout
+- Expanded runtime, gateway, and protocol follow-through for that duplex slice:
+  - updated `docs/protocols/realtime-session-v0.md`
+  - updated `docs/protocols/rtos-device-ws-v0.md`
+  - updated `schemas/realtime/session-envelope.schema.json`
+  - refreshed `plan.md`, `.codex/issues-and-resolutions.md`, and `.codex/project-memory.md`
+- Added regression coverage for the new duplex baseline:
+  - gateway tests now cover initial lane fields, accepted-turn attribution, speaking-time preview visibility, preserved overlap input after natural playback completion, and text-input accept while speaking
+  - session/voice tests now cover direct dual-track lane transitions plus interruption-policy and heard-text metadata boundaries
+- Validated the slice with:
+  - `go test ./internal/session ./internal/gateway ./internal/voice`
+  - `go test ./internal/gateway ./internal/voice`
+  - `go test ./internal/session ./internal/gateway`
+  - `go test ./internal/voice ./internal/gateway -run 'BargeIn|SessionOrchestrator|Realtime'`
+  - `go test -tags integration ./internal/gateway -run 'Realtime|Xiaozhi'`
+- Pushed the next realtime behavior-depth slice without widening the wire contract:
+  - added shared PCM16 output ducking in `internal/gateway/output_effects.go` so `backchannel` and `duck_only` now change real playout on the native realtime path
+  - wired native realtime speaking-time barge-in to apply `PlaybackDirective` instead of treating every soft policy as log-only
+  - finished the shared early-audio orchestration path around `OrchestratingResponder`, `TurnResponseFuture`, and gateway `StartResponseAudio` hooks so planned audio can start before final turn settlement
+  - updated `internal/voice/session_orchestrator.go` so turn metadata can be prepared early and playback text can be updated while output is already in flight
+  - added regression coverage in:
+    - `internal/gateway/output_effects_test.go`
+    - `internal/gateway/turn_flow_test.go`
+    - `internal/gateway/realtime_ws_test.go`
+  - validated with:
+    - `go test ./internal/gateway ./internal/voice ./internal/session`
+    - `go test -tags integration ./internal/gateway -run 'Backchannel|AdaptiveBargeIn|BargeInInterruptsSpeaking|StreamingResponder|StartsAudioBeforeFinalResponseSettles'`

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 const outputFrameInterval = 20 * time.Millisecond
 
 type outputStream struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel     context.CancelFunc
+	done       chan struct{}
+	completion *turnOutputOutcomeFuture
+	effects    outputEffectState
 }
 
 type connectionRuntime struct {
@@ -25,6 +28,8 @@ type connectionRuntime struct {
 	inputNormalizer voice.InputNormalizer
 	voiceSession    *voice.SessionOrchestrator
 	turnTrace       turnTraceState
+	previewTrace    inputPreviewTraceState
+	remoteAddr      string
 
 	outputMu         sync.Mutex
 	output           *outputStream
@@ -33,24 +38,40 @@ type connectionRuntime struct {
 }
 
 func newConnectionRuntime(conn *websocket.Conn, peer *wsPeer, rtSession *session.RealtimeSession, responder voice.Responder) *connectionRuntime {
+	remoteAddr := ""
+	if conn != nil && conn.RemoteAddr() != nil {
+		remoteAddr = conn.RemoteAddr().String()
+	}
 	return &connectionRuntime{
 		conn:         conn,
 		peer:         peer,
 		session:      rtSession,
 		voiceSession: voice.NewSessionOrchestratorFromResponder(responder),
+		remoteAddr:   remoteAddr,
 	}
 }
 
-func (r *connectionRuntime) installOutput(cancel context.CancelFunc) *outputStream {
-	stream := &outputStream{
-		cancel: cancel,
-		done:   make(chan struct{}),
+func newOutputStream(cancel context.CancelFunc, completion *turnOutputOutcomeFuture) *outputStream {
+	return &outputStream{
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		completion: completion,
+	}
+}
+
+func (r *connectionRuntime) attachOutput(stream *outputStream) {
+	if stream == nil {
+		return
 	}
 
 	r.outputMu.Lock()
 	r.output = stream
 	r.outputMu.Unlock()
+}
 
+func (r *connectionRuntime) installOutput(cancel context.CancelFunc, completion *turnOutputOutcomeFuture) *outputStream {
+	stream := newOutputStream(cancel, completion)
+	r.attachOutput(stream)
 	return stream
 }
 
@@ -63,11 +84,23 @@ func (r *connectionRuntime) clearOutput(stream *outputStream) {
 }
 
 func (r *connectionRuntime) interruptOutput(wait time.Duration) bool {
+	return r.interruptOutputWithPolicy(voice.InterruptionPolicyHardInterrupt, "hard_interrupt", wait)
+}
+
+func (r *connectionRuntime) interruptOutputWithDecision(decision voice.BargeInDecision, wait time.Duration) bool {
+	return r.interruptOutputWithPolicy(decision.Policy, decision.Reason, wait)
+}
+
+func (r *connectionRuntime) interruptOutputWithPolicy(policy voice.InterruptionPolicy, reason string, wait time.Duration) bool {
 	r.outputMu.Lock()
 	stream := r.output
 	r.outputMu.Unlock()
 
 	if stream == nil {
+		return false
+	}
+	directive := (voice.BargeInDecision{Policy: policy, Reason: reason}).PlaybackDirective()
+	if !directive.ShouldInterruptOutput() {
 		return false
 	}
 
@@ -79,7 +112,28 @@ func (r *connectionRuntime) interruptOutput(wait time.Duration) bool {
 		}
 	}
 	if r.voiceSession != nil {
-		r.voiceSession.InterruptPlayback()
+		if normalized := strings.TrimSpace(string(policy)); normalized != "" {
+			r.voiceSession.InterruptPlaybackWithPolicy(policy, reason)
+		} else {
+			r.voiceSession.InterruptPlayback()
+		}
+	}
+	return true
+}
+
+func (r *connectionRuntime) applyOutputDirective(directive voice.PlaybackDirective) bool {
+	r.outputMu.Lock()
+	stream := r.output
+	r.outputMu.Unlock()
+
+	if stream == nil {
+		return false
+	}
+	if !stream.effects.ApplyDirective(directive, time.Now().UTC()) {
+		return false
+	}
+	if r.voiceSession != nil {
+		r.voiceSession.RecordInterruptionPolicy(directive.Policy, directive.Reason)
 	}
 	return true
 }

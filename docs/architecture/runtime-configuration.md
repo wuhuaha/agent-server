@@ -35,6 +35,7 @@ Current server behaviour:
 - the discovery default `turn_mode` is `client_wakeup_client_commit`
 - client wakeup or explicit action starts the session, and each audio turn completes only after explicit `audio.in.commit`
 - the current bootstrap profile does not yet advertise a server-side VAD commit path
+- discovery now also exposes a structured `server_endpoint` object so tooling can see whether shared server endpointing is unsupported, available-but-disabled, or enabled as the current main-path candidate
 - idle timeout is enforced only when the session state is `active`
 - max session duration is enforced across the full session lifetime
 - realtime audio downlink is paced at `20 ms` PCM frames
@@ -81,7 +82,7 @@ The first RTOS bring-up path should not depend on image input. Text input is opt
 - `AGENT_SERVER_AGENT_LLM_PROVIDER`
   - `auto`: default behaviour; prefer `deepseek_chat` when a DeepSeek key is present, otherwise fall back to `bootstrap`
   - `bootstrap`: existing placeholder or bring-up executor
-  - `deepseek_chat`: optional DeepSeek chat-completions-backed executor
+  - `deepseek_chat`: shared chat-completions-backed executor; it can target DeepSeek itself or a local OpenAI-compatible `/chat/completions` service
 - `AGENT_SERVER_AGENT_LLM_TIMEOUT_MS`: timeout for one LLM request
 - `AGENT_SERVER_AGENT_PERSONA`: built-in persona profile selector, currently `household_control_screen`
 - `AGENT_SERVER_AGENT_EXECUTION_MODE`: runtime execution policy, one of `simulation`, `dry_run`, or `live_control`
@@ -95,7 +96,7 @@ The first RTOS bring-up path should not depend on image input. Text input is opt
 
 Current runtime note:
 
-- the DeepSeek integration stays inside `internal/agent`; device gateways, channel adapters, and the voice runtime still depend only on the shared `TurnExecutor`
+- the current `deepseek_chat` integration stays inside `internal/agent`; device gateways, channel adapters, and the voice runtime still depend only on the shared `TurnExecutor`
 - when `AGENT_SERVER_AGENT_LLM_PROVIDER` is unset or `auto`, the runtime chooses `deepseek_chat` if a DeepSeek key is present; otherwise it stays on `bootstrap`
 - when `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is empty, the runtime injects a built-in assistant persona selected by `AGENT_SERVER_AGENT_PERSONA`
 - prompt composition inside the shared runtime is now layered as:
@@ -113,6 +114,28 @@ Current runtime note:
   - `live_control`: completion-style confirmation only when real execution results are available
 - reserved bring-up commands `/memory` and `/tool <name> <json>` still bypass the LLM path so runtime backends can be debugged independently of model responses
 
+### Local OpenAI-Compatible LLM Bring-Up
+
+The current agent runtime does not require a separate provider type for a local model server as long as that server exposes an OpenAI-compatible `POST /chat/completions` or `POST /v1/chat/completions` endpoint.
+
+That means the existing `deepseek_chat` path can already front a local GPU model service without widening the shared runtime boundary again.
+
+Current machine-level example for a local Qwen3 worker:
+
+```bash
+AGENT_SERVER_AGENT_LLM_PROVIDER=deepseek_chat
+AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL=http://127.0.0.1:8012/v1
+AGENT_SERVER_AGENT_DEEPSEEK_API_KEY=local-llm
+AGENT_SERVER_AGENT_DEEPSEEK_MODEL=Qwen/Qwen3-4B-Instruct-2507
+AGENT_SERVER_AGENT_LLM_TIMEOUT_MS=60000
+```
+
+Current host recommendation for the phase-1 voice demo:
+
+- prefer `Qwen/Qwen3-4B-Instruct-2507` first on the single V100 host because the same GPU is already shared with local FunASR ASR and CosyVoice TTS
+- keep `Qwen/Qwen3-8B` as a follow-up upgrade target once the voice round-trip and memory headroom are revalidated under real traffic
+- keep `force no-think` behavior enabled in the local worker so the assistant does not emit hidden reasoning text or burn extra latency on a speech-first path
+
 ## Voice Runtime
 
 - `AGENT_SERVER_VOICE_PROVIDER`
@@ -125,10 +148,10 @@ Current runtime note:
 - `AGENT_SERVER_VOICE_ASR_READY_URL`: optional health endpoint override used by `scripts/run-agentd-local.sh` before `agentd` starts
 - `AGENT_SERVER_VOICE_ASR_READY_TIMEOUT_SEC`: how long the local launcher waits for FunASR readiness, default `180`
 - `AGENT_SERVER_VOICE_ASR_READY_POLL_INTERVAL_SEC`: local launcher poll interval for worker readiness, default `2`
-- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED`: internal server-endpoint preview switch, default `false`
-- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`: minimum accumulated audio before the hidden preview path may suggest auto-commit, default `320`
-- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`: trailing local silence window before the hidden preview path may suggest auto-commit, default `480`
-- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`: hidden lexical false-endpoint guard mode, default `conservative`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED`: shared server-endpoint candidate switch, default `false`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`: minimum accumulated audio before the shared candidate path may suggest auto-commit, default `320`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`: trailing local silence window before the shared candidate path may suggest auto-commit, default `480`
+- `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`: lexical false-endpoint guard mode for the shared candidate path, default `conservative`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`: extra hold window applied when the latest partial still looks unfinished, default `720`
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`: shortened silence window used when a provider preview carries an explicit endpoint hint and the latest partial already looks complete, default `160`
 - `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`: minimum staged interrupt audio before lexically complete barge-in is accepted, default `120`
@@ -175,13 +198,14 @@ If `/etc/agent-server/agentd.env` still points at the default `/home/ubuntu/agen
 
 For `opus` device uplink, the current server path supports mono speech-oriented `SILK-only` packets and normalizes them in Go before calling the worker. The Python worker still receives `pcm16le` JSON payloads.
 
-Current internal endpoint-preview note:
+Current server-endpoint candidate note:
 
 - when `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true`, websocket adapters may start an internal input-preview session behind the shared `internal/voice` boundary and auto-commit an audio turn after a local silence window
 - preview polling, auto-commit suggestions, playout interruption, playout completion, and heard-text persistence now all flow through one shared `internal/voice.SessionOrchestrator` boundary instead of being split across multiple gateway handlers
-- the first hidden endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
+- the shared candidate endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
-- the current default hidden policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
+- the current default candidate policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
+- discovery and `/v1/info` now expose this path as `server_endpoint.main_path_candidate=true` when the selected voice provider supports shared preview-driven endpointing, even if the instance keeps the candidate disabled
 - preview polling no longer relies on websocket read timeouts for the non-terminal preview loop; native realtime and `xiaozhi` now keep the socket reusable after hidden auto-commit and a later client-driven close
 - inbound audio barge-in now stages candidate interrupt audio and applies one shared adaptive threshold instead of interrupting on the first frame:
   - lexically complete interrupt previews may cut in after `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`
@@ -218,7 +242,7 @@ Current internal endpoint-preview note:
   - `AGENT_SERVER_FUNASR_KWS_STRIP_MATCHED_PREFIX=true` lets the worker strip a matched wake-word prefix from preview/final transcript text after KWS succeeds
   - `AGENT_SERVER_FUNASR_KWS_MIN_AUDIO_MS` and `AGENT_SERVER_FUNASR_KWS_MIN_INTERVAL_MS` gate repeated KWS checks on one stream
 - KWS stays internal to the worker/runtime path: it may surface as worker `audio_events` such as `kws_detected:<keyword>`, but it does not widen the public realtime or `xiaozhi` contracts
-- this path currently stays intentionally undisclosed at the public discovery layer, so `turn_mode` still advertises `client_wakeup_client_commit`
+- this path is now discovery-advertised as a structured candidate capability, but `turn_mode` still advertises `client_wakeup_client_commit`
 - the first implementation slice uses a silence-based detector on top of streaming ASR partials; it is a stepping stone toward fuller server-side endpointing, not the final policy
 - the Python desktop runner now exposes a non-default `server-endpoint-preview` scenario for this hidden mode; it intentionally stays out of `full` and `regression`, and it should be used together with `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` plus a speech-like `--wav` sample
 - when a TTS provider is configured, the shared voice runtime can now pre-synthesize stable clauses incrementally behind `AGENT_SERVER_VOICE_SPEECH_PLANNER_*`; the public websocket contract still stays unchanged and playback ownership remains inside `internal/voice`

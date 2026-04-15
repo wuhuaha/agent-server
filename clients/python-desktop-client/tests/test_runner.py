@@ -129,6 +129,9 @@ class RunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
             llm_provider="bootstrap",
             voice_provider="funasr_http",
             tts_provider="none",
+            server_endpoint_mode="server_vad_assisted",
+            server_endpoint_enabled=True,
+            server_endpoint_main_path_candidate=True,
         )
         fake_runner._artifact_root.return_value = None
         fake_runner.run_server_endpoint_preview_scenario = mock.AsyncMock(return_value=scenario)
@@ -159,6 +162,8 @@ class RunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(report.scenarios[0].name, "server-endpoint-preview")
         self.assertEqual(report.voice_provider, "funasr_http")
+        self.assertEqual(report.server_endpoint_mode, "server_vad_assisted")
+        self.assertTrue(report.server_endpoint_enabled)
 
 
 if __name__ == "__main__":

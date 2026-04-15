@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,31 @@ import (
 const (
 	InputPreviewPollInterval = 80 * time.Millisecond
 	approxHeardRuneDuration  = 120 * time.Millisecond
+
+	interruptionPolicyMetadataKey = "voice.interruption_policy"
+	interruptionReasonMetadataKey = "voice.interruption_reason"
+	heardTextBoundaryMetadataKey  = "voice.heard_text_boundary"
+	playedDurationMetadataKey     = "voice.played_duration_ms"
+	plannedDurationMetadataKey    = "voice.planned_duration_ms"
 )
+
+type HeardTextBoundary string
+
+const (
+	HeardTextBoundaryNone   HeardTextBoundary = "none"
+	HeardTextBoundaryPrefix HeardTextBoundary = "prefix"
+	HeardTextBoundaryFull   HeardTextBoundary = "full"
+)
+
+type PlaybackInterruption struct {
+	Policy            InterruptionPolicy
+	Reason            string
+	HeardText         string
+	HeardTextBoundary HeardTextBoundary
+	PlayedDuration    time.Duration
+	PlannedDuration   time.Duration
+	Truncated         bool
+}
 
 type SessionOrchestratorProvider interface {
 	NewSessionOrchestrator() *SessionOrchestrator
@@ -54,6 +79,9 @@ type orchestratedTurn struct {
 	chunkDuration       time.Duration
 	plannedDuration     time.Duration
 	playedDuration      time.Duration
+	interruptionPolicy  InterruptionPolicy
+	interruptionReason  string
+	heardTextBoundary   HeardTextBoundary
 }
 
 func NewSessionOrchestrator(memoryStore agent.MemoryStore) *SessionOrchestrator {
@@ -184,11 +212,25 @@ func (o *SessionOrchestrator) PrepareTurn(request TurnRequest, inputText, respon
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	if o.turn != nil && o.turn.request.TurnID == request.TurnID {
+		o.turn.request = cloneTurnRequest(request)
+		o.turn.metadata = cloneStringMap(request.Metadata)
+		if trimmed := strings.TrimSpace(inputText); trimmed != "" {
+			o.turn.inputText = trimmed
+		}
+		if trimmed := strings.TrimSpace(responseText); trimmed != "" {
+			o.turn.responseText = trimmed
+		}
+		o.persistLocked()
+		return
+	}
+
 	o.turn = &orchestratedTurn{
-		request:      cloneTurnRequest(request),
-		inputText:    strings.TrimSpace(inputText),
-		metadata:     cloneStringMap(request.Metadata),
-		responseText: strings.TrimSpace(responseText),
+		request:           cloneTurnRequest(request),
+		inputText:         strings.TrimSpace(inputText),
+		metadata:          cloneStringMap(request.Metadata),
+		responseText:      strings.TrimSpace(responseText),
+		heardTextBoundary: HeardTextBoundaryNone,
 	}
 	o.persistLocked()
 }
@@ -204,6 +246,7 @@ func (o *SessionOrchestrator) FinalizeTextResponse(deliveredText string) {
 	o.turn.heardText = deliveredText
 	o.turn.playbackCompleted = true
 	o.turn.playbackActive = false
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(deliveredText, deliveredText)
 	o.persistLocked()
 	o.turn = nil
 }
@@ -223,6 +266,28 @@ func (o *SessionOrchestrator) StartPlayback(deliveredText string, chunkDuration,
 	o.turn.responseInterrupted = false
 	o.turn.responseTruncated = false
 	o.turn.heardText = ""
+	o.turn.heardTextBoundary = HeardTextBoundaryNone
+	o.turn.interruptionPolicy = InterruptionPolicyIgnore
+	o.turn.interruptionReason = ""
+}
+
+func (o *SessionOrchestrator) UpdatePlayback(deliveredText string, plannedDuration time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.turn == nil {
+		return
+	}
+	if trimmed := strings.TrimSpace(deliveredText); trimmed != "" {
+		o.turn.deliveredText = trimmed
+	}
+	if plannedDuration > 0 {
+		o.turn.plannedDuration = plannedDuration
+	}
+	if o.turn.playbackActive {
+		o.turn.heardText = heardTextForPlayback(o.turn.deliveredText, o.turn.playedDuration, o.turn.plannedDuration)
+		o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, o.turn.heardText)
+	}
+	o.persistLocked()
 }
 
 func (o *SessionOrchestrator) ObservePlaybackChunk() {
@@ -237,22 +302,70 @@ func (o *SessionOrchestrator) ObservePlaybackChunk() {
 		return
 	}
 	o.turn.heardText = heard
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, heard)
 }
 
 func (o *SessionOrchestrator) InterruptPlayback() {
+	o.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "hard_interrupt")
+}
+
+func (o *SessionOrchestrator) RecordInterruptionDecision(decision BargeInDecision) {
+	o.RecordInterruptionPolicy(decision.Policy, decision.Reason)
+}
+
+func (o *SessionOrchestrator) PlaybackDirectiveForDecision(decision BargeInDecision) PlaybackDirective {
+	return decision.PlaybackDirective()
+}
+
+func (o *SessionOrchestrator) RecordInterruptionPolicy(policy InterruptionPolicy, reason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.turn == nil || !o.turn.playbackActive {
+	if o.turn == nil {
 		return
 	}
+	recordInterruptionPolicyLocked(o.turn, policy, reason)
+}
+
+func (o *SessionOrchestrator) InterruptPlaybackWithDecision(decision BargeInDecision) PlaybackInterruption {
+	return o.InterruptPlaybackWithPolicy(decision.Policy, decision.Reason)
+}
+
+func (o *SessionOrchestrator) InterruptPlaybackWithPolicy(policy InterruptionPolicy, reason string) PlaybackInterruption {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	result := PlaybackInterruption{
+		Policy: normalizeInterruptionPolicy(policy),
+		Reason: strings.TrimSpace(reason),
+	}
+	if result.Policy == InterruptionPolicyIgnore {
+		result.Policy = InterruptionPolicyHardInterrupt
+	}
+	if result.Reason == "" {
+		result.Reason = string(result.Policy)
+	}
+	if o.turn == nil || !o.turn.playbackActive {
+		return result
+	}
+
+	recordInterruptionPolicyLocked(o.turn, result.Policy, result.Reason)
 	heard := heardTextForPlayback(o.turn.deliveredText, o.turn.playedDuration, o.turn.plannedDuration)
+	boundary := heardTextBoundaryForTexts(o.turn.deliveredText, heard)
 	o.turn.heardText = heard
+	o.turn.heardTextBoundary = boundary
 	o.turn.playbackActive = false
 	o.turn.playbackCompleted = false
 	o.turn.responseInterrupted = true
-	o.turn.responseTruncated = strings.TrimSpace(o.turn.deliveredText) != "" && strings.TrimSpace(o.turn.deliveredText) != strings.TrimSpace(heard)
+	o.turn.responseTruncated = boundary == HeardTextBoundaryPrefix
 	o.persistLocked()
+
+	result.HeardText = heard
+	result.HeardTextBoundary = boundary
+	result.PlayedDuration = o.turn.playedDuration
+	result.PlannedDuration = o.turn.plannedDuration
+	result.Truncated = o.turn.responseTruncated
 	o.turn = nil
+	return result
 }
 
 func (o *SessionOrchestrator) CompletePlayback() {
@@ -266,6 +379,7 @@ func (o *SessionOrchestrator) CompletePlayback() {
 	if strings.TrimSpace(o.turn.deliveredText) != "" {
 		o.turn.heardText = o.turn.deliveredText
 	}
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, o.turn.heardText)
 	o.turn.responseInterrupted = false
 	o.turn.responseTruncated = false
 	o.persistLocked()
@@ -276,11 +390,12 @@ func (o *SessionOrchestrator) persistLocked() {
 	if o.turn == nil {
 		return
 	}
+	metadata := enrichPlaybackMetadata(cloneStringMap(o.turn.metadata), o.turn)
 	record := agent.BuildMemoryRecord(
 		turnInputFromRequest(o.turn.request, o.turn.inputText),
 		o.turn.inputText,
 		o.turn.responseText,
-		cloneStringMap(o.turn.metadata),
+		metadata,
 	)
 	record.DeliveredText = o.turn.deliveredText
 	record.HeardText = o.turn.heardText
@@ -322,6 +437,73 @@ func heardTextForPlayback(text string, playedDuration, plannedDuration time.Dura
 		count = len(runes)
 	}
 	return string(runes[:count])
+}
+
+func normalizeInterruptionPolicy(policy InterruptionPolicy) InterruptionPolicy {
+	switch policy {
+	case InterruptionPolicyBackchannel, InterruptionPolicyDuckOnly, InterruptionPolicyHardInterrupt:
+		return policy
+	default:
+		return InterruptionPolicyIgnore
+	}
+}
+
+func recordInterruptionPolicyLocked(turn *orchestratedTurn, policy InterruptionPolicy, reason string) {
+	if turn == nil {
+		return
+	}
+	normalized := normalizeInterruptionPolicy(policy)
+	if normalized == InterruptionPolicyIgnore {
+		return
+	}
+	turn.interruptionPolicy = normalized
+	turn.interruptionReason = strings.TrimSpace(reason)
+	if turn.interruptionReason == "" {
+		turn.interruptionReason = string(normalized)
+	}
+}
+
+func heardTextBoundaryForTexts(deliveredText, heardText string) HeardTextBoundary {
+	delivered := strings.TrimSpace(deliveredText)
+	heard := strings.TrimSpace(heardText)
+	switch {
+	case heard == "":
+		return HeardTextBoundaryNone
+	case delivered == "" || heard == delivered:
+		return HeardTextBoundaryFull
+	default:
+		return HeardTextBoundaryPrefix
+	}
+}
+
+func enrichPlaybackMetadata(metadata map[string]string, turn *orchestratedTurn) map[string]string {
+	if turn == nil {
+		return metadata
+	}
+	put := func(key, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		if metadata == nil {
+			metadata = make(map[string]string, 6)
+		}
+		metadata[key] = value
+	}
+
+	if policy := normalizeInterruptionPolicy(turn.interruptionPolicy); policy != InterruptionPolicyIgnore {
+		put(interruptionPolicyMetadataKey, string(policy))
+		put(interruptionReasonMetadataKey, turn.interruptionReason)
+	}
+	if turn.responseInterrupted || turn.playbackCompleted || normalizeInterruptionPolicy(turn.interruptionPolicy) != InterruptionPolicyIgnore {
+		put(heardTextBoundaryMetadataKey, string(turn.heardTextBoundary))
+	}
+	if turn.playedDuration > 0 && (turn.responseInterrupted || turn.playbackCompleted) {
+		put(playedDurationMetadataKey, strconv.FormatInt(turn.playedDuration.Milliseconds(), 10))
+	}
+	if turn.plannedDuration > 0 && (turn.responseInterrupted || turn.playbackCompleted) {
+		put(plannedDurationMetadataKey, strconv.FormatInt(turn.plannedDuration.Milliseconds(), 10))
+	}
+	return metadata
 }
 
 func cloneTurnRequest(request TurnRequest) TurnRequest {

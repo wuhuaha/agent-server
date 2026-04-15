@@ -51,6 +51,9 @@
   - `P2`: companion-like turn control, multimodal screen context, multi-user memory, and bounded proactive behaviour
 - `RealtimeSession` snapshots must stay lightweight metadata views; accumulated turn audio is now stored privately in the session and exported only once at `CommitTurn`.
 - The currently advertised realtime turn-taking contract is `client_wakeup_client_commit`; discovery, config defaults, docs, and schemas must not imply server-side VAD until that path exists end to end.
+- Shared server endpointing is no longer treated only as a hidden experiment: discovery and `/v1/info` now expose a structured `server_endpoint` object that marks the path as a main-path candidate when the selected voice provider supports shared preview-driven auto-commit, while `turn_mode` still stays on `client_wakeup_client_commit` until a later default-rollout decision.
+- The next true full-duplex bottleneck is no longer "missing endpoint heuristics first"; it is the single-track realtime session model. The mainline architecture priority is now to introduce distinct internal input and output lanes before treating more endpoint or planner tuning as the primary fix.
+- The current realtime stack should be described internally as strong half-duplex plus adaptive interruption plus early TTS overlap, not as finished true full-duplex orchestration.
 - The shared agent runtime now owns prompt composition as three layers: persona template, runtime output contract, and execution-mode policy.
 - `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is now treated as a persona-template override, while execution-mode policy remains runtime-owned and still gets appended.
 - The current built-in execution-mode set is `simulation`, `dry_run`, and `live_control`; transports and voice responders must stay unaware of those prompt-policy details.
@@ -290,3 +293,38 @@
 - The local `funasr_http` bring-up path should now gate `agentd` start on worker readiness through `scripts/run-agentd-local.sh`, so a first live turn does not absorb online-model download or initialization time and hit the ASR HTTP timeout.
 - The archived 2026-04-14 CPU comparison shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is architecturally viable after preload, but it is not yet the right default for the CPU phase-1 demo path: response-start latency rose from about `2.05 s` to about `3.5 s` without improving the wake-word-prefixed sample.
 - The current local FunASR `1.3.1` runtime does not accept the short KWS alias `fsmn-kws` (`fsmn-kws is not registered`). The current calibrated enabled-KWS baseline is `iic/speech_charctc_kws_phone-xiaoyun`, and the worker must initialize that `AutoModel(...)` with both `keywords` and `output_dir` to avoid the `writer` error seen when those arguments were delayed until `generate(...)`.
+- On the current machine, GitHub HTTPS push is not usable by default because there is no working interactive HTTPS credential path; the validated push path is SSH via the local host alias `github-wuhuaha-kws-trainint`.
+- The current repo-local remote setup of record is:
+  - fetch URL `https://github.com/wuhuaha/agent-server.git`
+  - push URL `github-wuhuaha-kws-trainint:wuhuaha/agent-server.git`
+- If a later session loses that local `.git/config` state, restore push with `git remote set-url --push origin github-wuhuaha-kws-trainint:wuhuaha/agent-server.git` before pushing.
+- The current phase-1 realtime voice debug baseline now depends on shared gateway logs, not adapter-local one-offs. The key fields of record are:
+  - preview lifecycle: `preview_id`, `preview_first_partial_latency_ms`, `preview_commit_suggest_latency_ms`, `preview_audio_bytes`, `preview_endpoint_reason`
+  - turn lifecycle: `first_text_delta_latency_ms`, `first_audio_chunk_latency_ms`
+  - accepted speaking-state interruption: `barge_in_reason`, `barge_in_audio_ms`, `barge_in_lexically_complete`
+- The next layer of phase-1 device-path debugging now also lives in shared gateway code:
+  - inbound websocket close or read-failure logs should surface `ws_close_code`, `ws_close_text`, and `remote_addr`
+  - outbound lifecycle logs should explicitly mark `response.start`, speaking updates, streamed text deltas, audio binary chunks, return-to-active updates, and `session.end` send success or failure with a `ws_stage`
+- One 2026-04-15 real-device failure already established an important scoping rule: if logs show `asr transcription stream completed` and `agent turn completed` before `tts stream setup failed` with `context canceled`, treat the active blocker as downlink or TTS lifecycle diagnosis first, not as an ASR recognition failure.
+- On the current long-running machine service, natural-language voice turns still echo placeholder text unless the agent runtime is reconfigured: `/etc/agent-server/agentd.env` currently pins `AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap`, and `internal/agent/bootstrap_executor.go` intentionally turns non-empty user text into `agent-server received text input: <text>`.
+- For relative-date questions such as `明天周几`, moving off `bootstrap` is necessary but not always sufficient; the runtime should also receive real current-time context or expose a date/time tool if we want deterministic answers on the live service.
+- The current repository now also has a local OpenAI-compatible LLM worker path under `workers/python/src/agent_server_workers/local_llm_service.py`; the existing Go-side `deepseek_chat` executor can point at that local service without widening the shared runtime boundary again.
+- On the current single-V100 host, the first local Qwen cutover should prefer `Qwen/Qwen3-4B-Instruct-2507` over an 8B first move because the same GPU is already shared with FunASR and CosyVoice; the 8B path remains a follow-up upgrade target after latency and headroom are revalidated.
+- The built-in agent system prompt now carries current local time context by default, including local timestamp, local date, and weekday, so relative-date questions do not depend only on the model's stale prior.
+- The current realtime duplex baseline now uses dual-track internal session state: `InputState` and `OutputState` are the source of truth inside `internal/session`, while top-level `State` remains a compatibility-derived view for v0 transports.
+- `session.update` compatibility rules of record are now:
+  - keep `state` for all v0 clients
+  - optionally add `input_state`, `output_state`, and `accept_reason`
+  - treat `turn_id` as correlation only; it does not by itself mean a new user turn was accepted
+- If assistant playback ends naturally while speaking-time preview or staged overlap audio already exists, the runtime should return to `state=active` while preserving the input lane instead of clearing that staged next-turn evidence.
+- The current interruption-policy contract of record is runtime-internal, not wire-required:
+  - `ignore`
+  - `backchannel`
+  - `duck_only`
+  - `hard_interrupt`
+- In the current native realtime gateway behavior, `hard_interrupt` is the only policy that returns immediately to `active`, while `backchannel` and `duck_only` now duck the shared PCM16 playout path instead of staying log-only.
+- The current early-output orchestration baseline of record is internal, not wire-level:
+  - shared responders may expose `TurnResponseFuture`
+  - native realtime may start planned audio before final turn settlement
+  - final `TurnResponse` audio ownership is transferred internally so playback is not started twice
+- The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.

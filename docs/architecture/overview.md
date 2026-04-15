@@ -8,6 +8,10 @@ Owns session state, turn management, interruption, response streaming, and share
 
 The currently published RTOS turn-taking contract is `client_wakeup_client_commit`: devices or local UI logic start the session after wakeup, then explicitly close each user audio turn with `audio.in.commit`. Server-side VAD may arrive later, but it is not part of the advertised v0 contract today.
 
+The shared session core now has separate internal input and output lanes, while transport-facing `session.update` still keeps `state` as a compatibility-derived top-level view and may optionally expose `input_state` plus `output_state` for richer clients. That gives the runtime a foundation for speaking-time preview and accepted-turn attribution without forcing older clients to change.
+
+That said, the repository is still not full-duplex end-to-end yet. The dual-track state skeleton exists, but interruption arbitration, planner overlap, and gateway behavior still need to converge on that model before realtime voice feels truly duplex in practice.
+
 ### 2. Agent Runtime Core
 
 Owns transport-neutral turn execution, streaming turn-delta emission, conversation policy, injected memory recall or persist hooks, and injected tool catalog or invocation hooks. It consumes normalized user turns and returns shared response directives such as text output or session-close intent.
@@ -50,13 +54,17 @@ That worker boundary now also carries the first modular local speech pipeline wi
 
 The next turn-detection slice also stays inside the same layer: `internal/voice` now owns an internal input-preview boundary for partial ASR plus silence-based turn suggestions, while websocket adapters only consume preview snapshots and optional commit suggestions. The adapters still do not call ASR providers directly, and the advertised public turn mode remains unchanged until the server-endpoint path is mature enough to publish.
 
-That hidden preview path is now explicitly runtime-configurable through shared voice-runtime thresholds instead of adapter-local constants, and bring-up validation is expected to happen through an explicit non-default runner scenario rather than by widening the public discovery contract early.
+That path is no longer treated only as a hidden experiment. It is now advertised through discovery as a `server_endpoint` main-path candidate while still keeping `turn_mode=client_wakeup_client_commit` as the default public v0 contract. In other words: discovery may now tell clients that shared server endpointing is available and enabled, but explicit client commit remains the compatibility baseline until the candidate path graduates further.
+
+That discovery-advertised candidate path is explicitly runtime-configurable through shared voice-runtime thresholds instead of adapter-local constants, and bring-up validation is expected to happen through an explicit non-default runner scenario rather than by widening the public event contract early.
 
 The latest `L2` hardening slice also keeps false-endpoint protection inside the same shared layer: the hidden preview path can now hold back auto-commit when the most recent partial still looks lexically unfinished, then fall back to a longer timeout instead of splitting the turn on every short pause.
 
 The latest `L2` hardening slice keeps that same ownership model while making provider endpoint signals stronger without widening the protocol: local worker preview hints may now come from the default tail-energy path or an optional worker-side `Silero VAD` path, but they still travel only through `StreamingTranscriber` deltas into the shared turn detector. Only the shared voice runtime decides whether those hints justify a shorter endpoint window.
 
 The latest orchestration slice also makes `internal/voice` the owner of hidden preview sessions, playback lifecycle callbacks, and "what the user actually heard" persistence. `SessionOrchestrator` now keeps preview polling, auto-commit suggestions, playback start or interrupt or completion, and heard-text truncation under one shared runtime boundary. Gateway adapters report transport events into that orchestrator instead of persisting preview or playout state on their own.
+
+The next behavior-depth slice stays on that same boundary instead of creating a second protocol family. Soft interruption outcomes such as `backchannel` and `duck_only` now flow through a runtime-owned `PlaybackDirective` and can duck shared PCM16 playout on the native realtime path without inventing new wire events. Earlier speech-planner audio start also stays internal: responders may expose a `TurnResponseFuture` so the gateway can start output before the final `TurnResponse` settles, while transports still emit the same public `response.start -> response.chunk -> audio` lifecycle.
 
 ### 4. Device Adapters
 
@@ -67,6 +75,11 @@ The `xiaozhi` compatibility adapter still stays at the translation layer: even w
 The current browser or H5 direct path also stays on the native realtime contract. Browser-side PCM16 microphone and playback adaptation lives in the page itself, so the repository does not need a separate browser-only websocket protocol just to reach the same session core.
 
 Inside `internal/gateway`, native realtime and `xiaozhi` compatibility adapters now share one turn-response and output-lifecycle path instead of each carrying their own copy of `commit -> thinking -> response.start -> speaking -> active/end`. That shared helper layer is an intermediate refactor step before preview, interrupt arbitration, and playout ownership move deeper into `internal/voice`.
+
+On the current native realtime main path, that shared output layer now also owns two latency-sensitive behaviors:
+
+- soft speaking-time output arbitration, where `backchannel` and `duck_only` duck current playout instead of forcing an immediate hard cancel
+- earlier incremental output start, where the adapter can begin streaming planned audio from the shared response future before final turn settlement completes
 
 ### 5. Channel Skills
 
@@ -137,6 +150,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
 - [第一阶段语音 Agent Demo 实时体验优化研究（2026-04-14）](voice-demo-realtime-optimization-zh-2026-04-14.md)
+- [当前 realtime 全双工差距复核（2026-04-15）](realtime-full-duplex-gap-review-zh-2026-04-15.md)
 - [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
 - [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
 - [本地 CosyVoice GPU TTS 接入说明](local-cosyvoice-gpu-tts.md)

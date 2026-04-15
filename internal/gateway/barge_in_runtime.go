@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"time"
 
 	"agent-server/internal/session"
 	"agent-server/internal/voice"
@@ -64,14 +65,55 @@ func (r *connectionRuntime) flushPendingBargeInAudio() (session.Snapshot, error)
 	return snapshot, nil
 }
 
-func (r *connectionRuntime) previewForBargeIn(ctx context.Context, responder voice.Responder, snapshot session.Snapshot, payload []byte) voice.InputPreview {
-	preview := voice.InputPreview{}
+func (r *connectionRuntime) resolvePostPlaybackActiveSnapshot() (session.Snapshot, bool, error) {
+	snapshot := r.session.Snapshot()
+	if snapshot.SessionID == "" {
+		return session.Snapshot{}, false, nil
+	}
+
+	keepPreview := snapshot.InputState == session.InputStatePreviewing
+	keepPending := r.hasPendingBargeInAudio()
+	if !keepPreview && !keepPending {
+		r.resetPendingBargeInAudio()
+		r.clearInputPreview()
+		return session.Snapshot{}, false, nil
+	}
+
+	active, err := r.session.SetOutputState(session.OutputStateIdle)
+	if err != nil {
+		return session.Snapshot{}, true, err
+	}
+	current := active
+	if keepPending {
+		flushed, err := r.flushPendingBargeInAudio()
+		if err != nil {
+			return session.Snapshot{}, true, err
+		}
+		if flushed.SessionID != "" {
+			current = flushed
+		}
+	}
+	if keepPreview {
+		previewing, err := r.session.SetInputState(session.InputStatePreviewing)
+		if err != nil {
+			return session.Snapshot{}, true, err
+		}
+		current = previewing
+	}
+	return current, true, nil
+}
+
+func (r *connectionRuntime) previewForBargeIn(ctx context.Context, responder voice.Responder, snapshot session.Snapshot, payload []byte) inputPreviewObservation {
+	observation := inputPreviewObservation{}
 	if responder != nil {
 		if err := r.ensureInputPreview(ctx, responder, snapshot, ""); err == nil {
-			if pushed, _, pushErr := r.pushInputPreviewAudio(ctx, payload); pushErr == nil {
-				preview = pushed
+			if pushed, pushErr := r.pushInputPreviewAudio(ctx, payload); pushErr == nil {
+				observation = pushed
 			}
 		}
 	}
-	return r.pendingBargeInPreview(preview)
+	observation.Preview = r.pendingBargeInPreview(observation.Preview)
+	trace, _, _, _, _ := r.previewTrace.ObservePreview(snapshot.SessionID, observation.Preview, time.Now().UTC())
+	observation.Trace = trace
+	return observation
 }

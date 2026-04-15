@@ -35,6 +35,7 @@ export AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES="${AGENT_SERVER_VOICE_S
 export AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES="${AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES:-24}"
 export AGENT_SERVER_TTS_PROVIDER="${AGENT_SERVER_TTS_PROVIDER:-none}"
 export AGENT_SERVER_AGENT_LLM_PROVIDER="${AGENT_SERVER_AGENT_LLM_PROVIDER:-bootstrap}"
+export AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL="${AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
 
 derive_asr_ready_url() {
   local endpoint="$1"
@@ -80,7 +81,57 @@ wait_for_asr_ready() {
   return 1
 }
 
+derive_llm_ready_url() {
+  local base_url="$1"
+  if [[ "$base_url" == */v1 ]]; then
+    printf '%s/healthz' "${base_url%/v1}"
+    return
+  fi
+  printf '%s/healthz' "$base_url"
+}
+
+llm_base_url_is_local() {
+  local base_url="$1"
+  [[ "$base_url" == http://127.0.0.1* || "$base_url" == http://localhost* ]]
+}
+
+wait_for_llm_ready() {
+  if [[ "${AGENT_SERVER_AGENT_LLM_PROVIDER}" != "deepseek_chat" && "${AGENT_SERVER_AGENT_LLM_PROVIDER}" != "deepseek" ]]; then
+    return 0
+  fi
+  if ! llm_base_url_is_local "${AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL}"; then
+    return 0
+  fi
+
+  local timeout_sec="${AGENT_SERVER_AGENT_LLM_READY_TIMEOUT_SEC:-180}"
+  if (( timeout_sec <= 0 )); then
+    return 0
+  fi
+
+  local poll_sec="${AGENT_SERVER_AGENT_LLM_READY_POLL_INTERVAL_SEC:-2}"
+  local health_url="${AGENT_SERVER_AGENT_LLM_READY_URL:-$(derive_llm_ready_url "${AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL}")}"
+  local deadline=$((SECONDS + timeout_sec))
+  local payload=""
+
+  echo "[agentd] waiting for local LLM worker readiness: ${health_url}"
+  while (( SECONDS < deadline )); do
+    payload="$(curl -fsS "${health_url}" 2>/dev/null || true)"
+    if [[ -n "${payload}" ]] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"${payload}"; then
+      echo "[agentd] local LLM worker ready"
+      return 0
+    fi
+    sleep "${poll_sec}"
+  done
+
+  echo "[agentd] local LLM worker did not become ready within ${timeout_sec}s: ${health_url}" >&2
+  if [[ -n "${payload}" ]]; then
+    echo "[agentd] last health payload: ${payload}" >&2
+  fi
+  return 1
+}
+
 wait_for_asr_ready
+wait_for_llm_ready
 
 cd "$REPO_ROOT"
 exec "$BINARY_PATH"

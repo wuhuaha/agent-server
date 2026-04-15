@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -97,6 +99,10 @@ func (BuiltinPromptSectionProvider) ListPromptSections(_ context.Context, reques
 		{
 			Name:    "persona",
 			Content: renderAgentPersonaPrompt(request.Template, request.AssistantName, request.Persona),
+		},
+		{
+			Name:    "current_time_context",
+			Content: defaultCurrentTimeContext(),
 		},
 		{
 			Name:    "runtime_output_contract",
@@ -195,6 +201,38 @@ func defaultAgentRuntimeOutputContract() string {
 - 回复默认保持简洁自然，优先 1 句话，必要时最多 2 句话。
 - 不使用口水化、随意化表达，例如“搞定啦”“OK哈”“给你整好了”“应该是”“大概”。
 - 优先使用“好的，已经……”“已为你……”“已将……”“现在……”这类专业自然表达。`)
+}
+
+func defaultCurrentTimeContext() string {
+	now := time.Now().In(time.Local)
+	return strings.TrimSpace(fmt.Sprintf(`
+当前时间上下文：
+- 当前本地时间：%s
+- 今天是：%s，%s
+- 当用户询问今天、明天、后天、昨天、前天、本周、下周等相对时间时，请优先基于这里的本地日期判断，不要凭空猜测。`,
+		now.Format("2006-01-02 15:04:05 MST"),
+		now.Format("2006-01-02"),
+		chineseWeekday(now.Weekday()),
+	))
+}
+
+func chineseWeekday(day time.Weekday) string {
+	switch day {
+	case time.Monday:
+		return "星期一"
+	case time.Tuesday:
+		return "星期二"
+	case time.Wednesday:
+		return "星期三"
+	case time.Thursday:
+		return "星期四"
+	case time.Friday:
+		return "星期五"
+	case time.Saturday:
+		return "星期六"
+	default:
+		return "星期日"
+	}
 }
 
 func defaultAgentExecutionModePolicy(executionMode string) string {

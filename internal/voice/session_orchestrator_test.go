@@ -86,7 +86,17 @@ func TestSessionOrchestratorPersistsHeardTextOnInterrupt(t *testing.T) {
 	orchestrator.StartPlayback("好的，已经为你打开客厅灯。", 200*time.Millisecond, 2*time.Second)
 	orchestrator.ObservePlaybackChunk()
 	orchestrator.ObservePlaybackChunk()
-	orchestrator.InterruptPlayback()
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyHardInterrupt,
+		Reason: "accepted_complete_preview",
+	})
+	summary := orchestrator.InterruptPlaybackWithDecision(BargeInDecision{
+		Policy: InterruptionPolicyHardInterrupt,
+		Reason: "accepted_complete_preview",
+	})
+	if summary.Policy != InterruptionPolicyHardInterrupt || summary.HeardTextBoundary != HeardTextBoundaryPrefix {
+		t.Fatalf("expected hard interrupt summary with prefix boundary, got %+v", summary)
+	}
 
 	memoryContext, err := store.LoadTurnContext(context.Background(), agent.MemoryQuery{DeviceID: "dev-1"})
 	if err != nil {
@@ -162,11 +172,60 @@ func TestSessionOrchestratorPlaybackPersistsOnlyAtStableBoundaries(t *testing.T)
 		t.Fatalf("expected playback progress to stay in-memory only, got %d saves", got)
 	}
 
-	orchestrator.InterruptPlayback()
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyHardInterrupt,
+		Reason: "accepted_incomplete_after_hold",
+	})
+	outcome := orchestrator.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "accepted_incomplete_after_hold")
 	if got := len(store.saves); got != 2 {
 		t.Fatalf("expected interrupt to persist heard text once, got %d saves", got)
 	}
 	if !store.saves[1].ResponseInterrupted || !store.saves[1].ResponseTruncated {
 		t.Fatalf("expected interrupted truncated record, got %+v", store.saves[1])
+	}
+	if outcome.HeardTextBoundary != HeardTextBoundaryPrefix || !outcome.Truncated {
+		t.Fatalf("expected prefix heard-text boundary after interrupt, got %+v", outcome)
+	}
+	if got := store.saves[1].Metadata[interruptionPolicyMetadataKey]; got != string(InterruptionPolicyHardInterrupt) {
+		t.Fatalf("expected interruption policy metadata, got %q", got)
+	}
+	if got := store.saves[1].Metadata[interruptionReasonMetadataKey]; got != "accepted_incomplete_after_hold" {
+		t.Fatalf("expected interruption reason metadata, got %q", got)
+	}
+	if got := store.saves[1].Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryPrefix) {
+		t.Fatalf("expected heard boundary metadata, got %q", got)
+	}
+}
+
+func TestSessionOrchestratorPersistsBackchannelPolicyWithoutInterrupt(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-4",
+		TurnID:     "turn-4",
+		DeviceID:   "dev-4",
+		ClientType: "rtos",
+	}
+
+	orchestrator.PrepareTurn(request, "打开主灯", "好的，已经为你打开主灯。")
+	orchestrator.StartPlayback("好的，已经为你打开主灯。", 200*time.Millisecond, 2*time.Second)
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyBackchannel,
+		Reason: "backchannel_short_ack",
+	})
+	orchestrator.CompletePlayback()
+
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected prepare + complete saves, got %d", got)
+	}
+	record := store.saves[1]
+	if record.ResponseInterrupted || record.ResponseTruncated {
+		t.Fatalf("expected backchannel to avoid interruption flags, got %+v", record)
+	}
+	if got := record.Metadata[interruptionPolicyMetadataKey]; got != string(InterruptionPolicyBackchannel) {
+		t.Fatalf("expected backchannel policy metadata, got %q", got)
+	}
+	if got := record.Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryFull) {
+		t.Fatalf("expected full heard boundary on completed playback, got %q", got)
 	}
 }

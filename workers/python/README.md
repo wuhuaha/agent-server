@@ -12,6 +12,12 @@ This package hosts Python-side workers for `agent-server`.
   - keeps backward-compatible `stream_preview_batch` as the default stream mode
   - can switch to an internal 2pass path with `online preview + final ASR correction`
   - can optionally run KWS inside the worker, but `KWS` stays disabled by default and does not widen the public websocket contract
+- `agent_server_workers.local_llm_service`
+  - local OpenAI-compatible chat-completions worker for GPU-hosted causal LLMs
+  - intended to sit behind the existing Go-side `deepseek_chat` executor path so transports still see only the shared `TurnExecutor`
+  - current machine-first reference model is `Qwen/Qwen3-4B-Instruct-2507`
+  - supports `/chat/completions`, `/v1/chat/completions`, `/v1/models`, and `/healthz`
+  - supports streamed text responses and strips Qwen-style `<think>...</think>` blocks from the visible output
 
 ## Linux Install
 
@@ -26,6 +32,15 @@ To also install the optional local/open-source stream VAD runtime:
 ```bash
 ./scripts/install-linux-stack.sh --skip-desktop-client --with-stream-vad
 ```
+
+For the local Qwen3 worker on the current V100 host, the repository now also includes:
+
+- `scripts/download-local-llm-model.sh`
+- `scripts/run-local-llm-worker.sh`
+- `deploy/systemd/agent-server-local-llm.service`
+- `deploy/systemd/agent-server-local-llm.env.example`
+
+The current machine-first deployment choice is `Qwen/Qwen3-4B-Instruct-2507`, not `8B`, because this host already runs ASR and TTS on the same GPU and the phase-1 voice demo still prioritizes turn latency plus deployment stability over maximum model size.
 
 ## Start From Existing Conda Env
 

@@ -1,6 +1,8 @@
 package session
 
 type State string
+type InputState string
+type OutputState string
 
 type CloseReason string
 
@@ -10,6 +12,21 @@ const (
 	StateThinking State = "thinking"
 	StateSpeaking State = "speaking"
 	StateClosing  State = "closing"
+)
+
+const (
+	InputStateIdle      InputState = "idle"
+	InputStateActive    InputState = "active"
+	InputStatePreviewing InputState = "previewing"
+	InputStateCommitted InputState = "committed"
+	InputStateClosing   InputState = "closing"
+)
+
+const (
+	OutputStateIdle     OutputState = "idle"
+	OutputStateThinking OutputState = "thinking"
+	OutputStateSpeaking OutputState = "speaking"
+	OutputStateClosing  OutputState = "closing"
 )
 
 const (

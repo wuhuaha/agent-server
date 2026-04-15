@@ -69,7 +69,7 @@ Recommended live artifact root:
 The JSON report now includes:
 
 - run metadata such as `generated_at`, `run_id`, and optional `artifact_dir`
-- discovery metadata such as `turn_mode`, `llm_provider`, `voice_provider`, and `tts_provider`
+- discovery metadata such as `turn_mode`, `llm_provider`, `voice_provider`, `tts_provider`, and the current `server_endpoint` candidate status
 - per-scenario identifiers and diagnostics such as `turn_id`, `trace_id`, `issues`, and `artifacts`
 - per-scenario phase and latency metrics such as `thinking_latency_ms`, `speaking_latency_ms`, `active_return_latency_ms`, `response_start_latency_ms`, `first_partial_latency_ms`, `first_text_latency_ms`, `first_audio_latency_ms`, `barge_in_cutoff_latency_ms`, `response_complete_latency_ms`, and `playout_complete_latency_ms`
 - top-level `quality_summary` aggregates for quick cross-run comparison, including audio-byte totals, text-volume totals, partial-response ratio, heard-text totals, and issue counts
@@ -100,7 +100,7 @@ For the canonical artifact-root and profile naming convention used across the re
 
 Current intent of the additional scenarios:
 
-- `server-endpoint-preview`: uploads audio without sending `audio.in.commit` and expects hidden server endpointing to auto-close the turn; this requires `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` and a speech-like `--wav` input
+- `server-endpoint-preview`: uploads audio without sending `audio.in.commit` and expects the shared `server_endpoint` main-path candidate to auto-close the turn; this requires `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED=true` and a speech-like `--wav` input
 - `tool`: exercises the shared tool-call and tool-result delta path with `/tool time.now {}`
 - `barge-in`: verifies that one spoken response starts, receives audio, gets interrupted, and a second turn completes afterward
 - `timeout`: verifies server-driven `idle_timeout` session closure using the discovery-advertised idle timeout

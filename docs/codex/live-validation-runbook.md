@@ -39,6 +39,11 @@ If you need a variant, append a short suffix instead of inventing a new root sha
 - `rtos-mock-barge-in`
 - `web-h5-manual-mimo`
 
+Current interpretation note:
+
+- `desktop-server-endpoint-preview` now validates the shared `server_endpoint` main-path candidate rather than a purely hidden experiment
+- the public `turn_mode` may still remain `client_wakeup_client_commit` during this candidate stage, so archived reports should record both `turn_mode` and `server_endpoint_*` metadata together
+
 ## Canonical Files In A Profile Root
 
 Keep these names stable when the run owns the full stack:

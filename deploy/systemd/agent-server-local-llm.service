@@ -1,0 +1,16 @@
+[Unit]
+Description=agent-server local LLM worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/agent-server
+EnvironmentFile=/etc/agent-server/local-llm.env
+ExecStart=/home/ubuntu/agent-server/scripts/run-local-llm-worker.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

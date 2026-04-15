@@ -102,6 +102,9 @@ class ValidationReport:
     tts_provider: str
     scenarios: list[ScenarioResult]
     artifact_dir: str | None = None
+    server_endpoint_mode: str = "unsupported"
+    server_endpoint_enabled: bool = False
+    server_endpoint_main_path_candidate: bool = False
 
     @property
     def ok(self) -> bool:
@@ -799,6 +802,9 @@ async def _run_from_args(args: argparse.Namespace) -> ValidationReport:
         tts_provider=runner.discovery.tts_provider,
         scenarios=scenarios,
         artifact_dir=str(artifact_root) if artifact_root else None,
+        server_endpoint_mode=runner.discovery.server_endpoint_mode,
+        server_endpoint_enabled=runner.discovery.server_endpoint_enabled,
+        server_endpoint_main_path_candidate=runner.discovery.server_endpoint_main_path_candidate,
     )
 
 
@@ -818,6 +824,9 @@ def main() -> None:
         "llm_provider": report.llm_provider,
         "voice_provider": report.voice_provider,
         "tts_provider": report.tts_provider,
+        "server_endpoint_mode": report.server_endpoint_mode,
+        "server_endpoint_enabled": report.server_endpoint_enabled,
+        "server_endpoint_main_path_candidate": report.server_endpoint_main_path_candidate,
         "artifact_dir": report.artifact_dir,
         "quality_summary": asdict(report.quality_summary),
         "scenarios": [asdict(scenario) for scenario in report.scenarios],

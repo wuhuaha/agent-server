@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -60,6 +61,53 @@ func TestInfo(t *testing.T) {
 
 	if !strings.Contains(res.Body.String(), cfg.ServiceName) {
 		t.Fatalf("expected info response to mention %q", cfg.ServiceName)
+	}
+}
+
+func TestInfoIncludesServerEndpointCandidateProfile(t *testing.T) {
+	cfg := Config{
+		ListenAddr:  ":0",
+		ServiceName: "agent-server",
+		Environment: "test",
+		Version:     "test",
+		Voice: VoiceConfig{
+			Provider:                       "funasr_http",
+			ServerEndpointEnabled:          true,
+			ServerEndpointMinAudioMs:       320,
+			ServerEndpointSilenceMs:        480,
+			ServerEndpointLexicalMode:      "conservative",
+			ServerEndpointIncompleteHoldMs: 720,
+			ServerEndpointHintSilenceMs:    160,
+		},
+	}
+
+	server := mustNewServer(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/info", nil)
+	res := httptest.NewRecorder()
+	server.Handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, res.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	realtimeProfile, ok := body["realtime_profile"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected realtime_profile object, got %#v", body["realtime_profile"])
+	}
+	serverEndpoint, ok := realtimeProfile["server_endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected realtime_profile.server_endpoint object, got %#v", realtimeProfile["server_endpoint"])
+	}
+	if got := serverEndpoint["main_path_candidate"]; got != true {
+		t.Fatalf("expected info to expose server endpoint candidate, got %v", got)
+	}
+	if got := serverEndpoint["mode"]; got != "server_vad_assisted" {
+		t.Fatalf("expected server endpoint mode server_vad_assisted, got %v", got)
 	}
 }
 

@@ -20,12 +20,49 @@ Current implementation note:
 - `idle` and `closing` remain valid lifecycle states inside the session core, but are not currently emitted as steady-state server updates
 - the bootstrap profile does not currently publish or emit an `armed` state
 
+## Compatibility State And Lane Substates
+
+`session.update.payload.state` remains the required compatibility field in v0.
+
+Servers may now additionally include:
+
+- `input_state`: optional fine-grained input-lane state
+- `output_state`: optional fine-grained output-lane state
+- `accept_reason`: optional reason string when the server has accepted a new turn
+
+Compatibility rules:
+
+- older clients may continue to look only at `state`
+- newer clients may use `input_state` and `output_state` for richer UX, but must still tolerate them being absent
+- `state` is the compatibility-derived top-level view, not a second independent state machine
+
+Current lane values used by the shared session core:
+
+- `input_state`:
+  - `idle`: no active session input lane
+  - `active`: input is being accepted
+  - `previewing`: the server is actively previewing or staging speech for endpointing or interruption decisions
+  - `committed`: the current input turn has been accepted and handed off downstream
+  - `closing`: session shutdown is in progress
+- `output_state`:
+  - `idle`: no active server output lane
+  - `thinking`: the server accepted a turn and is preparing response output
+  - `speaking`: text and or audio output is being streamed
+  - `closing`: session shutdown is in progress
+
+Current compatibility derivation:
+
+- if `output_state=speaking`, then `state=speaking`
+- else if `output_state=thinking`, then `state=thinking`
+- else if the session is active, then `state=active`
+- else `state=idle` or `state=closing` for lifecycle edges
+
 ## Required Behaviours
 
 - Wakeup on the client can trigger `session.start`.
 - Both client and server may send `session.end`.
 - A reason must be supplied when ending a session.
-- User speech during server output may trigger `barge_in`.
+- User speech during server output may trigger interruption arbitration.
 - RTOS devices may use half-duplex fallback without changing the event envelope.
 
 ## Core Events
@@ -47,9 +84,9 @@ Current implementation note:
 - `session.start`: opens a new realtime dialog after local wakeup or explicit user action.
 - `session.update`: currently serves two roles:
   - client to server: optional interrupt hint with `payload.interrupt = true`
-  - server to client: non-terminal session state changes such as `active`, `thinking`, `speaking`, plus hints like `barge_in_enabled`
+  - server to client: non-terminal session state changes such as `active`, `thinking`, `speaking`, plus optional lane fields like `input_state`, `output_state`, and acceptance hints like `accept_reason`
 - `audio.in.append`: semantic name for inbound audio chunks from the client; the concrete wire profile defines the actual codec and framing details.
-- `audio.in.commit`: indicates end of the current user turn, not necessarily end of session. In the current bootstrap implementation, this is the required turn-finalization boundary for audio input.
+- `audio.in.commit`: indicates end of the current user turn, not necessarily end of session. It remains the baseline v0 compatibility boundary for audio input, although a runtime that advertises `server_endpoint.enabled=true` may accept the turn earlier without waiting for it.
 - `text.in`: sends text input on the same session when typing fallback is available.
 - `image.in`: sends an image reference or attachment metadata on the same session.
 - `response.start`: begins a server response turn.
@@ -83,7 +120,22 @@ Current turn-taking mode advertised by discovery is `client_wakeup_client_commit
 
 - the client wake word or explicit user action opens the session
 - the client ends each audio turn with `audio.in.commit`
-- the server does not yet advertise a server-side VAD turn-finalization path
+- the top-level `turn_mode` does not yet switch to a server-owned turn-finalization contract, even if discovery also exposes the additive `server_endpoint` candidate object
+
+Current discovery compatibility note:
+
+- discovery may additionally expose a structured `server_endpoint` object
+- that object advertises whether shared server endpointing is now a main-path candidate on the current runtime
+- even when `server_endpoint.enabled=true`, explicit `audio.in.commit` remains a supported compatibility path in v0
+- the public event names and envelope do not change for this candidate stage
+- preview speech-start, partial-update, or endpoint-candidate observations remain runtime-internal in v0 unless a future tracing contract exposes them explicitly
+
+When `server_endpoint.enabled=true`:
+
+- the server may accept a spoken turn after shared preview plus silence plus lexical-hold logic without waiting for `audio.in.commit`
+- that acceptance is still reported through the existing `session.update` plus `response.start` flow
+- the accepted-turn `session.update` may include `accept_reason=server_endpoint`
+- clients must not assume that every preview or endpoint candidate is published as a separate public event in v0
 
 ## First Transport Mapping
 
@@ -93,6 +145,11 @@ Current turn-taking mode advertised by discovery is `client_wakeup_client_commit
 
 `response.start` must still precede the first `response.chunk`, but clients should treat `payload.modalities` as an early hint during runtime streaming rather than as an exhaustive declaration of every later output piece.
 
+Current implementation note:
+
+- on the native realtime main path, shared runtime orchestration may now start audio from an internal early-output stream before the final `TurnResponse` envelope has fully settled
+- this does not add a new public event family; the existing `response.start` plus streamed deltas plus binary audio remain the public surface
+
 Current optional tracing fields:
 
 - `response.start.payload.turn_id`: server-assigned identifier for the current response turn
@@ -100,6 +157,125 @@ Current optional tracing fields:
 - `session.update.payload.turn_id`: may appear on server-emitted turn-state updates such as `thinking`, `speaking`, or the return to `active`
 
 Clients should treat these fields as optional and ignore them if absent.
+
+Compatibility note:
+
+- `turn_id` is a correlation hint, not a standalone acceptance signal
+- on preview-only `session.update` frames during `speaking`, `turn_id` may still refer to the in-flight server output turn rather than a newly accepted user turn
+
+## `session.update` Server Payload
+
+Server-emitted `session.update` keeps `state` for compatibility and may additionally include:
+
+- `input_state`
+- `output_state`
+- `barge_in_enabled`
+- `turn_id`
+- `accept_reason`
+
+Common `accept_reason` values in the current runtime:
+
+- `audio_commit`: explicit `audio.in.commit`
+- `server_endpoint`: shared server-endpoint path accepted the turn
+- `text_input`: `text.in` created the turn directly
+- a client-supplied or runtime-specific reason string may also appear for observability
+
+Compatibility notes:
+
+- `accept_reason` explains why a turn was accepted; it does not replace `state`
+- a missing `accept_reason` means "no new turn acceptance is being declared in this update"
+- clients must not fail if they see an unknown `accept_reason`
+- clients must not treat `turn_id` alone as proof that a new user turn was accepted
+
+Examples:
+
+Session started and ready for input:
+
+```json
+{
+  "type": "session.update",
+  "session_id": "sess_01HQ...",
+  "seq": 2,
+  "ts": "2026-04-15T08:00:00Z",
+  "payload": {
+    "state": "active",
+    "input_state": "active",
+    "output_state": "idle",
+    "barge_in_enabled": true
+  }
+}
+```
+
+Server-endpoint accepted the current audio turn:
+
+```json
+{
+  "type": "session.update",
+  "session_id": "sess_01HQ...",
+  "seq": 12,
+  "ts": "2026-04-15T08:00:02Z",
+  "payload": {
+    "state": "thinking",
+    "input_state": "committed",
+    "output_state": "thinking",
+    "barge_in_enabled": true,
+    "turn_id": "turn_01HQ...",
+    "accept_reason": "server_endpoint"
+  }
+}
+```
+
+The server is still speaking while previewing new user speech:
+
+```json
+{
+  "type": "session.update",
+  "session_id": "sess_01HQ...",
+  "seq": 19,
+  "ts": "2026-04-15T08:00:04Z",
+  "payload": {
+    "state": "speaking",
+    "input_state": "previewing",
+    "output_state": "speaking",
+    "barge_in_enabled": true,
+    "turn_id": "turn_01HQ..."
+  }
+}
+```
+
+That last shape means:
+
+- compatibility-only clients still see `state=speaking`
+- richer clients may infer that new user speech is being previewed while output is still in progress
+- the turn has not been accepted yet unless `accept_reason` is present or a later update moves the session into a committed lane
+
+## Interruption Compatibility
+
+The public v0 interruption surface is unchanged:
+
+- the client may start sending new audio during `speaking`
+- the client may additionally send `session.update { "interrupt": true }`
+- the client may still finish the interrupting turn with `audio.in.commit`
+
+The server may now internally classify an interruption attempt into richer policies such as:
+
+- `ignore`
+- `backchannel`
+- `duck_only`
+- `hard_interrupt`
+
+Current implementation note:
+
+- on the native realtime main path, `backchannel` and `duck_only` now apply real shared-output ducking on the current PCM16 playout path instead of remaining log-only
+- that ducking behavior is still runtime-internal in v0; clients do not receive a separate public `duck` event
+
+Compatibility rules:
+
+- these policy names are internal runtime behavior in v0 and are not yet a required wire field
+- clients must not assume the first new audio frame always causes an immediate hard stop of TTS
+- the server may continue `state=speaking` while `input_state=previewing` until it decides whether to ignore, duck, or hard-interrupt
+- once a hard interrupt is accepted, the server returns to the regular `session.update(state=active|thinking)` path and continues with the next accepted turn
+- immediately after hard interrupt acceptance, the server commonly reports `output_state=idle` while `input_state` may still be `previewing` for a short overlap window before later settling back to `active` or moving into a committed turn
 
 ## `response.chunk` Delta Payload
 

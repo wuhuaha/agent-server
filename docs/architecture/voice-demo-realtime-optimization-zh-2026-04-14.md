@@ -235,6 +235,32 @@
 - 固化 scripted scenario
 - 固化 false interruption 与 endpoint 误判统计
 
+2026-04-15 这条主线已经补了一轮共享 debug/timing 日志，且保持公网协议不变，主要落在 `internal/gateway`：
+
+- `input preview` 生命周期现在会记录：
+  - preview 更新
+  - preview 首次 partial 延迟
+  - preview commit suggestion 延迟
+  - preview 累计音频字节数
+  - preview endpoint reason
+- turn 生命周期现在会额外记录：
+  - 首个 text delta 延迟
+  - 首个 audio chunk 延迟
+- speaking 态下的 barge-in 现在会额外记录：
+  - barge-in preview 更新
+  - barge-in 放行原因
+  - 候选音频时长
+  - 候选 partial 是否 lexically complete
+
+这轮实现的目的不是“日志越多越好”，而是先把后续最常用的诊断问题变成可直接从日志回答的问题，例如：
+
+- partial 是不是出来得太晚
+- commit suggestion 是不是来得太早或太晚
+- text delta 到了，但 audio 首包为什么慢
+- barge-in 是因为完整插话被放行，还是因为不完整插话过了 hold 窗口才放行
+
+因此，后续第一阶段实时体验优化应优先复用这批共享字段做对比分析，而不是继续在 adapter 侧临时插散乱日志。
+
 ### D1：替换默认 streaming ASR 主路径
 
 - 让 `StreamingTranscriber` 真正输出 partial、stable partial、endpoint hint、segment
@@ -399,6 +425,55 @@
 
 - 增加情绪、语气、音频事件等 speech metadata
 - 把这些 metadata 用于 style、策略、路由、记忆，而不是只作为展示字段
+
+## 补充：当前真机“无 ASR / 无音频”排障结论
+
+2026-04-15 的一次真机日志对后续排障优先级很关键：表面现象虽然是“没看到 ASR 结果，也没听到音频”，但服务端日志已经证明这不应再被优先归因到 ASR。
+
+同一轮链路里，服务端先后出现了：
+
+- `asr transcription stream completed`
+- `agent turn completed`
+- `gateway turn response started ... modalities=text has_audio=false`
+- 随后才出现 `tts stream setup failed`
+- 对应错误是：`Post "http://127.0.0.1:50000/inference_sft": context canceled`
+
+这说明至少在这类失败样本里：
+
+- `FunASR` 已经完成识别
+- agent 文本生成也已经完成
+- 真正需要优先观察的是 **response downlink / TTS 启动 / websocket 生命周期**
+
+因此，本轮补日志的目标不是“多打一层通用 debug”，而是把这个链路里的关键分叉点一次打透。当前共享网关里已经补上了以下结构化日志：
+
+- websocket 入站终止：
+  - `gateway websocket inbound closed`
+  - 重点字段：`ws_close_code`、`ws_close_text`、`remote_addr`
+- 首次下行响应启动：
+  - `gateway response.start sent`
+  - `gateway response.start write failed`
+- 说话态切换：
+  - `gateway speaking update sent`
+  - `gateway speaking update write failed`
+- 文本/音频下行失败：
+  - `gateway response.chunk write failed`
+  - `gateway audio binary write failed`
+- turn 收尾失败：
+  - `gateway active update write failed`
+  - `gateway barge-in active update write failed`
+  - `gateway session.end write failed`
+
+下一次真机复现时，应优先据此判断三类根因：
+
+1. **设备先断开**
+   - 会先看到 `gateway websocket inbound closed`
+   - 后续 TTS 失败更可能只是后果
+2. **服务端先下行写失败**
+   - 会出现 `response.start` / `speaking` / `audio binary` 的 write failed
+   - 这更像 transport/downlink 层问题
+3. **严格端侧把早期 `text-only response.start` 误当成“本轮无音频”**
+   - 如果 `response.start sent` 成功，但后续音频迟迟不起、或端侧直接不再期待音频
+   - 就要继续检查当前 streamed turn 的 modality hint 是否过早暴露为 `text`
 
 ## 当前阶段不建议优先做的事
 

@@ -28,6 +28,8 @@ type StartRequest struct {
 type Snapshot struct {
 	SessionID       string
 	State           State
+	InputState      InputState
+	OutputState     OutputState
 	CloseReason     CloseReason
 	DeviceID        string
 	ClientType      string
@@ -59,7 +61,7 @@ type RealtimeSession struct {
 
 func NewRealtimeSession() *RealtimeSession {
 	return &RealtimeSession{
-		current: Snapshot{State: StateIdle},
+		current: idleSnapshot(),
 	}
 }
 
@@ -79,7 +81,8 @@ func (s *RealtimeSession) Start(req StartRequest) (Snapshot, error) {
 
 	s.current = Snapshot{
 		SessionID:       sessionID,
-		State:           StateActive,
+		InputState:      InputStateActive,
+		OutputState:     OutputStateIdle,
 		DeviceID:        req.DeviceID,
 		ClientType:      req.ClientType,
 		FirmwareVersion: req.FirmwareVersion,
@@ -92,6 +95,7 @@ func (s *RealtimeSession) Start(req StartRequest) (Snapshot, error) {
 		ClientCanEnd:    req.ClientCanEnd,
 		ServerCanEnd:    req.ServerCanEnd,
 	}
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, true)
 	s.turnAudioChunks = nil
 	s.active = true
 
@@ -111,13 +115,14 @@ func (s *RealtimeSession) IngestOwnedAudioFrame(payload []byte) (Snapshot, error
 		return Snapshot{}, ErrNoActiveSession
 	}
 
-	s.current.State = StateActive
+	s.current.InputState = InputStateActive
 	s.current.InputFrames++
 	s.current.AudioBytes += len(payload)
 	if len(payload) > 0 {
 		s.turnAudioChunks = append(s.turnAudioChunks, payload)
 	}
 	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
 	return cloneSnapshot(s.current), nil
 }
 
@@ -129,8 +134,9 @@ func (s *RealtimeSession) AcceptText() (Snapshot, error) {
 		return Snapshot{}, ErrNoActiveSession
 	}
 
-	s.current.State = StateActive
+	s.current.InputState = InputStateActive
 	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
 	return cloneSnapshot(s.current), nil
 }
 
@@ -142,9 +148,17 @@ func (s *RealtimeSession) CommitTurn() (CommittedTurn, error) {
 		return CommittedTurn{}, ErrNoActiveSession
 	}
 
-	s.current.State = StateThinking
+	s.current.InputState = InputStateCommitted
+	switch s.current.OutputState {
+	case OutputStateSpeaking, OutputStateClosing:
+		// Keep the output lane unchanged so accepted follow-up input can coexist
+		// with ongoing playback or shutdown handling.
+	default:
+		s.current.OutputState = OutputStateThinking
+	}
 	s.current.Turns++
 	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
 	audioPCM := flattenTurnAudioChunks(s.turnAudioChunks, s.current.AudioBytes)
 	s.turnAudioChunks = nil
 	return CommittedTurn{
@@ -161,8 +175,37 @@ func (s *RealtimeSession) SetState(state State) (Snapshot, error) {
 		return Snapshot{}, ErrNoActiveSession
 	}
 
-	s.current.State = state
+	applyCompatState(&s.current, state)
 	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
+	return cloneSnapshot(s.current), nil
+}
+
+func (s *RealtimeSession) SetInputState(state InputState) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.active {
+		return Snapshot{}, ErrNoActiveSession
+	}
+
+	s.current.InputState = normalizeInputState(state)
+	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
+	return cloneSnapshot(s.current), nil
+}
+
+func (s *RealtimeSession) SetOutputState(state OutputState) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.active {
+		return Snapshot{}, ErrNoActiveSession
+	}
+
+	s.current.OutputState = normalizeOutputState(state)
+	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
 	return cloneSnapshot(s.current), nil
 }
 
@@ -174,9 +217,11 @@ func (s *RealtimeSession) End(reason CloseReason) (Snapshot, error) {
 		return Snapshot{}, ErrNoActiveSession
 	}
 
-	s.current.State = StateClosing
+	s.current.InputState = InputStateClosing
+	s.current.OutputState = OutputStateClosing
 	s.current.CloseReason = reason
 	s.current.LastActivityAt = time.Now().UTC()
+	s.current.State = deriveCompatState(s.current.InputState, s.current.OutputState, s.active)
 	return cloneSnapshot(s.current), nil
 }
 
@@ -195,7 +240,7 @@ func (s *RealtimeSession) Reset() {
 	defer s.mu.Unlock()
 
 	s.active = false
-	s.current = Snapshot{State: StateIdle}
+	s.current = idleSnapshot()
 	s.turnAudioChunks = nil
 }
 
@@ -207,7 +252,76 @@ func (s *RealtimeSession) Snapshot() Snapshot {
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
+	snapshot.State = deriveCompatState(snapshot.InputState, snapshot.OutputState, snapshot.SessionID != "")
 	return snapshot
+}
+
+func idleSnapshot() Snapshot {
+	return Snapshot{
+		State:       StateIdle,
+		InputState:  InputStateIdle,
+		OutputState: OutputStateIdle,
+	}
+}
+
+func deriveCompatState(input InputState, output OutputState, active bool) State {
+	if !active {
+		return StateIdle
+	}
+	switch output {
+	case OutputStateClosing:
+		return StateClosing
+	case OutputStateSpeaking:
+		return StateSpeaking
+	case OutputStateThinking:
+		return StateThinking
+	default:
+		return StateActive
+	}
+}
+
+func applyCompatState(snapshot *Snapshot, state State) {
+	switch state {
+	case StateIdle:
+		snapshot.InputState = InputStateIdle
+		snapshot.OutputState = OutputStateIdle
+	case StateThinking:
+		if snapshot.InputState == InputStateIdle || snapshot.InputState == InputStateClosing {
+			snapshot.InputState = InputStateCommitted
+		}
+		snapshot.OutputState = OutputStateThinking
+	case StateSpeaking:
+		if snapshot.InputState == InputStateIdle || snapshot.InputState == InputStateClosing {
+			snapshot.InputState = InputStateCommitted
+		}
+		snapshot.OutputState = OutputStateSpeaking
+	case StateClosing:
+		snapshot.InputState = InputStateClosing
+		snapshot.OutputState = OutputStateClosing
+	case StateActive:
+		fallthrough
+	default:
+		snapshot.InputState = InputStateActive
+		snapshot.OutputState = OutputStateIdle
+	}
+}
+
+func normalizeInputState(state InputState) InputState {
+	switch state {
+	case InputStateIdle, InputStateActive, InputStatePreviewing, InputStateCommitted, InputStateClosing:
+		return state
+	default:
+		return InputStateActive
+	}
+}
+
+func normalizeOutputState(state OutputState) OutputState {
+	switch state {
+	case OutputStateIdle, OutputStateThinking, OutputStateSpeaking, OutputStateClosing:
+		return state
+	default:
+		return OutputStateIdle
+	}
 }
 
 func flattenTurnAudioChunks(chunks [][]byte, totalBytes int) []byte {

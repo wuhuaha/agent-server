@@ -2,6 +2,58 @@
 
 ## 2026-04-15
 
+### Realtime Voice Still Lacked True Full Duplex Because The Session Core Remains Single-Track
+
+- Problem: server endpoint preview, incremental speech planning, barge-in gating, and heard-text persistence are already present, so the current realtime stack is no longer a trivial half-duplex prototype. But the session core still exposes one shared state machine (`active -> thinking -> speaking`), which means speaking-time input is still modeled mostly as interrupt-then-next-turn instead of a stable coexistence of input preview and output playout. That makes the system feel less full-duplex than the newer voice-runtime slices might suggest.
+- Resolution: recorded a durable architecture decision instead of misdiagnosing this as "just more endpoint tuning". The repository now explicitly treats internal dual-track session state (`input lane` plus `output lane`) as the next mainline prerequisite for true full duplex, while keeping the public websocket contract stable during that refactor. The detailed review lives in `docs/architecture/realtime-full-duplex-gap-review-zh-2026-04-15.md`, and ADR `0030` freezes the prioritization.
+- Status: identified and architecture-level mitigation chosen; implementation remains open.
+
+### Shared Server Endpointing Had Matured Past "Hidden Experiment", But Discovery Still Treated It Like Tribal Knowledge
+
+- Problem: the repository had already landed shared preview sessions, shared endpoint heuristics, false-endpoint guards, provider endpoint hints, orchestration ownership, and explicit `server-endpoint-preview` validation. Operationally, server endpointing had become a real mainline candidate. But discovery and info surfaces still described it like a hidden experiment, which made tooling and bring-up pages rely too much on implicit env knowledge.
+- Resolution: kept the runtime boundary unchanged and promoted the path through discovery instead of through adapter-specific logic. `GET /v1/realtime` and `GET /v1/info` now expose a structured `server_endpoint` object that tells clients whether the path is unavailable, available-but-disabled, or enabled as the current main-path candidate, while still keeping `turn_mode=client_wakeup_client_commit` and explicit `audio.in.commit` as the compatibility baseline.
+- Status: resolved for the candidate stage; the future default flip remains a separate rollout decision.
+
+### Local GPU LLM Cutover Needed A Smaller First Model Than The Earlier 8B Draft
+
+- Problem: the live service still spoke bootstrap echo text because `agentd` was pinned to `AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap`, so a local LLM cutover was required. The first draft targeted `Qwen3-8B`, but on this single V100 host the same GPU is already shared by FunASR ASR and CosyVoice TTS, and the full 8B-weight download path was too slow to be the best first deployment move.
+- Resolution: added a local OpenAI-compatible GPU LLM worker plus systemd bring-up helpers, and narrowed the machine-first target model to `Qwen/Qwen3-4B-Instruct-2507`. That keeps the shared Go runtime boundary unchanged, preserves the existing household prompt path, and should reduce both deployment risk and turn latency compared with a same-host 8B first cut. After live provisioning exposed repeated `modelscope` temp-shard integrity failures, hardened the download helper to auto-remove corrupt `._____temp/model-*.safetensors` files and retry instead of forcing manual cache cleanup on every failure.
+- Status: in progress; repository wiring and machine-level service scaffolding are done, and the current remaining blocker is the long-running model download / preload stage on this host.
+
+### Relative-Date Questions Needed Explicit Local Time Context In The Shared Prompt
+
+- Problem: once the service moves off `bootstrap`, a local model still cannot be trusted to answer `今天周几` or `明天周几` deterministically unless the runtime gives it real current-date context or a date tool signal. The repo already had a builtin `time.now` tool, but a smaller local Qwen path may not always choose tools reliably on the first pass.
+- Resolution: added a built-in prompt section in `internal/agent/llm.go` that injects the current local timestamp, current local date, weekday, and an explicit instruction to resolve relative dates from that local date first. Added Go coverage so the prompt continues to include this section.
+- Status: resolved as a prompt-layer capability.
+
+### Real-Device Natural-Language Questions Still Echoed Because The Live Service Was Running The Bootstrap Executor
+
+- Problem: a fresh real-device voice test asked `明天周几`, but the spoken reply was `agent-server received text input: 明天周几`. That could look like TTS or ASR quality failure from the device side, but it actually indicates the live agent runtime is still on the placeholder bootstrap path instead of a real LLM or date-capable runtime.
+- Resolution: verified from live logs that ASR completed normally and the agent itself emitted the echo text before TTS started:
+  - `2026-04-15 14:57:49 +08:00` `asr transcription stream completed`
+  - `2026-04-15 14:57:49 +08:00` `gateway turn first text delta ... delta_text="agent-server received text input: 明天周几。"`
+  - `2026-04-15 14:57:49 +08:00` `tts stream started`
+  The root configuration is that `/etc/agent-server/agentd.env` still sets `AGENT_SERVER_AGENT_LLM_PROVIDER=bootstrap`, and `internal/agent/bootstrap_executor.go` intentionally formats non-empty user text as `agent-server received text input: <text>`.
+- Status: open product/runtime configuration gap. The voice chain is working, but natural-language answers will remain placeholder echoes until the long-running service is moved off `bootstrap` and, for relative-date questions, given real time context or a date tool.
+
+### Real-Device "No ASR / No Audio" Reports Still Needed Websocket Downlink Visibility
+
+- Problem: one real-device session was reported as "no ASR result and no audio", but the existing logs were not enough to tell whether the device had disconnected early, whether the server had failed on the first downlink write, or whether TTS setup had been canceled after the turn already completed. The captured server logs showed `asr transcription stream completed`, `agent turn completed`, and then `tts stream setup failed` with `Post "http://127.0.0.1:50000/inference_sft": context canceled`, which strongly suggested the blind spot had shifted from ASR to websocket/TTS downlink lifecycle.
+- Resolution: added shared websocket diagnostics across native realtime and `xiaozhi`: inbound close or read-failure logging, structured close-code extraction, and explicit send success or failure markers for `response.start`, speaking updates, streamed text chunks, audio binary chunks, return-to-active updates, and `session.end`. Those logs now include `remote_addr` and `ws_stage`, and the refreshed `agentd` service is running the new repo-local binary on this machine.
+- Status: resolved as an observability gap; the next real-device repro should now reveal whether the remaining root cause is an early peer disconnect, a server-side write failure, or a strict-client reaction to early text-only `response.start` hints.
+
+### Shared Realtime Voice Debugging Still Had Blind Spots On Preview And First Output Timing
+
+- Problem: the core gateway turn trace already covered `accepted -> response_start -> speaking -> active/completed`, but the most useful phase-1 realtime diagnostics were still missing: preview first-partial timing, preview commit-suggestion timing, first text-delta timing, first audio-chunk timing, and a structured reason for accepted barge-in. That made later voice-quality optimization too dependent on ad hoc log patches and manual guesswork.
+- Resolution: added a shared preview-trace state in `internal/gateway`, extended turn tracing with first text-delta and first audio-chunk milestones, and logged accepted barge-in decisions with candidate audio duration plus lexical completeness. Added unit and integration coverage so those logs stay available for future realtime tuning without changing the public websocket protocol.
+- Status: resolved.
+
+### Current Host Could Not Push To GitHub Over HTTPS
+
+- Problem: after the latest validated runtime changes were committed locally, `git push origin master` failed on the current machine with `fatal: could not read Username for 'https://github.com': No such device or address`. The repository had an HTTPS remote, but this host did not have a working non-interactive GitHub HTTPS credential path.
+- Resolution: verified the existing SSH host alias `github-wuhuaha-kws-trainint` from `~/.ssh/config`, confirmed GitHub authentication through that alias, and set the repo-local `origin` push URL to `github-wuhuaha-kws-trainint:wuhuaha/agent-server.git` while keeping fetch on `https://github.com/wuhuaha/agent-server.git`. Subsequent push to `origin/master` succeeded through SSH.
+- Status: resolved.
+
 ### V100 Host Could Not Use The Newer cu128 PyTorch Wheel Family
 
 - Problem: the current production machine uses `Tesla V100-SXM2-32GB` (`sm_70`). The first repair attempt installed `torch 2.11.0+cu128` and `torchaudio 2.11.0+cu128`, but CUDA tensor creation still failed with `CUDA error: no kernel image is available for execution on the device`. The previous `xiaozhi-esp32-server` conda env also ended up in a CPU-only or partially broken state after an interrupted reinstall (`torch 2.11.0+cpu`, broken `torchaudio` import).
@@ -577,3 +629,36 @@
   - `443` currently uses a self-signed certificate for the machine IP
   - repeated restarts plus `curl` health checks and WebSocket upgrade checks now pass on `8080`, `80`, and `443`
 - Status: resolved for transport reachability; a publicly trusted certificate is still a later deployment follow-up if strict client trust is required.
+
+### Single-Track Session State Was Blocking Stable Speaking-Time Preview And Accepted-Turn Attribution
+
+- Problem: the realtime session core still flattened input and output into one shared `state`, so speaking-time preview, server-endpoint auto-commit, and accepted-turn attribution all had to squeeze through one global gate. That made it hard to preserve overlap input, explain why a turn was accepted, or evolve toward true duplex behavior without breaking older clients.
+- Resolution: landed the first dual-track slice in the shared session core and gateway path:
+  - `internal/session` now tracks `input_state` and `output_state` separately while deriving compatibility `state`
+  - server-emitted `session.update` may now include `input_state`, `output_state`, and `accept_reason`
+  - protocol docs and schema were updated so older clients can keep reading `state` while newer clients gain richer hints
+- Status: resolved for the foundation layer; deeper output-lane-first orchestration is still follow-up work.
+
+### Speaking-Time Preview Was Being Dropped When Current Output Finished Naturally
+
+- Problem: if the user started speaking during assistant playback but the current output finished before an interrupt was accepted, the gateway used to clear preview and staged overlap audio as soon as playback ended. That broke the next explicit commit and made the overlap path feel unreliable.
+- Resolution: output completion now asks the runtime to resolve its post-playback active snapshot:
+  - preserve `input_state=previewing` when preview is still active
+  - flush staged overlap audio back into the active session instead of discarding it
+  - cover the behavior with a realtime integration test so natural playback completion no longer erases the pending next turn
+- Status: resolved.
+
+### Interruption Policy Needed Soft-Policy Compatibility Instead Of Collapsing Everything Into Hard Cancel
+
+- Problem: the runtime had richer interruption semantics emerging, but without a shared policy boundary the gateway risked treating every speaking-time interruption attempt like an immediate hard cancel or hiding the softer cases completely.
+- Resolution: promoted `ignore`, `backchannel`, `duck_only`, and `hard_interrupt` into the shared interruption policy path:
+  - `hard_interrupt` still remains the only policy that returns the session to `active` immediately
+  - native realtime now applies real PCM16 ducking for `backchannel` and `duck_only`
+  - gateway, session, and voice tests now cover policy boundaries, persisted metadata, and soft-policy playout behavior
+- Status: resolved for the native realtime main path; adapter-wide resume/continue behavior is still a later enhancement.
+
+### Local `Qwen3-8B` Cache Is Not Yet Complete Enough To Cut Over
+
+- Problem: the current machine-local `Qwen3-8B` cache directory exists, but the shard index expects five safetensor parts while only shards `00004` and `00005` are present locally.
+- Resolution: verified the cache against `model.safetensors.index.json` and confirmed that shards `model-00001-of-00005.safetensors`, `model-00002-of-00005.safetensors`, and `model-00003-of-00005.safetensors` are still missing. The runtime therefore stays on the current `Qwen3-4B-Instruct-2507` path and should not switch to `8B` until the download is completed and revalidated.
+- Status: open.
