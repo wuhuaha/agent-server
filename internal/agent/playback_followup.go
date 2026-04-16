@@ -49,6 +49,13 @@ func (c previousPlaybackContext) actionable() bool {
 }
 
 func detectPlaybackFollowUpIntent(userText string, ctx previousPlaybackContext) playbackFollowUpIntent {
+	if intent := detectDeterministicPlaybackFollowUpIntent(userText, ctx); intent != playbackFollowUpIntentNone {
+		return intent
+	}
+	return detectLoosePlaybackFollowUpIntent(userText, ctx)
+}
+
+func detectDeterministicPlaybackFollowUpIntent(userText string, ctx previousPlaybackContext) playbackFollowUpIntent {
 	if !ctx.actionable() {
 		return playbackFollowUpIntentNone
 	}
@@ -72,9 +79,33 @@ func detectPlaybackFollowUpIntent(userText string, ctx previousPlaybackContext) 
 	return playbackFollowUpIntentNone
 }
 
-func bootstrapPlaybackFollowUpText(userText string, metadata map[string]string) (string, bool) {
+func detectLoosePlaybackFollowUpIntent(userText string, ctx previousPlaybackContext) playbackFollowUpIntent {
+	if !ctx.actionable() {
+		return playbackFollowUpIntentNone
+	}
+	normalized := normalizePlaybackFollowUpText(userText)
+	if normalized == "" {
+		return playbackFollowUpIntentNone
+	}
+
+	if isPlaybackContinueLikeIntent(normalized) && ctx.MissedText != "" {
+		return playbackFollowUpIntentContinue
+	}
+	if isPlaybackBoundaryRecallLikeIntent(normalized) && (ctx.HeardText != "" || ctx.ResumeAnchor != "") {
+		return playbackFollowUpIntentRecallBoundary
+	}
+	if isPlaybackRecapTailLikeIntent(normalized) && (ctx.MissedText != "" || ctx.HeardText != "") {
+		return playbackFollowUpIntentRecapTail
+	}
+	if isPlaybackContinueLikeIntent(normalized) && ctx.HeardText != "" {
+		return playbackFollowUpIntentRecallBoundary
+	}
+	return playbackFollowUpIntentNone
+}
+
+func deterministicPlaybackFollowUpText(userText string, metadata map[string]string) (string, bool) {
 	ctx := parsePreviousPlaybackContext(metadata)
-	intent := detectPlaybackFollowUpIntent(userText, ctx)
+	intent := detectDeterministicPlaybackFollowUpIntent(userText, ctx)
 	switch intent {
 	case playbackFollowUpIntentContinue:
 		if ctx.MissedText != "" {
@@ -100,6 +131,10 @@ func bootstrapPlaybackFollowUpText(userText string, metadata map[string]string) 
 	return "", false
 }
 
+func bootstrapPlaybackFollowUpText(userText string, metadata map[string]string) (string, bool) {
+	return deterministicPlaybackFollowUpText(userText, metadata)
+}
+
 func playbackFollowUpMessages(userText string, metadata map[string]string) []ChatMessage {
 	ctx := parsePreviousPlaybackContext(metadata)
 	intent := detectPlaybackFollowUpIntent(userText, ctx)
@@ -112,12 +147,13 @@ func playbackFollowUpMessages(userText string, metadata map[string]string) []Cha
 	case playbackFollowUpIntentContinue:
 		lines = append(lines,
 			"- The user is asking to continue the previous spoken reply instead of starting over.",
-			"- Continue naturally from the unheard tail when appropriate.",
+			"- Treat the unheard tail as the canonical continuation whenever it is available.",
+			"- Continue naturally from the unheard tail or resume anchor instead of restarting or fully re-summarizing the previous answer.",
 		)
 	case playbackFollowUpIntentRecallBoundary:
 		lines = append(lines,
 			"- The user is asking what part of the previous spoken reply was actually reached.",
-			"- Answer from the heard boundary first, then mention any unheard tail only if helpful.",
+			"- Answer from the heard boundary first, then mention any unheard tail only if it helps the user resume.",
 		)
 	case playbackFollowUpIntentRecapTail:
 		lines = append(lines,
@@ -127,12 +163,16 @@ func playbackFollowUpMessages(userText string, metadata map[string]string) []Cha
 	}
 	if ctx.HeardText != "" {
 		lines = append(lines, "- Heard boundary: "+ctx.HeardText)
+		lines = append(lines, "- Avoid repeating the heard boundary unless a tiny bridge is needed for coherence.")
 	}
 	if ctx.MissedText != "" {
 		lines = append(lines, "- Unheard tail: "+ctx.MissedText)
 	}
 	if ctx.ResumeAnchor != "" {
 		lines = append(lines, "- Resume anchor: "+ctx.ResumeAnchor)
+	}
+	if intent == playbackFollowUpIntentContinue && ctx.MissedText != "" {
+		lines = append(lines, "- Canonical continuation text: "+ctx.MissedText)
 	}
 	if ctx.ResponseInterrupted || ctx.ResponseTruncated {
 		lines = append(lines, "- The previous spoken reply was interrupted before full playback completion.")
@@ -193,6 +233,36 @@ func isPlaybackRecapTailIntent(normalized string) bool {
 	default:
 		return false
 	}
+}
+
+func isPlaybackContinueLikeIntent(normalized string) bool {
+	if isPlaybackContinueIntent(normalized) {
+		return true
+	}
+	for _, prefix := range []string{"继续", "接着", "后面", "然后"} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return strings.HasPrefix(normalized, "continue") || strings.HasPrefix(normalized, "goon")
+}
+
+func isPlaybackBoundaryRecallLikeIntent(normalized string) bool {
+	if isPlaybackBoundaryRecallIntent(normalized) {
+		return true
+	}
+	return strings.Contains(normalized, "说到哪") || strings.Contains(normalized, "讲到哪")
+}
+
+func isPlaybackRecapTailLikeIntent(normalized string) bool {
+	if isPlaybackRecapTailIntent(normalized) {
+		return true
+	}
+	return strings.Contains(normalized, "没听清") ||
+		strings.Contains(normalized, "最后一句") ||
+		strings.Contains(normalized, "再说一遍") ||
+		strings.Contains(normalized, "再说一次") ||
+		strings.Contains(normalized, "再重复")
 }
 
 func metadataFlag(metadata map[string]string, key string) bool {

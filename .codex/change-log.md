@@ -2,6 +2,11 @@
 
 ## 2026-04-16
 
+- Pushed the segment-level playback-truth slice one step deeper into actual follow-up behavior and embedded interop material:
+  - `internal/agent` no longer treats `voice.previous.*` only as prompt context on the LLM path; exact continue follow-ups such as `继续` / `接着说` / `后面呢` may now bypass the model and deterministically return `voice.previous.missed_text`
+  - loose continue-like follow-ups still go through the model, but now receive stronger runtime hints such as canonical continuation text, do-not-repeat heard boundary guidance, and a note that `heard_text/resume_anchor` may come from playback ACK segment truth
+  - native realtime integration coverage now verifies that `audio.out.cleared(cleared_after_segment_id=...)` feeds the next turn's `voice.previous.heard_text/resume_anchor/missed_text` metadata at the exact segment boundary
+  - added `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md` and expanded `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md` with ACK ownership pointers, terminal rules, multi-segment case matrix, and RTOS client state guidance
 - Landed the next native-realtime playback-truth refinement as a true segment-level path instead of a single playback-wide cursor:
   - added `voice.PlaybackSegment` plus `voice.SegmentedAudioStream`, and taught planned speech synthesis to expose clause boundaries as stream segments
   - native realtime now emits `audio.out.meta` per segment when the output stream exposes segment boundaries, while preserving wire compatibility through one shared `response_id/playback_id` and unique `segment_id`

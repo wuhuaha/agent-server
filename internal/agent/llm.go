@@ -221,15 +221,18 @@ func defaultCurrentTimeContext() string {
 }
 
 func renderPreviousPlaybackContextPrompt(metadata map[string]string) string {
-	if !metadataFlag(metadata, "voice.previous.available") {
+	ctx := parsePreviousPlaybackContext(metadata)
+	if !ctx.Available {
 		return ""
 	}
 
-	heard := strings.TrimSpace(metadata["voice.previous.heard_text"])
-	missed := strings.TrimSpace(metadata["voice.previous.missed_text"])
-	anchor := strings.TrimSpace(metadata["voice.previous.resume_anchor"])
-	interrupted := metadataFlag(metadata, "voice.previous.response_interrupted")
-	truncated := metadataFlag(metadata, "voice.previous.response_truncated")
+	heard := ctx.HeardText
+	missed := ctx.MissedText
+	anchor := ctx.ResumeAnchor
+	interrupted := ctx.ResponseInterrupted
+	truncated := ctx.ResponseTruncated
+	precisionTier := strings.TrimSpace(metadata["voice.previous.heard_precision_tier"])
+	boundary := strings.TrimSpace(metadata["voice.previous.heard_boundary"])
 	if heard == "" && missed == "" && !interrupted && !truncated {
 		return ""
 	}
@@ -246,6 +249,17 @@ func renderPreviousPlaybackContextPrompt(metadata map[string]string) string {
 	}
 	if anchor != "" && missed != "" {
 		lines = append(lines, fmt.Sprintf("- 若用户说“继续”“后面呢”“刚刚最后一句”，优先从这个边界续接或重述：%s", anchor))
+		lines = append(lines, "- 若用户只是要你继续，优先续接未播出的剩余部分，不要从头重复整段答复。")
+	}
+	if precisionTier != "" || boundary != "" {
+		line := "- 上述 heard_text / resume_anchor 可能来自播放 ACK 与分段边界事实，应优先把它们当作真实播报边界。"
+		if precisionTier != "" {
+			line += fmt.Sprintf(" 当前精度层级：%s。", precisionTier)
+		}
+		if boundary != "" {
+			line += fmt.Sprintf(" 当前边界类型：%s。", boundary)
+		}
+		lines = append(lines, line)
 	}
 	lines = append(lines, "- 如果用户的新问题已经切换主题，直接回答新问题，不要机械续播旧内容。")
 	return strings.TrimSpace(strings.Join(lines, "\n"))

@@ -2,6 +2,12 @@
 
 ## 2026-04-16
 
+### Exact Continue Follow-Ups Were Still Only A Prompt Hint On The LLM Path
+
+- Problem: even after `voice.previous.heard_text/missed_text/resume_anchor` became segment-aware, the LLM path still treated `继续` / `接着说` / `后面呢` mostly as soft prompt guidance. That left exact continue behavior free to drift into recap, restart, or topic switch instead of reliably continuing from the unheard tail.
+- Resolution: split playback follow-up handling into strict deterministic intent and looser hint-only intent. Exact continue follow-ups may now bypass the model and directly return `voice.previous.missed_text`, while looser continue-like requests still go through the model with stronger runtime hints that mark `missed_text` as the canonical continuation and `heard_text/resume_anchor` as playback-truth-backed boundaries.
+- Status: resolved.
+
 ### Segment-Level Playback Truth Was Still Collapsing To A Single Playback Cursor
 
 - Problem: the previous playback-ack slice had already taught native realtime to trust client playback facts, but the runtime still treated one response as one playback-wide cursor. That meant clause-planned output could not surface multiple `audio.out.meta` boundaries, `audio.out.mark` on a later clause could not precisely credit earlier clauses as heard, and interruption or resume still lost fidelity at segment boundaries.

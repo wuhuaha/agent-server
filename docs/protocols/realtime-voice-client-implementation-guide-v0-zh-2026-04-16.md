@@ -8,6 +8,8 @@
   - `docs/protocols/realtime-session-v0.md`
   - `docs/protocols/rtos-device-ws-v0.md`
   - `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+- 联调附录：
+  - `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md`
 - 配套 schema：
   - 稳定 envelope：`schemas/realtime/session-envelope.schema.json`
   - 协作草案：`schemas/realtime/voice-collaboration-v0-draft.schema.json`
@@ -19,6 +21,8 @@
 - 所有新增能力都必须按 discovery + `session.start.capabilities` 双向协商启用。
 - `accept_reason` 才是 accepted-turn 的主信号；`input.preview` / `input.endpoint` 只是观察事件。
 - `audio.out.started` / `mark` / `cleared` / `completed` 是播放事实，不是策略命令。
+- `segment_mark_v1` 是“segment 边界优先”的 playback-ack 协议：`audio.out.meta` 可重复出现，但 `audio.out.completed` 仍然是一条 playback 只发一次的终态 ACK。
+- 当前端侧仍应保留 local VAD / 本地 stop 作为兜底，但会话建立后的主裁决以服务端为准。
 
 ## 2. 协商字段表
 
@@ -136,10 +140,11 @@
 
 端侧建议动作：
 
-- 收到 `audio.out.meta` 后建立播放上下文
-- 同一条响应内若再次收到新的 `audio.out.meta`，说明服务端进入了下一个 segment；应更新当前 `segment_id`，但保持同一组 `response_id/playback_id`
-- 之后所有 ACK 事件必须带回当前 segment 对应的 `response_id/playback_id/segment_id`
-- `is_last_segment=true` 只在服务端已经确定这是最后一段时才保证成立；早起播路径上较早段可能保持保守的 `false`
+- 收到 `audio.out.meta` 后建立播放上下文。
+- 同一条响应内若再次收到新的 `audio.out.meta`，说明服务端进入了下一个 segment；应更新“最新宣布 segment”，但保持同一组 `response_id/playback_id`。
+- 端侧内部至少应区分三种指针：`latest_announced_segment_id`、`currently_playing_segment_id`、`last_fully_heard_segment_id`；不要只保留一个 `segment_id`。
+- 后续所有 ACK 必须带回对应的 `response_id/playback_id`；其中 `started/mark` 绑定真实播放中的 segment，`cleared` 绑定“最后一个完整听到的 segment 边界”。
+- `is_last_segment=true` 只在服务端已经确定这是最后一段时才保证成立；早起播路径上较早段可能保持保守的 `false`。
 
 ## 4. 端侧 -> 服务端字段表
 
@@ -151,7 +156,7 @@
 | `playback_id` | string | 是 | 对应 `audio.out.meta.playback_id` |
 | `segment_id` | string | 是 | 对应 `audio.out.meta.segment_id` |
 
-发送时机：音频真正开始从 DAC / 播放驱动播出时。
+发送时机：该 `segment_id` 的音频真正开始从 DAC / 播放驱动播出时。
 
 ### 4.2 `audio.out.mark`
 
@@ -164,13 +169,15 @@
 
 发送时机：
 
-- 建议按 40~120 ms 粗粒度上报
-- 资源紧张设备可只在关键节点上报一到数次
+- 建议按 40~120 ms 粗粒度上报。
+- 资源紧张设备可只在关键节点上报一到数次。
+- 若本地即将 stop / clear 当前正在播放的 segment，建议在 clear 前补一条最终 `audio.out.mark`，把当前已播出的时长先上报出去。
 
 语义补充：
 
-- `played_duration_ms` 是“当前 `segment_id` 内已经播出的时长”，不是整条响应累计时长
-- 如果已经切到新的 segment，但当前 segment 还没真正播出进度，发送 `played_duration_ms=0` 也是合法的；这表示前序 segment 已全部进入 heard 区间，而当前 segment 尚未推进
+- `played_duration_ms` 是“当前 `segment_id` 内已经播出的时长”，不是整条响应累计时长。
+- 同一 `segment_id` 的 `played_duration_ms` 必须单调不减。
+- 如果已经切到新的 segment，但当前 segment 还没真正播出进度，发送 `played_duration_ms=0` 也是合法的；这表示前序 segment 已全部进入 heard 区间，而当前 segment 尚未推进。
 
 ### 4.3 `audio.out.cleared`
 
@@ -183,15 +190,20 @@
 
 发送时机：
 
-- 本地清空未播缓冲时
-- 不要求一定意味着已 hard interrupt，但一定代表“后续内容没被播出来”
+- 本地清空未播缓冲时。
+- 不要求一定意味着已 hard interrupt，但一定代表“后续内容没被播出来”。
 
 当前服务端行为补充：
 
-- 若服务端仍在 `speaking`，`audio.out.cleared` 可能触发服务端立刻停止当前输出并回到 `active`
-- 因此该事件不只是“日志事实”，也会参与服务端 playback truth 收尾
-- `cleared_after_segment_id` 的语义是“直到这个 segment 为止都算已听到，后面的 segment 都算未听到”
-- 即使服务端已经下发了更晚 segment 的 `audio.out.meta`，端侧仍可在本地 clear 时回报较早的 `cleared_after_segment_id`
+- 若服务端仍在 `speaking`，`audio.out.cleared` 可能触发服务端立刻停止当前输出并回到 `active`。
+- 因此该事件不只是“日志事实”，也会参与服务端 playback truth 收尾。
+- `cleared_after_segment_id` 的语义是“直到这个 segment 为止都算已听到，后面的 segment 都算未听到”。
+- 即使服务端已经下发了更晚 segment 的 `audio.out.meta`，端侧仍可在本地 clear 时回报较早的 `cleared_after_segment_id`。
+- `segment_mark_v1` 的 `cleared` 是“segment 边界事实”，不是“当前 segment 内局部清空事实”。如果 clear 发生在某个 segment 中途，端侧应：
+  1. 先对当前 segment 发送最终 `audio.out.mark`；
+  2. `audio.out.cleared.cleared_after_segment_id` 使用“上一个完整听到的 segment”；
+  3. 不要把当前仅部分播出的 segment 直接当作 `cleared_after_segment_id`，否则会把未播出的尾部也算作 heard。
+- 如果本地在第一帧真正播放前就清空了整个 playback，当前 v1 没有 `none_heard` 哨兵值；端侧应直接清空本地播放状态并继续上行，不强行发送伪造的 `audio.out.cleared`。
 
 ### 4.4 `audio.out.completed`
 
@@ -202,21 +214,32 @@
 
 发送时机：最后一个样本真实播完时。
 
-## 5. ACK 时机表
+语义补充：
 
-| 事件 | 推荐触发点 | 强制性 | 备注 |
-| --- | --- | --- | --- |
-| `audio.out.started` | 第一帧真正开始播放 | 强烈建议 | 用于首播事实 |
-| `audio.out.mark` | 每 40~120 ms 或关键进度点 | 可选但建议 | 低资源设备可降频 |
-| `audio.out.cleared` | 本地缓冲被清空后立即发送 | 条件触发 | 与 interrupt / clear 动作配合 |
-| `audio.out.completed` | 最后一帧真实播放完 | 强烈建议 | 用于最终听到边界 |
+- `audio.out.completed` 是 playback 级终态 ACK，不按 segment 重复发送。
+- 一组 `response_id/playback_id` 最多发送一次 `audio.out.completed`。
+- 一旦已经发送 `audio.out.cleared` 或 `audio.out.completed`，该 playback 后续不再发送任何新的 `started/mark/cleared/completed`。
 
-补充语义：
+## 5. ACK 时机关键规则
+
+### 5.1 事件级规则表
+
+| 事件 | 作用域 | 推荐触发点 | 强制性 | 去重键 | 关键约束 |
+| --- | --- | --- | --- | --- | --- |
+| `audio.out.started` | 每个 segment 一次 | 该 segment 第一帧真正出 DAC 时 | 强烈建议 | `response_id + playback_id + segment_id` | 不要在仅收到 `audio.out.meta` 时提前发送 |
+| `audio.out.mark` | 每个 segment 零到多次 | 每 40~120 ms 或关键边界 | 可选但建议 | `response_id + playback_id + segment_id + played_duration_ms` | `played_duration_ms` 对同 segment 必须单调递增 |
+| `audio.out.cleared` | 每个 playback 最多一次 | 本地 clear 发生后立即发送 | 条件触发 | `response_id + playback_id` | 只上报“最后完整听到的 segment 边界” |
+| `audio.out.completed` | 每个 playback 一次 | 最后一帧真实播放完 | 强烈建议 | `response_id + playback_id` | 只在自然播完时发送，不能与 `cleared` 并存 |
+
+### 5.2 硬规则
 
 - 当已协商 `playback_ack` 时，服务端可能不会在音频字节发送完的瞬间立刻回到 `session.update(state=active)`。
 - 更准确的行为是：服务端优先等待 `audio.out.completed` 或 `audio.out.cleared`，再收口本轮 playback truth；若短时间内未等到，则回退到服务端启发式完成。
-- 当服务端使用 clause / segment 早起播时，`audio.out.meta` 可能在一次响应里出现多次，端侧应把 ACK 与当时活跃的 `segment_id` 绑定，而不是假设“一条响应只会有一个 segment”。
-- 因此端侧若希望 turn 收尾、heard-text、resume 更自然，`audio.out.completed` 应尽量及时发送。
+- 当服务端使用 clause / segment 早起播时，`audio.out.meta` 可能在一次响应里出现多次；端侧必须把 ACK 与“真实播放的 segment”绑定，而不是假设“一条响应只会有一个 segment”。
+- `audio.out.completed` 是整轮 playback 终态；不要每切一个 segment 就发送一次 completed。
+- 若发送了 `audio.out.cleared`，端侧应立即结束该 playback 的 ACK 生命周期；之后若还在继续采音，那是新一轮输入的上行阶段，不是旧 playback 的后续 ACK。
+- 若本地只实现最小集，应优先保证：`audio.out.started` 准、`audio.out.completed` 及时、`audio.out.mark` 单调、`audio.out.cleared` 不过度记账。
+- 更完整的 case matrix、状态机与时序图见 `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md`。
 
 ## 6. 错误码与重试策略
 
@@ -254,25 +277,48 @@
 | `audio.out.cleared` 发送失败 | 是 | 1~2 次 | 如果 socket 已断则放弃 |
 | unknown server event | 否 | 0 | 忽略即可 |
 
+补充建议：
+
+- `audio.out.started` 若发送失败，可在极短窗口内补发一次；若仍失败，不要卡住 DAC 线程。
+- 一旦该 playback 已经进入本地终态 `cleared/completed`，不再无限重试旧 ACK；防止重连后把上一个 playback 的事实误发给新会话。
+
 ## 8. Embedded Client 最小实现清单
 
-- 建 discovery 解析：读取 `server_endpoint` 与 `voice_collaboration`
-- 建会话协商：`session.start.capabilities` 能声明 `preview_events` 与 `playback_ack.mode`
-- 建 accepted-turn 判断：以 `session.update.accept_reason` 为准
-- 建 preview 显示：能处理 `input.speech.start` / `input.preview` / `input.endpoint`
-- 建播放上下文：收到 `audio.out.meta` 后缓存 `response_id/playback_id/segment_id`
-- 建 ACK 上报：至少支持 `audio.out.started` 与 `audio.out.completed`
-- 建降级路径：协商失败或扩展不支持时，仍能按兼容 v0 运行
-- 建日志：打印 `turn_id/trace_id/preview_id/response_id/playback_id`
+- 建 discovery 解析：读取 `server_endpoint` 与 `voice_collaboration`。
+- 建会话协商：`session.start.capabilities` 能声明 `preview_events` 与 `playback_ack.mode`。
+- 建 accepted-turn 判断：以 `session.update.accept_reason` 为准。
+- 建 preview 显示：能处理 `input.speech.start` / `input.preview` / `input.endpoint`。
+- 建播放上下文：至少缓存 `response_id`、`playback_id`、`latest_announced_segment_id`、`currently_playing_segment_id`、`last_fully_heard_segment_id`。
+- 建 ACK 上报：至少支持 `audio.out.started` 与 `audio.out.completed`；若支持 `mark/cleared`，必须遵守 segment 绑定规则。
+- 建终态去重：同一 playback 的 `audio.out.cleared` 与 `audio.out.completed` 只能二选一。
+- 建降级路径：协商失败或扩展不支持时，仍能按兼容 v0 运行。
+- 建日志：打印 `turn_id/trace_id/preview_id/response_id/playback_id/segment_id`。
 
-## 9. 推荐最小落地顺序
+## 9. 联调必测案例
 
-1. 先打通 discovery + `session.start` 能力协商
-2. 再打通 `accept_reason` 与 `input.preview` 的 UI / 日志
-3. 再接 `audio.out.meta` + `audio.out.started/completed`
-4. 最后再补 `audio.out.mark` / `audio.out.cleared` 与更细腻的播放事实
+| 类别 | 必测案例 | 核心观察点 |
+| --- | --- | --- |
+| 单 segment | `meta -> started -> mark -> completed` | 基础 ACK 生命周期闭环 |
+| 多 segment 自然播完 | 多次 `audio.out.meta` + 一次 `completed` | `completed` 只发一次 |
+| 多 segment clear | 在后续 segment 到达后 clear | `cleared_after_segment_id` 是否绑定到最后完整听到的 segment |
+| mid-segment clear | 当前 segment 播到一半被 stop | 是否先补 `mark` 再 `cleared` |
+| clear 后继续上行 | clear 后继续 `audio.in.append` | 旧 playback ACK 不再续发，新输入可继续 preview/accept |
+| terminal 去重 | 已 `cleared` 或 `completed` 后仍收到本地回调 | 是否抑制晚到 ACK |
+| 协商降级 | discovery / `session.start` 未启用协作扩展 | 是否退回兼容基线 |
 
-## 10. 与 schema 的对应关系
+详细 case matrix、时序图、RTOS client 状态机见联调附录：
+
+- `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md`
+
+## 10. 推荐最小落地顺序
+
+1. 先打通 discovery + `session.start` 能力协商。
+2. 再打通 `accept_reason` 与 `input.preview` 的 UI / 日志。
+3. 再接 `audio.out.meta` + `audio.out.started/completed`。
+4. 然后补 `audio.out.mark`，把 segment 内 playhead 上报稳定。
+5. 最后补 `audio.out.cleared` 与 clear 后继续上行的联调场景。
+
+## 11. 与 schema 的对应关系
 
 | 文档对象 | 对应 schema |
 | --- | --- |
@@ -280,8 +326,9 @@
 | preview / playback 协作扩展 | `schemas/realtime/voice-collaboration-v0-draft.schema.json` |
 | `session.start` payload | `schemas/realtime/device-session-start.schema.json` |
 
-## 11. 当前阶段的实现边界说明
+## 12. 当前阶段的实现边界说明
 
-- 当前服务端已经开始在 native realtime 路径上公开 capability-gated 的 `input.speech.start` / `input.preview` / `input.endpoint` 与 `audio.out.meta` / 播放 ACK 接口。
-- 当前 `audio.out.* ACK` 首先作为“播放事实回传入口 + 观测日志”落地；后续再进一步把它接入更精确的 heard-text / resume 策略。
-- 当前端侧仍应保留 local VAD / 本地 stop 作为兜底，但会话建立后的主裁决以服务端为准。
+- 当前服务端已经在 native realtime 路径上公开 capability-gated 的 `input.speech.start` / `input.preview` / `input.endpoint` 与 `audio.out.meta` / 播放 ACK 接口。
+- 当前 playback truth 已经接入 shared runtime 的 heard-text / interruption / resume 链路，但 `segment_mark_v1` 仍是 segment-boundary 优先协议，而不是 sample-accurate playout truth。
+- 当前 `audio.out.cleared` 能精确表达“清到哪个完整 segment 为止”，但还不能无歧义表达“当前 segment 只播了一部分后被清掉”；因此 mid-segment clear 仍需依赖最后一条 `audio.out.mark` 提供局部精度。
+- 当前端侧仍应保留 local VAD / 本地 stop 作为兜底，但会话建立后的主裁决、accepted-turn、interrupt 主策略都以服务端为准。

@@ -226,7 +226,7 @@ func TestLLMTurnExecutorInjectsPreviousPlaybackContextIntoSystemPrompt(t *testin
 		SessionID:  "sess-prev-playback",
 		DeviceID:   "panel-1",
 		ClientType: "rtos",
-		UserText:   "继续",
+		UserText:   "继续，但简短一点",
 		Metadata: map[string]string{
 			"voice.previous.available":            "true",
 			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
@@ -256,6 +256,8 @@ func TestLLMTurnExecutorInjectsPreviousPlaybackContextIntoSystemPrompt(t *testin
 		"用户实际已经听到的大致边界：好的，已经为你打开客厅灯，",
 		"用户大概率还没听到的剩余部分：现在把亮度调到了最舒适的模式。",
 		"若用户说“继续”“后面呢”“刚刚最后一句”",
+		"若用户只是要你继续，优先续接未播出的剩余部分",
+		"heard_text / resume_anchor 可能来自播放 ACK 与分段边界事实",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected system prompt to contain %q, got %q", want, prompt)
@@ -263,7 +265,49 @@ func TestLLMTurnExecutorInjectsPreviousPlaybackContextIntoSystemPrompt(t *testin
 	}
 }
 
-func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForContinue(t *testing.T) {
+func TestLLMTurnExecutorBypassesModelForDeterministicContinueFollowUp(t *testing.T) {
+	memoryStore := &recordingMemoryStore{}
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "不应该调用模型"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(memoryStore)
+
+	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-follow-up-direct",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "接着说",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if got := output.Text; got != "现在把亮度调到了最舒适的模式。" {
+		t.Fatalf("expected deterministic missed-tail reply, got %q", got)
+	}
+	if len(output.Deltas) != 1 || output.Deltas[0].Text != "现在把亮度调到了最舒适的模式。" {
+		t.Fatalf("expected one deterministic text delta, got %+v", output.Deltas)
+	}
+	if len(model.requests) != 0 {
+		t.Fatalf("expected exact continue follow-up to bypass model, got %d request(s)", len(model.requests))
+	}
+	if len(memoryStore.saveRecords) != 1 {
+		t.Fatalf("expected one memory save, got %d", len(memoryStore.saveRecords))
+	}
+	if got := memoryStore.saveRecords[0].ResponseText; got != "现在把亮度调到了最舒适的模式。" {
+		t.Fatalf("expected saved deterministic reply, got %q", got)
+	}
+}
+
+func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForLooseContinue(t *testing.T) {
 	model := &recordingChatModel{
 		response: ChatModelResponse{Text: "继续说明。"},
 	}
@@ -273,7 +317,7 @@ func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForContinue(t *testing.T)
 		SessionID:  "sess-follow-up",
 		DeviceID:   "panel-1",
 		ClientType: "rtos",
-		UserText:   "继续",
+		UserText:   "继续，但简短一点",
 		Metadata: map[string]string{
 			"voice.previous.available":            "true",
 			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
@@ -299,8 +343,9 @@ func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForContinue(t *testing.T)
 			continue
 		}
 		if strings.Contains(message.Content, "Runtime voice follow-up hint:") &&
-			strings.Contains(message.Content, "Continue naturally from the unheard tail") &&
-			strings.Contains(message.Content, "Unheard tail: 现在把亮度调到了最舒适的模式。") {
+			strings.Contains(message.Content, "canonical continuation") &&
+			strings.Contains(message.Content, "Canonical continuation text: 现在把亮度调到了最舒适的模式。") &&
+			strings.Contains(message.Content, "Avoid repeating the heard boundary") {
 			found = true
 			break
 		}

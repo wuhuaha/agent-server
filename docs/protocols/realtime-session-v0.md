@@ -10,6 +10,7 @@ Client collaboration note:
 
 - for a concrete capability-gated proposal that embedded clients can implement in parallel, see `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
 - for the field tables, retry policy, and ACK timing guidance that embedded teams can implement directly, see `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`
+- for the multi-segment playback ACK case matrix, state machine, and interop timing details, see `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md`
 - the draft schema for those additive collaboration events lives at `schemas/realtime/voice-collaboration-v0-draft.schema.json`
 
 ## Session States

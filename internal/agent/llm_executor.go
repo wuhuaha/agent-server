@@ -185,6 +185,9 @@ func (e LLMTurnExecutor) streamLLMOutput(
 	if _, ok := parseBootstrapToolCommand(trimmedText); ok {
 		return bootstrap.streamBootstrapOutput(ctx, input, trimmedText, memoryContext, memoryErr, sink)
 	}
+	if followUpText, ok := deterministicPlaybackFollowUpText(trimmedText, metadata); ok {
+		return emitBootstrapTextOutput(ctx, sink, trimmedText, followUpText)
+	}
 
 	var (
 		systemPrompt string

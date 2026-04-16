@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1982,6 +1983,156 @@ done:
 	}
 	if got := strings.Join(relevantEvents, ","); got != "meta,binary,meta,binary" {
 		t.Fatalf("expected segment meta to precede each binary segment, got %q", got)
+	}
+	assertNoServerPanic(t, serverLog)
+}
+
+func TestRealtimeWSPlaybackAckClearedFeedsNextTurnResumeMetadataAtSegmentBoundary(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	var (
+		mu       sync.Mutex
+		requests []voice.TurnRequest
+	)
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		callIndex := len(requests)
+		mu.Unlock()
+
+		switch callIndex {
+		case 1:
+			return voice.TurnResponse{
+				Text: "好的，先打开客厅灯。再关闭窗帘。",
+				AudioStream: &scriptedSegmentedAudioStream{
+					segments: []scriptedPlaybackSegment{
+						{
+							text:     "好的，先打开客厅灯。",
+							duration: 420 * time.Millisecond,
+							chunks:   repeatAudioChunks(make([]byte, 640), 1),
+						},
+						{
+							text:     "再关闭窗帘。",
+							duration: 360 * time.Millisecond,
+							isLast:   true,
+							chunks:   repeatAudioChunks(make([]byte, 640), 2),
+						},
+					},
+				},
+			}, nil
+		default:
+			return voice.TurnResponse{Text: "继续处理。"}, nil
+		}
+	})
+
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"playback_ack": map[string]any{
+			"mode": "segment_mark_v1",
+		},
+	})
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "play"})
+
+	var (
+		firstMeta      audioOutMetaPayload
+		secondMeta     audioOutMetaPayload
+		audioChunks    int
+		clearedSent    bool
+		secondTurnSent bool
+		secondTurnOK   bool
+	)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline failed: %v", err)
+		}
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read message failed: %v\nserver log:\n%s\nhandler log:\n%s", err, serverLog.String(), logBuffer.String())
+		}
+		if messageType == websocket.BinaryMessage {
+			audioChunks++
+			if firstMeta.SegmentID != "" && secondMeta.SegmentID != "" && audioChunks >= 1 && !clearedSent {
+				writeControlEvent(t, conn, "audio.out.started", sessionID, 3, map[string]any{
+					"response_id": firstMeta.ResponseID,
+					"playback_id": firstMeta.PlaybackID,
+					"segment_id":  firstMeta.SegmentID,
+				})
+				writeControlEvent(t, conn, "audio.out.cleared", sessionID, 4, map[string]any{
+					"response_id":              firstMeta.ResponseID,
+					"playback_id":              firstMeta.PlaybackID,
+					"cleared_after_segment_id": firstMeta.SegmentID,
+					"reason":                   "barge_in_clear",
+				})
+				clearedSent = true
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "audio.out.meta":
+			meta := audioOutMetaPayload{
+				ResponseID:         stringValue(event.Payload["response_id"]),
+				PlaybackID:         stringValue(event.Payload["playback_id"]),
+				SegmentID:          stringValue(event.Payload["segment_id"]),
+				Text:               stringValue(event.Payload["text"]),
+				ExpectedDurationMs: intValue(event.Payload["expected_duration_ms"]),
+				IsLastSegment:      boolValue(event.Payload["is_last_segment"]),
+			}
+			if firstMeta.SegmentID == "" {
+				firstMeta = meta
+			} else if secondMeta.SegmentID == "" {
+				secondMeta = meta
+			}
+		case "session.update":
+			if clearedSent && !secondTurnSent && stringValue(event.Payload["state"]) == "active" {
+				writeControlEvent(t, conn, "text.in", sessionID, 5, map[string]any{"text": "继续"})
+				secondTurnSent = true
+			}
+		case "response.chunk":
+			if stringValue(event.Payload["text"]) == "继续处理。" {
+				secondTurnOK = true
+				goto done
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+done:
+	if !secondTurnOK {
+		t.Fatal("expected follow-up turn to complete after playback clear")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := len(requests); got < 2 {
+		t.Fatalf("expected two turn requests, got %d", got)
+	}
+	secondRequest := requests[1]
+	if got := secondRequest.Metadata["voice.previous.available"]; got != "true" {
+		t.Fatalf("expected previous playback metadata on follow-up turn, got %+v", secondRequest.Metadata)
+	}
+	if got := secondRequest.Metadata["voice.previous.heard_text"]; got != "好的，先打开客厅灯。" {
+		t.Fatalf("expected exact first-segment heard text, got %q", got)
+	}
+	if got := secondRequest.Metadata["voice.previous.resume_anchor"]; got != "好的，先打开客厅灯。" {
+		t.Fatalf("expected exact segment resume anchor, got %q", got)
+	}
+	if got := secondRequest.Metadata["voice.previous.missed_text"]; got != "再关闭窗帘。" {
+		t.Fatalf("expected second segment as missed text, got %q", got)
 	}
 	assertNoServerPanic(t, serverLog)
 }
