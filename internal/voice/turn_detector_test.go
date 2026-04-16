@@ -214,6 +214,41 @@ func TestSilenceTurnDetectorMarksIncompletePreviewAsWaitForMore(t *testing.T) {
 	}
 }
 
+func TestSilenceTurnDetectorSuppressesStablePrefixPrewarmDuringCorrectionPendingPartial(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯",
+	})
+	detector.ObserveTranscriptionDelta(startedAt.Add(120*time.Millisecond), TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯，不对",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(220 * time.Millisecond))
+	if snapshot.StablePrefix != "打开客厅灯" {
+		t.Fatalf("expected stable prefix to keep the earlier clause, got %q", snapshot.StablePrefix)
+	}
+	if snapshot.UtteranceComplete {
+		t.Fatal("expected correction-pending live partial to suppress utterance_complete despite stable prefix")
+	}
+	if snapshot.Arbitration.PrewarmAllowed || snapshot.Arbitration.DraftAllowed || snapshot.Arbitration.AcceptCandidate {
+		t.Fatalf("expected correction-pending preview to stay out of downstream promotion, got %+v", snapshot.Arbitration)
+	}
+}
+
 func TestSilenceTurnDetectorUsesSileroEndpointHintToShortenSilence(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{
@@ -306,5 +341,48 @@ func TestSilenceTurnDetectorHoldsStandaloneHesitationUtterance(t *testing.T) {
 	}
 	if snapshot.EndpointReason != lexicalHoldServerEndpointReason {
 		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
+	}
+}
+
+func TestSilenceTurnDetectorExtendsHoldForCorrectionPendingPartial(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯，不对",
+	})
+
+	if snapshot := detector.Snapshot(startedAt.Add(450 * time.Millisecond)); snapshot.CommitSuggested {
+		t.Fatal("correction-pending partial should stay on hold before the extended window")
+	}
+	snapshot := detector.Snapshot(startedAt.Add(950 * time.Millisecond))
+	if !snapshot.CommitSuggested {
+		t.Fatal("expected correction-pending partial to commit after the extended hold window")
+	}
+	if snapshot.EndpointReason != correctionHoldServerEndpointReason {
+		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
+	}
+}
+
+func TestLooksCorrectionPendingRequiresPriorClause(t *testing.T) {
+	if !looksCorrectionPending("打开客厅灯，不对") {
+		t.Fatal("expected prior clause plus correction cue to stay pending")
+	}
+	if looksCorrectionPending("不对") {
+		t.Fatal("standalone correction cue should remain actionable instead of forcing a hold")
+	}
+	if !looksCorrectionPending("turn on the light, wait") {
+		t.Fatal("expected trailing English correction cue after a clause to stay pending")
 	}
 }

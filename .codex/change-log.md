@@ -1,5 +1,17 @@
 # Change Log
 
+## 2026-04-17
+
+- Reviewed the recent voice-runtime slices against the latest architecture and research notes, then closed three concrete regressions plus one additional experience gap:
+  - `internal/voice.SessionOrchestrator` now preserves a later exact playback boundary over an earlier `duck_only/backchannel` soft snapshot when both represent a non-full prefix, so `voice.previous.*` resume context no longer regresses to an older softer estimate
+  - native realtime audio-stream completion no longer treats wrapper-added `NextSegment()` methods as proof that a plain stream is segmented; `resolveSegmentedAudioStream(...)` now filters those false positives, which fixes the EOF spin that could keep a session stuck in `speaking` after returned `AudioStream` playback finished
+  - `cancelOnCloseAudioStream` keeps responder-scoped contexts alive across `io.EOF` until the stream is actually closed, which protects early-output completion from a premature `context canceled`
+  - preview `UtteranceComplete` is now conservative against live repair risk: a complete `stable_prefix` no longer allows prewarm/draft promotion when the latest partial has already entered a correction-pending or unfinished tail
+- Added regression coverage for the new runtime guards in `internal/gateway/turn_flow_test.go`, `internal/voice/session_orchestrator_test.go`, and `internal/voice/turn_detector_test.go`.
+- Revalidated the voice stack with:
+  - `go test ./internal/gateway ./internal/voice ./internal/agent ./internal/session`
+  - `go test -tags integration ./internal/gateway -run 'PlaybackAck|StreamingResponder|Realtime'`
+
 ## 2026-04-16
 
 - Pushed the segment-level playback-truth slice one step deeper into actual follow-up behavior and embedded interop material:

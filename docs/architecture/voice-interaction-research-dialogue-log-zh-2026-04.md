@@ -981,3 +981,64 @@
 - 这条边界继续保持 runtime-owned：
   - `internal/voice` 负责判断“用户到底听到了多少”
   - `internal/agent` 只消费 `voice.previous.*` 元数据，不自行重建播放真相
+
+
+## Round 021｜2026-04-17｜代码 review 回流到体验优化
+
+### 用户诉求
+
+- 结合最近的架构设计文档与深度研究结果，review 近期代码修改。
+- 若发现问题则直接修复或优化。
+- 在此基础上继续做一轮面向实时语音体验的优化，并完成测试与提交准备。
+
+### 本轮输入上下文
+
+- 重点对齐的研究/架构材料：
+  - `docs/architecture/overview.md`
+  - `docs/adr/0040-soft-recovery-and-announced-playback-context-stay-runtime-owned.md`
+  - `docs/architecture/service-side-voice-optimization-recommendations-zh-2026-04-16.md`
+- 本轮不是新起一套方案，而是回头检查最近实现是否真正符合这些文档提出的行为目标：
+  - playback truth 要优先相信更精确、更晚到达的事实
+  - early processing 必须可撤销，不能因为 preview 的旧稳定前缀而过早前推
+  - output orchestration 要能在自然收尾后稳定回到 `active`
+
+### 本轮 review 发现与修复
+
+1. **软恢复边界会被较早的 soft snapshot 回退**
+   - 问题：`duck_only / backchannel` 的早期 soft snapshot 在自然播完时会覆盖后续更精确的 `segment_mark` 边界。
+   - 修复：`SessionOrchestrator` 在 `CompletePlaybackWithSource()` 前先抓取 pre-completion 边界，并在 soft recovery 收口时优先保留“更晚但仍非 full”的精确前缀。
+   - 结果：`voice.previous.heard_text / resume_anchor / missed_text` 对后续继续说、 recap 更可信。
+
+2. **非分段音频流被 wrapper 误判成 segmented，导致 EOF 自旋**
+   - 问题：`cancelOnCloseAudioStream` 和 `pcm16EffectAudioStream` 都暴露了 `NextSegment()`，从而让普通音频流在 realtime 播放路径里被误识别为 segmented stream；单段音频播完后会持续 EOF 自旋，session 卡在 `speaking`，不会回到 `active`。
+   - 修复：新增 `resolveSegmentedAudioStream(...)`，只把“底层真实支持 segment 的流”识别为 segmented；wrapper 不再制造假阳性。
+   - 结果：返回型 `AudioStream` 的自然收尾恢复正常，`session.update(state=active)` 能稳定发出。
+
+3. **stable prefix 可能掩盖 live partial 的纠错风险，导致过早 prewarm**
+   - 问题：preview `UtteranceComplete` 原先优先看 `stable_prefix`，会出现 stable prefix 已经像一句完整话，但 live partial 其实已经进入“补充/自我纠正”阶段时，仍被判定为 complete 并允许 prewarm/draft。
+   - 修复：新增 `previewUtteranceCompleteness(...)`，要求 stable prefix 的完整性同时不能被 live partial 的 correction/unfinished 信号推翻。
+   - 结果：像“打开客厅灯，不对”这类实时 partial，不会因为旧稳定前缀而被过早前推，early processing 更可撤销、更符合研究结论。
+
+### 本轮体验层结论
+
+- 这一轮再次验证了一个关键判断：**实时语音体验的上限，很多时候不是模型本身，而是 runtime 对“事实精度”和“可撤销前推”的处理是否足够严格。**
+- 从服务侧体验角度看，本轮修复带来的直接收益是：
+  - 播放收尾不再出现“其实已播完但 session 没回 active”的卡死感
+  - `duck_only / backchannel` 之后的 resume 语义更可信
+  - correction-pending partial 不再误触发 prewarm / draft，降低“系统抢跑”感
+
+### 验证结果
+
+- `go test ./internal/gateway ./internal/voice ./internal/agent ./internal/session`
+- `go test -tags integration ./internal/gateway -run 'PlaybackAck|StreamingResponder|Realtime'`
+- 以上均已通过。
+
+### 与主线的关系
+
+- 这轮不是扩大架构面，而是把上一轮方案里的两个核心原则真正落到代码上：
+  1. playback truth 以更晚、更精确的事实为准
+  2. early processing 以 live 风险为最终约束，而不是只看稳定前缀
+- 对后续主线的价值在于：
+  - 为更早起播、更多 preview-driven runtime 行为继续铺底
+  - 避免“为了追求快而牺牲自然度”
+  - 给下一阶段更激进的 early plan / early act 留出更稳的行为边界

@@ -17,6 +17,7 @@ const (
 	turnDetectorLexicalModeConservative = "conservative"
 	defaultServerEndpointReason         = "server_silence_timeout"
 	lexicalHoldServerEndpointReason     = "server_lexical_hold_timeout"
+	correctionHoldServerEndpointReason  = "server_correction_hold_timeout"
 	defaultPrewarmStableRatio           = 0.6
 	defaultDraftStableRatio             = 0.82
 )
@@ -55,6 +56,11 @@ type turnArbitrationInput struct {
 	requiredSilence   time.Duration
 	endpointReason    string
 	utteranceComplete bool
+}
+
+type utteranceCompletenessResult struct {
+	Complete   bool
+	HoldReason string
 }
 
 func NewSilenceTurnDetector(cfg SilenceTurnDetectorConfig, sampleRateHz, channels int) SilenceTurnDetector {
@@ -100,7 +106,8 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 	partialText := strings.TrimSpace(d.latestPartial)
 	stablePrefix := strings.TrimSpace(d.stablePrefix)
 	audioMs := d.audioDurationMs()
-	utteranceComplete := looksLexicallyComplete(firstNonEmpty(stablePrefix, partialText))
+	completeness := previewUtteranceCompleteness(stablePrefix, partialText)
+	utteranceComplete := completeness.Complete
 	preview := InputPreview{
 		PartialText:       d.latestPartial,
 		StablePrefix:      d.stablePrefix,
@@ -298,17 +305,22 @@ func (d *SilenceTurnDetector) audioDurationMs() int {
 
 func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string) {
 	required := time.Duration(d.config.SilenceMs) * time.Millisecond
-	if hint := strings.TrimSpace(d.latestEndpointHint); hint != "" && looksLexicallyComplete(d.latestPartial) {
+	if d.config.LexicalEndpointMode == turnDetectorLexicalModeOff {
+		return required, defaultServerEndpointReason
+	}
+	completeness := analyzeUtteranceCompleteness(d.latestPartial)
+	if hint := strings.TrimSpace(d.latestEndpointHint); hint != "" && completeness.Complete {
 		hintSilence := time.Duration(d.config.EndpointHintSilenceMs) * time.Millisecond
 		if hintSilence > 0 && hintSilence < required {
 			return hintSilence, hint
 		}
 		return required, hint
 	}
-	if d.config.LexicalEndpointMode == turnDetectorLexicalModeOff || looksLexicallyComplete(d.latestPartial) {
+	if completeness.Complete {
 		return required, defaultServerEndpointReason
 	}
-	return required + time.Duration(d.config.IncompleteHoldMs)*time.Millisecond, lexicalHoldServerEndpointReason
+	reason := firstNonEmpty(strings.TrimSpace(completeness.HoldReason), lexicalHoldServerEndpointReason)
+	return required + time.Duration(d.config.IncompleteHoldMs)*time.Millisecond, reason
 }
 
 func normalizeTurnDetectorLexicalMode(mode string) string {
@@ -350,6 +362,65 @@ func looksLexicallyComplete(text string) bool {
 		return false
 	}
 	return true
+}
+
+func previewUtteranceCompleteness(stablePrefix, partialText string) utteranceCompletenessResult {
+	stableCandidate := strings.TrimSpace(firstNonEmpty(stablePrefix, partialText))
+	if stableCandidate == "" {
+		return utteranceCompletenessResult{}
+	}
+
+	stableCompleteness := analyzeUtteranceCompleteness(stableCandidate)
+	if trimmedPartial := strings.TrimSpace(partialText); trimmedPartial != "" {
+		liveCompleteness := analyzeUtteranceCompleteness(trimmedPartial)
+		if !liveCompleteness.Complete {
+			return liveCompleteness
+		}
+	}
+	return stableCompleteness
+}
+
+func analyzeUtteranceCompleteness(text string) utteranceCompletenessResult {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return utteranceCompletenessResult{}
+	}
+	if looksCorrectionPending(trimmed) {
+		return utteranceCompletenessResult{
+			Complete:   false,
+			HoldReason: correctionHoldServerEndpointReason,
+		}
+	}
+	if !looksLexicallyComplete(trimmed) {
+		return utteranceCompletenessResult{
+			Complete:   false,
+			HoldReason: lexicalHoldServerEndpointReason,
+		}
+	}
+	return utteranceCompletenessResult{Complete: true}
+}
+
+func looksCorrectionPending(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	for _, suffix := range chineseCorrectionSuffixes {
+		if !strings.HasSuffix(trimmed, suffix) {
+			continue
+		}
+		prefix := strings.TrimSpace(strings.TrimSuffix(trimmed, suffix))
+		prefix = strings.TrimRight(prefix, " \t\r\n,，。.!?！？;；:：、")
+		if prefix != "" {
+			return true
+		}
+	}
+	if token := trailingEnglishToken(trimmed); englishCorrectionTokens[token] {
+		prefix := strings.TrimSpace(trimmed[:len(trimmed)-len(token)])
+		prefix = strings.TrimRight(prefix, " \t\r\n,，。.!?！？;；:：、")
+		return prefix != ""
+	}
+	return false
 }
 
 func runeAtEnd(text string) rune {
@@ -495,4 +566,24 @@ var englishStandaloneHesitations = map[string]bool{
 	"hmm": true,
 	"mm":  true,
 	"erm": true,
+}
+
+var chineseCorrectionSuffixes = []string{
+	"不对",
+	"不是",
+	"我是说",
+	"我改一下",
+	"改成",
+	"换成",
+	"等一下",
+	"等等",
+	"等会",
+	"先别",
+}
+
+var englishCorrectionTokens = map[string]bool{
+	"wait":     true,
+	"sorry":    true,
+	"actually": true,
+	"instead":  true,
 }

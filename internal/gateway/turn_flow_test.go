@@ -422,3 +422,77 @@ func TestRecordPlaybackAckMarkUsesLatestAnnouncedTextForResumeContext(t *testing
 		t.Fatalf("expected persisted delivered text to reflect latest announced segment, got %q", got)
 	}
 }
+
+type eofThenCloseAudioStream struct {
+	closed bool
+}
+
+func (s *eofThenCloseAudioStream) Next(context.Context) ([]byte, error) {
+	return nil, io.EOF
+}
+
+func (s *eofThenCloseAudioStream) Close() error {
+	s.closed = true
+	return nil
+}
+
+type passthroughSegmentedAudioStream struct {
+	eofThenCloseAudioStream
+}
+
+func (s *passthroughSegmentedAudioStream) NextSegment(context.Context) (voice.PlaybackSegment, bool, error) {
+	return voice.PlaybackSegment{Text: "segment"}, true, io.EOF
+}
+
+func TestCancelOnCloseAudioStreamDoesNotCancelOnEOFBeforeClose(t *testing.T) {
+	inner := &eofThenCloseAudioStream{}
+	canceled := false
+	stream := &cancelOnCloseAudioStream{
+		inner: inner,
+		cancel: func() {
+			canceled = true
+		},
+	}
+
+	if _, err := stream.Next(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+	if canceled {
+		t.Fatal("expected EOF to keep the wrapped context alive until Close")
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if !canceled {
+		t.Fatal("expected Close to release the wrapped context")
+	}
+	if !inner.closed {
+		t.Fatal("expected inner stream to be closed")
+	}
+}
+
+func TestResolveSegmentedAudioStreamIgnoresWrapperFalsePositive(t *testing.T) {
+	stream := &cancelOnCloseAudioStream{inner: &eofThenCloseAudioStream{}}
+	if segmented, ok := resolveSegmentedAudioStream(stream); ok || segmented != nil {
+		t.Fatal("expected wrapper around plain audio stream to stay non-segmented")
+	}
+
+	wrapped := newPCM16EffectAudioStream(stream, &outputEffectState{})
+	if segmented, ok := resolveSegmentedAudioStream(wrapped); ok || segmented != nil {
+		t.Fatal("expected effect wrapper around plain audio stream to stay non-segmented")
+	}
+}
+
+func TestResolveSegmentedAudioStreamPreservesSegmentedWrapper(t *testing.T) {
+	stream := &cancelOnCloseAudioStream{inner: &passthroughSegmentedAudioStream{}}
+	segmented, ok := resolveSegmentedAudioStream(stream)
+	if !ok || segmented == nil {
+		t.Fatal("expected wrapper around segmented stream to stay segmented")
+	}
+
+	wrapped := newPCM16EffectAudioStream(stream, &outputEffectState{})
+	segmented, ok = resolveSegmentedAudioStream(wrapped)
+	if !ok || segmented == nil {
+		t.Fatal("expected effect wrapper to preserve segmented stream detection")
+	}
+}

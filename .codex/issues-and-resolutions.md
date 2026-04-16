@@ -1,5 +1,25 @@
 # Issues And Resolutions
 
+## 2026-04-17
+
+### Wrapper-Added `NextSegment()` Methods Could Trap Realtime Playback In An EOF Spin
+
+- Problem: `cancelOnCloseAudioStream` and `pcm16EffectAudioStream` both exposed `NextSegment()` passthrough methods, so native realtime treated even plain returned audio streams as `voice.SegmentedAudioStream`. On a one-shot stream, `startAudioStream(...)` then saw `io.EOF` and kept looping forever on the segmented-path `continue`, leaving the session stuck in `speaking` and suppressing the final return-to-active update.
+- Resolution: introduced `resolveSegmentedAudioStream(...)` so wrapper types only count as segmented when their underlying stream truly exposes segment boundaries. Native realtime now uses that helper before entering segmented playback logic.
+- Status: resolved.
+
+### Stable Prefix Completeness Could Overrule A Live Self-Correction Tail
+
+- Problem: preview `UtteranceComplete` used the stable prefix too aggressively. That let a stale complete prefix keep `PrewarmAllowed` and `DraftAllowed` enabled even after the latest partial had already shifted into a self-correction or unfinished continuation such as `打开客厅灯，不对`.
+- Resolution: added `previewUtteranceCompleteness(...)`, which still allows stable-prefix-driven promotion but lets the newest partial veto completeness when it shows correction-pending or otherwise incomplete evidence.
+- Status: resolved.
+
+### Soft Recovery Could Still Discard A Later Exact Heard Boundary
+
+- Problem: after `duck_only` or `backchannel`, the runtime captured an early soft snapshot. If the client later supplied a more precise non-full heard boundary (for example through `segment_mark`), `CompletePlaybackWithSource()` could still collapse the outcome back to the earlier softer estimate.
+- Resolution: `SessionOrchestrator` now snapshots the pre-completion boundary and explicitly chooses the better recoverable prefix based on prefix length and source precision before finalizing `voice.previous.*` metadata.
+- Status: resolved.
+
 ## 2026-04-16
 
 ### Exact Continue Follow-Ups Were Still Only A Prompt Hint On The LLM Path

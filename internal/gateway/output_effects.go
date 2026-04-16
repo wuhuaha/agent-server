@@ -122,6 +122,13 @@ func (s *pcm16EffectAudioStream) Close() error {
 	return s.inner.Close()
 }
 
+func (s *pcm16EffectAudioStream) segmentedStream() (voice.SegmentedAudioStream, bool) {
+	if _, ok := resolveSegmentedAudioStream(s.inner); !ok {
+		return nil, false
+	}
+	return s, true
+}
+
 func (s *pcm16EffectAudioStream) PlaybackDuration(frameDuration time.Duration) time.Duration {
 	if aware, ok := s.inner.(playbackDurationAware); ok {
 		return aware.PlaybackDuration(frameDuration)

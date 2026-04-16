@@ -486,6 +486,44 @@ func TestSessionOrchestratorExposesSoftDuckRecoveryContextForNextTurn(t *testing
 	}
 }
 
+func TestSessionOrchestratorPrefersLaterExactBoundaryOverEarlySoftRecoverySnapshot(t *testing.T) {
+	orchestrator := NewSessionOrchestrator(nil)
+	request := TurnRequest{
+		SessionID:  "sess-soft-ack",
+		TurnID:     "turn-soft-ack",
+		DeviceID:   "dev-soft-ack",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，先打开客厅灯。再关闭窗帘。"
+	orchestrator.PrepareTurn(request, "打开客厅灯并关闭窗帘", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 2*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackChunk()
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyDuckOnly,
+		Reason: "duck_pending_incomplete_preview",
+	})
+	orchestrator.ObservePlaybackMarkTextFact(900*time.Millisecond, "好的，先打开客厅灯。")
+	orchestrator.CompletePlaybackWithSource(HeardTextSourcePlaybackCompleted)
+
+	outcome, ok := orchestrator.LastPlaybackOutcome()
+	if !ok {
+		t.Fatal("expected last playback outcome after completed soft recovery")
+	}
+	if outcome.HeardText != "好的，先打开客厅灯。" {
+		t.Fatalf("expected later exact boundary to win over early soft snapshot, got %+v", outcome)
+	}
+	if outcome.MissedText != "再关闭窗帘。" {
+		t.Fatalf("expected missed tail to stay aligned with the later exact boundary, got %+v", outcome)
+	}
+	if outcome.HeardSource != HeardTextSourceSegmentMark {
+		t.Fatalf("expected exact segment mark source to survive completion, got %+v", outcome)
+	}
+}
+
 func TestSessionOrchestratorUpdatesPlaybackTruthWhenDeliveredTextExtendsDuringSpeaking(t *testing.T) {
 	orchestrator := NewSessionOrchestrator(nil)
 	request := TurnRequest{

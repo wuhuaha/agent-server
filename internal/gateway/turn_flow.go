@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -471,9 +473,24 @@ type cancelOnCloseAudioStream struct {
 	closeOnce sync.Once
 }
 
+type underlyingSegmentedAudioStream interface {
+	segmentedStream() (voice.SegmentedAudioStream, bool)
+}
+
+func resolveSegmentedAudioStream(stream voice.AudioStream) (voice.SegmentedAudioStream, bool) {
+	if stream == nil {
+		return nil, false
+	}
+	if aware, ok := stream.(underlyingSegmentedAudioStream); ok {
+		return aware.segmentedStream()
+	}
+	segmented, ok := stream.(voice.SegmentedAudioStream)
+	return segmented, ok
+}
+
 func (s *cancelOnCloseAudioStream) Next(ctx context.Context) ([]byte, error) {
 	chunk, err := s.inner.Next(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		s.release()
 	}
 	return chunk, err
@@ -483,6 +500,13 @@ func (s *cancelOnCloseAudioStream) Close() error {
 	err := s.inner.Close()
 	s.release()
 	return err
+}
+
+func (s *cancelOnCloseAudioStream) segmentedStream() (voice.SegmentedAudioStream, bool) {
+	if _, ok := resolveSegmentedAudioStream(s.inner); !ok {
+		return nil, false
+	}
+	return s, true
 }
 
 func (s *cancelOnCloseAudioStream) release() {

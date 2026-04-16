@@ -1310,8 +1310,8 @@ func (h *realtimeWSHandler) startAudioStream(
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	stream := runtime.installOutput(cancel, completion)
-	_, sourceSegmented := audioStream.(voice.SegmentedAudioStream)
 	audioStream = newPCM16EffectAudioStream(audioStream, &stream.effects)
+	segmentedStream, sourceSegmented := resolveSegmentedAudioStream(audioStream)
 	runtime.installPlaybackAckMeta(meta)
 
 	go func() {
@@ -1323,10 +1323,6 @@ func (h *realtimeWSHandler) startAudioStream(
 		ticker := time.NewTicker(outputFrameInterval)
 		defer ticker.Stop()
 		audioChunkIndex := 0
-		var segmentedStream voice.SegmentedAudioStream
-		if sourceSegmented {
-			segmentedStream, _ = audioStream.(voice.SegmentedAudioStream)
-		}
 		segmentCursor := audioPlaybackMeta{
 			ResponseID: meta.ResponseID,
 			PlaybackID: meta.PlaybackID,

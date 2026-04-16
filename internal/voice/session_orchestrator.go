@@ -539,6 +539,7 @@ func (o *SessionOrchestrator) CompletePlaybackWithSource(source HeardTextSource)
 	if o.turn == nil {
 		return
 	}
+	preCompletionBoundary := o.currentPlaybackBoundarySnapshotLocked()
 	o.turn.playbackActive = false
 	o.turn.playbackCompleted = true
 	playedDuration := o.turn.playedDuration
@@ -550,7 +551,7 @@ func (o *SessionOrchestrator) CompletePlaybackWithSource(source HeardTextSource)
 		o.turn.heardText = o.turn.deliveredText
 	}
 	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, o.turn.heardText)
-	o.applySoftRecoveryOutcomeLocked()
+	o.applySoftRecoveryOutcomeLocked(preCompletionBoundary)
 	o.turn.responseInterrupted = false
 	o.turn.responseTruncated = false
 	o.persistLocked()
@@ -765,7 +766,21 @@ func (o *SessionOrchestrator) captureSoftRecoverySnapshotLocked(policy Interrupt
 	}
 }
 
-func (o *SessionOrchestrator) applySoftRecoveryOutcomeLocked() {
+func (o *SessionOrchestrator) currentPlaybackBoundarySnapshotLocked() *softRecoverySnapshot {
+	if o.turn == nil {
+		return nil
+	}
+	return &softRecoverySnapshot{
+		heardText:         strings.TrimSpace(o.turn.heardText),
+		heardTextBoundary: heardTextBoundaryForTexts(o.turn.deliveredText, o.turn.heardText),
+		heardSource:       normalizeHeardTextSource(o.turn.heardSource, HeardTextSourceUnknown),
+		heardConfidence:   heardTextConfidenceForSource(o.turn.heardSource),
+		heardPrecision:    heardTextPrecisionTierForSource(o.turn.heardSource),
+		playedDuration:    o.turn.playedDuration,
+	}
+}
+
+func (o *SessionOrchestrator) applySoftRecoveryOutcomeLocked(preCompletionBoundary *softRecoverySnapshot) {
 	if o.turn == nil || o.turn.softRecovery == nil {
 		return
 	}
@@ -773,11 +788,73 @@ func (o *SessionOrchestrator) applySoftRecoveryOutcomeLocked() {
 	if !shouldLimitCompletedPlaybackToSoftRecovery(o.turn, snapshot) {
 		return
 	}
-	o.turn.heardText = snapshot.heardText
-	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, snapshot.heardText)
-	o.turn.heardSource = normalizeHeardTextSource(snapshot.heardSource, HeardTextSourceUnknown)
+	selected := preferredSoftRecoveryBoundary(o.turn.deliveredText, snapshot, preCompletionBoundary)
+	o.turn.heardText = strings.TrimSpace(selected.heardText)
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, selected.heardText)
+	o.turn.heardSource = normalizeHeardTextSource(selected.heardSource, HeardTextSourceUnknown)
 	o.turn.heardConfidence = heardTextConfidenceForSource(o.turn.heardSource)
 	o.turn.heardPrecisionTier = heardTextPrecisionTierForSource(o.turn.heardSource)
+}
+
+func preferredSoftRecoveryBoundary(deliveredText string, softRecovery, preCompletionBoundary *softRecoverySnapshot) *softRecoverySnapshot {
+	selected := softRecovery
+	if betterSoftRecoveryBoundary(deliveredText, selected, preCompletionBoundary) {
+		selected = preCompletionBoundary
+	}
+	return selected
+}
+
+func betterSoftRecoveryBoundary(deliveredText string, current, candidate *softRecoverySnapshot) bool {
+	if candidate == nil {
+		return false
+	}
+	if current == nil {
+		return usableSoftRecoveryBoundary(deliveredText, candidate)
+	}
+	if !usableSoftRecoveryBoundary(deliveredText, candidate) {
+		return false
+	}
+	if !usableSoftRecoveryBoundary(deliveredText, current) {
+		return true
+	}
+
+	currentLen := len([]rune(strings.TrimSpace(current.heardText)))
+	candidateLen := len([]rune(strings.TrimSpace(candidate.heardText)))
+	switch {
+	case candidateLen > currentLen:
+		return true
+	case candidateLen < currentLen:
+		return false
+	default:
+		return softRecoverySourceRank(candidate.heardSource) > softRecoverySourceRank(current.heardSource)
+	}
+}
+
+func usableSoftRecoveryBoundary(deliveredText string, snapshot *softRecoverySnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	heard := strings.TrimSpace(snapshot.heardText)
+	delivered := strings.TrimSpace(deliveredText)
+	if heard == "" || delivered == "" {
+		return false
+	}
+	return strings.HasPrefix(delivered, heard) && heard != delivered
+}
+
+func softRecoverySourceRank(source HeardTextSource) int {
+	switch normalizeHeardTextSource(source, HeardTextSourceUnknown) {
+	case HeardTextSourceSegmentMark:
+		return 4
+	case HeardTextSourcePlaybackCompleted:
+		return 3
+	case HeardTextSourcePlaybackStarted:
+		return 2
+	case HeardTextSourceHeuristicBytes:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func hasExactHeardTextPrefix(deliveredText, heardText string) bool {
