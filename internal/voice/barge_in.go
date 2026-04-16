@@ -3,6 +3,7 @@ package voice
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -53,6 +54,18 @@ type BargeInDecision struct {
 	LexicallyComplete bool
 	MinAudioMs        int
 	HoldAudioMs       int
+	AcousticReady     bool
+	SemanticReady     bool
+	AcceptCandidate   bool
+	AcceptNow         bool
+	EndpointHinted    bool
+	BackchannelLikely bool
+	TakeoverLexicon   bool
+	TurnStage         TurnArbitrationStage
+	Stability         float64
+	StablePrefixRunes int
+	IntrusionScore    float64
+	TakeoverScore     float64
 }
 
 func NormalizeBargeInConfig(cfg BargeInConfig) BargeInConfig {
@@ -83,36 +96,88 @@ func EvaluateBargeIn(preview InputPreview, sampleRateHz, channels int, cfg Barge
 	audioMs := pcm16AudioDurationMs(preview.AudioBytes, sampleRateHz, channels)
 	decision.AudioMs = audioMs
 	partialText := strings.TrimSpace(preview.PartialText)
-	if looksLikeBackchannel(partialText) && audioMs >= bargeInBackchannelMinAudioMs(cfg.MinAudioMs) {
+	stablePrefix := strings.TrimSpace(preview.StablePrefix)
+	bestText := firstNonEmpty(stablePrefix, partialText)
+
+	decision.TurnStage = normalizedBargeInTurnStage(preview)
+	decision.Stability = clampUnit(preview.Arbitration.Stability)
+	decision.StablePrefixRunes = utf8.RuneCountInString(stablePrefix)
+	decision.EndpointHinted = preview.Arbitration.EndpointHinted || strings.TrimSpace(preview.EndpointReason) != ""
+	decision.AcceptCandidate = preview.Arbitration.AcceptCandidate || decision.TurnStage == TurnArbitrationStageAcceptCandidate || decision.TurnStage == TurnArbitrationStageAcceptNow || decision.EndpointHinted
+	decision.AcceptNow = preview.Arbitration.AcceptNow || preview.CommitSuggested || decision.TurnStage == TurnArbitrationStageAcceptNow
+	decision.BackchannelLikely = looksLikeBackchannel(bestText)
+	decision.TakeoverLexicon = looksLikeTakeoverLexicon(bestText)
+	decision.LexicallyComplete = looksLexicallyComplete(bestText)
+	decision.AcousticReady = audioMs >= bargeInAcousticGateMinAudioMs(cfg.MinAudioMs)
+	decision.SemanticReady = bargeInSemanticReady(preview, bestText, stablePrefix, decision)
+	decision.IntrusionScore = bargeInIntrusionScore(audioMs, cfg, decision, partialText, stablePrefix)
+	decision.TakeoverScore = bargeInTakeoverScore(decision)
+
+	if decision.BackchannelLikely && !decision.AcceptCandidate && !decision.AcceptNow && !decision.TakeoverLexicon &&
+		audioMs >= bargeInBackchannelMinAudioMs(cfg.MinAudioMs) {
 		decision.Policy = InterruptionPolicyBackchannel
 		decision.Reason = "backchannel_short_ack"
 		return decision
 	}
-	if audioMs < cfg.MinAudioMs {
-		if partialText != "" {
-			decision.Policy = InterruptionPolicyDuckOnly
-			decision.Reason = "duck_pending_min_audio"
-			return decision
-		}
-		decision.Reason = "below_min_audio"
-		return decision
-	}
-	decision.LexicallyComplete = looksLexicallyComplete(partialText)
-	if decision.LexicallyComplete {
+	if audioMs >= cfg.MinAudioMs && !decision.BackchannelLikely && (decision.LexicallyComplete || decision.TakeoverLexicon) {
 		decision.Policy = InterruptionPolicyHardInterrupt
 		decision.Accepted = true
-		decision.Reason = "accepted_complete_preview"
+		if decision.TakeoverLexicon {
+			decision.Reason = "accepted_takeover_lexicon"
+		} else {
+			decision.Reason = "accepted_complete_preview"
+		}
 		return decision
 	}
-	if audioMs >= cfg.MinAudioMs+cfg.IncompleteHoldMs {
+
+	if decision.AcceptNow && (decision.LexicallyComplete || decision.SemanticReady || decision.TakeoverLexicon) {
+		decision.Policy = InterruptionPolicyHardInterrupt
+		decision.Accepted = true
+		decision.Reason = bargeInAcceptReason(decision)
+		return decision
+	}
+	if decision.AcceptCandidate && decision.SemanticReady && !decision.BackchannelLikely &&
+		(decision.LexicallyComplete || decision.TakeoverLexicon || decision.TakeoverScore >= 0.68) {
+		decision.Policy = InterruptionPolicyHardInterrupt
+		decision.Accepted = true
+		decision.Reason = "accepted_accept_candidate"
+		return decision
+	}
+	if audioMs >= cfg.MinAudioMs+cfg.IncompleteHoldMs && (bestText != "" || decision.IntrusionScore >= 0.72) && !decision.BackchannelLikely {
 		decision.Policy = InterruptionPolicyHardInterrupt
 		decision.Accepted = true
 		decision.Reason = "accepted_incomplete_after_hold"
 		return decision
 	}
+
+	if audioMs < cfg.MinAudioMs {
+		if partialText != "" || stablePrefix != "" {
+			decision.Policy = InterruptionPolicyDuckOnly
+			decision.Reason = "duck_pending_min_audio"
+			return decision
+		}
+		if decision.AcousticReady {
+			decision.Policy = InterruptionPolicyDuckOnly
+			decision.Reason = "duck_pending_audio_only"
+			return decision
+		}
+		decision.Reason = "below_min_audio"
+		return decision
+	}
+
+	if decision.BackchannelLikely && decision.TakeoverScore < 0.35 && !decision.AcceptCandidate && !decision.AcceptNow {
+		decision.Policy = InterruptionPolicyBackchannel
+		decision.Reason = "backchannel_short_ack"
+		return decision
+	}
+
 	decision.Policy = InterruptionPolicyDuckOnly
-	if partialText == "" {
+	if partialText == "" && stablePrefix == "" {
 		decision.Reason = "duck_pending_audio_only"
+		return decision
+	}
+	if decision.SemanticReady {
+		decision.Reason = "duck_pending_semantic_confirmation"
 		return decision
 	}
 	decision.Reason = "duck_pending_incomplete_preview"
@@ -157,6 +222,23 @@ func bargeInBackchannelMinAudioMs(minAudioMs int) int {
 	threshold := minAudioMs / 2
 	if threshold < 60 {
 		return 60
+	}
+	return threshold
+}
+
+func bargeInAcousticGateMinAudioMs(minAudioMs int) int {
+	if minAudioMs <= 0 {
+		return 60
+	}
+	threshold := minAudioMs / 2
+	if threshold > minAudioMs {
+		threshold = minAudioMs
+	}
+	if threshold < 60 {
+		threshold = 60
+		if threshold > minAudioMs {
+			threshold = minAudioMs
+		}
 	}
 	return threshold
 }
@@ -220,6 +302,138 @@ var backchannelTokens = map[string]struct{}{
 	"没事":  {},
 	"谢谢":  {},
 	"哈哈":  {},
+}
+
+func normalizedBargeInTurnStage(preview InputPreview) TurnArbitrationStage {
+	if stage := preview.Arbitration.Stage; stage != "" {
+		return stage
+	}
+	switch {
+	case preview.CommitSuggested:
+		return TurnArbitrationStageAcceptNow
+	case strings.TrimSpace(preview.EndpointReason) != "":
+		return TurnArbitrationStageAcceptCandidate
+	case strings.TrimSpace(preview.PartialText) != "":
+		return TurnArbitrationStagePreviewOnly
+	default:
+		return TurnArbitrationStagePreviewOnly
+	}
+}
+
+func bargeInSemanticReady(preview InputPreview, bestText, stablePrefix string, decision BargeInDecision) bool {
+	if strings.TrimSpace(bestText) == "" {
+		return false
+	}
+	if preview.Arbitration.DraftAllowed || preview.Arbitration.AcceptCandidate || preview.Arbitration.AcceptNow {
+		return true
+	}
+	if preview.UtteranceComplete || decision.LexicallyComplete || decision.TakeoverLexicon {
+		return true
+	}
+	if stablePrefix != "" && (decision.Stability >= defaultPrewarmStableRatio || decision.StablePrefixRunes >= 4) {
+		return true
+	}
+	return false
+}
+
+func bargeInIntrusionScore(audioMs int, cfg BargeInConfig, decision BargeInDecision, partialText, stablePrefix string) float64 {
+	score := 0.0
+	if audioMs > 0 {
+		score += 0.35 * clampUnit(float64(audioMs)/float64(maxInt(bargeInAcousticGateMinAudioMs(cfg.MinAudioMs), 1)))
+	}
+	if partialText != "" || stablePrefix != "" {
+		score += 0.15
+	}
+	if decision.AcousticReady {
+		score += 0.1
+	}
+	if decision.EndpointHinted {
+		score += 0.1
+	}
+	if decision.AcceptCandidate {
+		score += 0.1
+	}
+	if decision.AcceptNow {
+		score += 0.1
+	}
+	if decision.StablePrefixRunes >= 4 {
+		score += 0.05
+	}
+	if decision.BackchannelLikely {
+		score -= 0.15
+	}
+	return clampUnit(score)
+}
+
+func bargeInTakeoverScore(decision BargeInDecision) float64 {
+	score := 0.0
+	if decision.LexicallyComplete {
+		score += 0.3
+	}
+	if decision.SemanticReady {
+		score += 0.2
+	}
+	if decision.AcceptCandidate {
+		score += 0.15
+	}
+	if decision.AcceptNow {
+		score += 0.2
+	}
+	if decision.TakeoverLexicon {
+		score += 0.2
+	}
+	if decision.EndpointHinted {
+		score += 0.05
+	}
+	if decision.BackchannelLikely {
+		score -= 0.45
+	}
+	if decision.Stability >= defaultDraftStableRatio {
+		score += 0.1
+	}
+	return clampUnit(score)
+}
+
+func bargeInAcceptReason(decision BargeInDecision) string {
+	switch {
+	case decision.TakeoverLexicon:
+		return "accepted_takeover_lexicon"
+	case decision.AcceptNow:
+		return "accepted_accept_now"
+	case decision.LexicallyComplete:
+		return "accepted_complete_preview"
+	default:
+		return "accepted_semantic_confirmation"
+	}
+}
+
+func looksLikeTakeoverLexicon(text string) bool {
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return false
+	}
+	for _, token := range bargeInTakeoverLexicon {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	return false
+}
+
+var bargeInTakeoverLexicon = []string{
+	"等一下",
+	"等会",
+	"等等",
+	"停一下",
+	"停停",
+	"不是",
+	"不对",
+	"打断一下",
+	"先别",
+	"先停",
+	"重新",
+	"改成",
+	"换成",
 }
 
 func playbackDirectiveForDecision(decision BargeInDecision) PlaybackDirective {
@@ -301,4 +515,15 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func clampUnit(value float64) float64 {
+	switch {
+	case value < 0:
+		return 0
+	case value > 1:
+		return 1
+	default:
+		return value
+	}
 }

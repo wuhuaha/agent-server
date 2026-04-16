@@ -889,3 +889,13 @@
   - preview sessions may now surface endpoint candidates before accepted-turn commit, while accepted-turn semantics still remain on `accept_reason`
   - preview-driven runtime prewarm now keys off arbitrator state instead of a separate duplicated heuristic
   - added unit and gateway coverage for accept-candidate preview behavior, stable complete prewarm promotion, and incomplete wait-for-more behavior
+
+- Landed step 2 of the next service-side voice optimization path:
+  - `internal/voice.EvaluateBargeIn(...)` now behaves like an acoustic-first verifier with semantic confirmation instead of a transcript-only shortcut
+  - speaking-time audio-only intrusion may now enter `duck_only` before transcript text is ready, keeping soft interruption reversible
+  - preview turn stage, stability, endpoint hints, and takeover lexicon now contribute to escalation evidence for `hard_interrupt`
+  - gateway barge-in logs now include structured evidence fields such as acoustic-ready, semantic-ready, turn-stage, intrusion-score, and takeover-score
+  - documented the durable boundary in `docs/adr/0037-acoustic-first-interruption-verification-keeps-soft-policies-reversible.md` and refreshed `docs/architecture/overview.md` / `plan.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/gateway -run 'BargeIn|Interruption|Realtime'`
+    - `go test -tags integration ./internal/gateway -run 'Backchannel|BargeIn'`

@@ -371,5 +371,11 @@
   - the shared turn-taking path distinguishes `preview_only`, `prewarm_allowed`, `draft_allowed`, `accept_candidate`, `accept_now`, and `wait_for_more`
   - endpoint candidates may now surface before final accept without changing the public rule that only `accept_reason` means the turn was actually accepted
   - preview-driven prewarm should follow arbitrator state rather than re-deriving a parallel heuristic
+- The second implementation slice of that same plan is now landed:
+  - speaking-time interruption is now evaluated as `acoustic intrusion first -> semantic confirmation second`, still behind the same runtime-owned `EvaluateBargeIn(...)` contract
+  - audio-only intrusion may enter `duck_only` before transcript text is ready, instead of waiting for transcript content just to prove someone started speaking
+  - `stable_prefix`, preview `TurnArbitrationStage`, lexical completeness, endpoint hints, and takeover lexicon now act as internal escalation evidence toward `hard_interrupt`
+  - short acknowledgements should remain `backchannel` even when lexically complete, while explicit takeover phrases such as `打断一下` may interrupt sooner
+  - the current debug fields of record for speaking-time interruption now also include `barge_in_acoustic_ready`, `barge_in_semantic_ready`, `barge_in_turn_stage`, `barge_in_intrusion_score`, and `barge_in_takeover_score`
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

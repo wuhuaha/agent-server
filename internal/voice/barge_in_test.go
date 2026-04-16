@@ -38,6 +38,23 @@ func TestEvaluateBargeInRequiresEnoughAudioForIncompletePreview(t *testing.T) {
 	}
 }
 
+func TestEvaluateBargeInAllowsAcousticOnlyDuckBeforeTranscriptReady(t *testing.T) {
+	cfg := BargeInConfig{MinAudioMs: 120, IncompleteHoldMs: 240}
+	decision := EvaluateBargeIn(InputPreview{
+		AudioBytes:    pcmFrameBytes(16000, 1, 80),
+		SpeechStarted: true,
+	}, 16000, 1, cfg)
+	if decision.Policy != InterruptionPolicyDuckOnly || decision.Accepted {
+		t.Fatalf("expected early acoustic intrusion to enter duck_only, got %+v", decision)
+	}
+	if !decision.AcousticReady || decision.SemanticReady {
+		t.Fatalf("expected acoustic-only evidence without semantic confirmation, got %+v", decision)
+	}
+	if decision.Reason != "duck_pending_audio_only" {
+		t.Fatalf("expected duck_pending_audio_only reason, got %+v", decision)
+	}
+}
+
 func TestEvaluateBargeInAllowsLexicallyCompletePreviewSooner(t *testing.T) {
 	cfg := BargeInConfig{MinAudioMs: 120, IncompleteHoldMs: 240}
 	preview := InputPreview{
@@ -48,6 +65,9 @@ func TestEvaluateBargeInAllowsLexicallyCompletePreviewSooner(t *testing.T) {
 	decision := EvaluateBargeIn(preview, 16000, 1, cfg)
 	if decision.Policy != InterruptionPolicyHardInterrupt || !decision.Accepted {
 		t.Fatalf("expected complete preview to hard interrupt, got %+v", decision)
+	}
+	if !decision.AcousticReady || !decision.SemanticReady || !decision.LexicallyComplete {
+		t.Fatalf("expected complete preview to expose acoustic and semantic evidence, got %+v", decision)
 	}
 }
 

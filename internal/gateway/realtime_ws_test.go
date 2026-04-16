@@ -1174,7 +1174,10 @@ func TestRealtimeWSLogsAcceptedBargeIn(t *testing.T) {
 	for _, want := range []string{
 		`"msg":"gateway barge-in preview updated"`,
 		`"msg":"gateway barge-in accepted"`,
-		`"barge_in_reason":"accepted_complete_preview"`,
+		`"barge_in_reason":"accepted_takeover_lexicon"`,
+		`"barge_in_acoustic_ready":true`,
+		`"barge_in_semantic_ready":true`,
+		`"barge_in_takeover_lexicon":true`,
 		`"preview_id":"preview_`,
 	} {
 		if !strings.Contains(logs, want) {

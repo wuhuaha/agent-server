@@ -448,28 +448,18 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 		directive := decision.PlaybackDirective()
 		if directive.ShouldDuckOutput() {
 			runtime.applyOutputDirective(directive)
-			attrs := []any{
-				"barge_in_policy", decision.Policy,
-				"barge_in_reason", decision.Reason,
-				"barge_in_audio_ms", decision.AudioMs,
-				"barge_in_lexically_complete", decision.LexicallyComplete,
+			attrs := appendBargeInDecisionLogAttrs(nil, decision)
+			attrs = append(attrs,
 				"barge_in_action", directive.Action,
 				"output_gain", directive.Gain,
 				"duck_hold_ms", directive.Hold.Milliseconds(),
-			}
+			)
 			attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
 			logTurnTraceInfo(h.logger, "gateway barge-in soft directive applied", previous.SessionID, runtime.turnTrace.Current(), attrs...)
 		}
 		if !directive.ShouldInterruptOutput() {
 			if decision.Policy != voice.InterruptionPolicyIgnore {
-				attrs := []any{
-					"barge_in_policy", decision.Policy,
-					"barge_in_reason", decision.Reason,
-					"barge_in_audio_ms", decision.AudioMs,
-					"barge_in_lexically_complete", decision.LexicallyComplete,
-					"barge_in_min_audio_ms", decision.MinAudioMs,
-					"barge_in_hold_audio_ms", decision.HoldAudioMs,
-				}
+				attrs := appendBargeInDecisionLogAttrs(nil, decision)
 				attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
 				logTurnTraceInfo(h.logger, "gateway barge-in policy observed", previous.SessionID, runtime.turnTrace.Current(), attrs...)
 			}
@@ -478,13 +468,7 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 			}
 			return nil
 		}
-		attrs := []any{
-			"barge_in_reason", decision.Reason,
-			"barge_in_audio_ms", decision.AudioMs,
-			"barge_in_lexically_complete", decision.LexicallyComplete,
-			"barge_in_min_audio_ms", decision.MinAudioMs,
-			"barge_in_hold_audio_ms", decision.HoldAudioMs,
-		}
+		attrs := appendBargeInDecisionLogAttrs(nil, decision)
 		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, time.Now().UTC())
 		logTurnTraceInfo(h.logger, "gateway barge-in accepted", previous.SessionID, runtime.turnTrace.Current(), attrs...)
 		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
@@ -1169,6 +1153,29 @@ func appendPreviewTranscriptionLogAttrs(attrs []any, result *voice.Transcription
 		"preview_finalize_text_len", len(strings.TrimSpace(result.Text)),
 		"preview_finalize_mode", strings.TrimSpace(result.Mode),
 		"preview_finalize_endpoint_reason", strings.TrimSpace(result.EndpointReason),
+	)
+}
+
+func appendBargeInDecisionLogAttrs(attrs []any, decision voice.BargeInDecision) []any {
+	return append(attrs,
+		"barge_in_policy", decision.Policy,
+		"barge_in_reason", decision.Reason,
+		"barge_in_audio_ms", decision.AudioMs,
+		"barge_in_lexically_complete", decision.LexicallyComplete,
+		"barge_in_min_audio_ms", decision.MinAudioMs,
+		"barge_in_hold_audio_ms", decision.HoldAudioMs,
+		"barge_in_acoustic_ready", decision.AcousticReady,
+		"barge_in_semantic_ready", decision.SemanticReady,
+		"barge_in_accept_candidate", decision.AcceptCandidate,
+		"barge_in_accept_now", decision.AcceptNow,
+		"barge_in_endpoint_hinted", decision.EndpointHinted,
+		"barge_in_backchannel_likely", decision.BackchannelLikely,
+		"barge_in_takeover_lexicon", decision.TakeoverLexicon,
+		"barge_in_turn_stage", decision.TurnStage,
+		"barge_in_stability", decision.Stability,
+		"barge_in_stable_prefix_runes", decision.StablePrefixRunes,
+		"barge_in_intrusion_score", decision.IntrusionScore,
+		"barge_in_takeover_score", decision.TakeoverScore,
 	)
 }
 
