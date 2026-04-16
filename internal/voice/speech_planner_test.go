@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -298,6 +299,63 @@ func TestSpeechPlannerQueuedAudioStreamExposesEstimatedPlaybackDuration(t *testi
 	}
 }
 
+func TestSpeechPlannerQueuedAudioStreamExposesSegmentBoundaries(t *testing.T) {
+	planner := newPlannedSpeechSynthesis(context.Background(), &recordingSynthesizer{}, SynthesisRequest{
+		SessionID: "sess_segments",
+		TurnID:    "turn_segments",
+		TraceID:   "trace_segments",
+		DeviceID:  "dev_segments",
+		UserText:  "打开客厅灯并关闭窗帘",
+	}, SpeechPlannerConfig{
+		Enabled:          true,
+		MinChunkRunes:    2,
+		TargetChunkRunes: 6,
+	})
+	if planner == nil {
+		t.Fatal("expected planner")
+	}
+
+	planner.ObserveDelta(ResponseDelta{Kind: ResponseDeltaKindText, Text: "好的，先打开客厅灯，"})
+	stream := planner.Finalize("好的，先打开客厅灯，再关闭窗帘。")
+	if stream == nil {
+		t.Fatal("expected planned audio stream after finalize")
+	}
+	defer stream.Close()
+
+	segmented, ok := stream.(SegmentedAudioStream)
+	if !ok {
+		t.Fatal("expected planned audio stream to expose segment boundaries")
+	}
+
+	first, ok, err := segmented.NextSegment(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("expected first segment, got segment=%+v ok=%v err=%v", first, ok, err)
+	}
+	if first.Text != "好的，先打开客厅灯，" {
+		t.Fatalf("unexpected first segment %+v", first)
+	}
+	if first.IsLastSegment {
+		t.Fatalf("expected first segment to stay non-final, got %+v", first)
+	}
+	if chunks := drainSegmentUntilBoundary(t, stream); chunks == 0 {
+		t.Fatal("expected first segment to emit audio before boundary")
+	}
+
+	second, ok, err := segmented.NextSegment(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("expected second segment, got segment=%+v ok=%v err=%v", second, ok, err)
+	}
+	if second.Text != "再关闭窗帘。" || !second.IsLastSegment {
+		t.Fatalf("unexpected second segment %+v", second)
+	}
+	if chunks := drainSegmentUntilBoundary(t, stream); chunks == 0 {
+		t.Fatal("expected second segment to emit audio before boundary")
+	}
+	if _, ok, err := segmented.NextSegment(context.Background()); !errors.Is(err, io.EOF) || ok {
+		t.Fatalf("expected EOF after final segment, got ok=%v err=%v", ok, err)
+	}
+}
+
 func TestPlannedSpeechSynthesisBufferedQueueDoesNotBlockTextDeltaFlow(t *testing.T) {
 	synth := &blockingPlannerSynthesizer{
 		started:      make(chan string, 2),
@@ -369,5 +427,21 @@ func drainTestAudioStream(t *testing.T, stream AudioStream) {
 			return
 		}
 		t.Fatalf("unexpected audio stream error %v", err)
+	}
+}
+
+func drainSegmentUntilBoundary(t *testing.T, stream AudioStream) int {
+	t.Helper()
+	chunks := 0
+	for {
+		_, err := stream.Next(context.Background())
+		if err == nil {
+			chunks++
+			continue
+		}
+		if err == io.EOF {
+			return chunks
+		}
+		t.Fatalf("unexpected segmented audio stream error %v", err)
 	}
 }

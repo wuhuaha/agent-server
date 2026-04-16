@@ -493,6 +493,14 @@ func (s *cancelOnCloseAudioStream) release() {
 	})
 }
 
+func (s *cancelOnCloseAudioStream) NextSegment(ctx context.Context) (voice.PlaybackSegment, bool, error) {
+	segmented, ok := s.inner.(voice.SegmentedAudioStream)
+	if !ok {
+		return voice.PlaybackSegment{}, false, nil
+	}
+	return segmented.NextSegment(ctx)
+}
+
 func modalitiesForAudioStart(start voice.ResponseAudioStart, seenAnyDelta bool) []string {
 	modalities := []string{"audio"}
 	if seenAnyDelta || strings.TrimSpace(start.Text) != "" {

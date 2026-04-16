@@ -172,6 +172,11 @@
 - The embedded handoff should now point implementers at `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md` for field tables, retry rules, and ACK timing, while the proposal doc remains the architectural rationale and state-machine reference.
 - The current playback ACK landing is intentionally first-step: native realtime accepts and logs playback facts now, but deeper heard-text / resume policy should still be a follow-up that consumes those facts more authoritatively than the current server-side playback-duration estimate.
 - The next playback-truth step is now partially landed on native realtime: when `playback_ack` is negotiated, the shared voice runtime prefers client playback facts over byte-send heuristics for heard-text derivation, persists heard-source / confidence / precision-tier / resume-anchor-style metadata, and may hold the final return-to-active until `audio.out.completed` or `audio.out.cleared` or a short fallback timeout.
+- The segment-level follow-up on top of that playback-truth step is now also landed on native realtime:
+  - planned clause audio may expose shared `voice.SegmentedAudioStream` boundaries
+  - native realtime may emit multiple `audio.out.meta` events for one `response_id/playback_id`, with unique `segment_id` values per clause or segment
+  - `audio.out.mark.played_duration_ms` is interpreted inside the referenced segment, while `audio.out.cleared.cleared_after_segment_id` means every segment through that boundary was heard and later queued segments were not
+  - exact segment-boundary heard text should now survive interruption and feed `voice.previous.*` resume context instead of being recomputed only from whole-response heuristics
 - The first `L2` endpointing slice now also stays behind the shared voice-runtime boundary: `InputPreviewer` and `InputPreviewSession` are the internal contracts for partial-ASR-backed turn preview, and websocket adapters only consume preview snapshots or commit suggestions.
 - The default first preview policy is a silence-based turn detector inside `internal/voice`. It currently suggests commit after a local silence window once enough audio and at least one partial hypothesis exist.
 - The hidden runtime switch `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED` enables this internal preview mode for native realtime and `xiaozhi` websocket adapters without changing the public discovery `turn_mode`.
@@ -387,6 +392,6 @@
   - on the native realtime early-audio path, the runtime-owned turn context is now established before speaking starts instead of waiting only for final response settlement
   - while output is already `speaking`, later streamed text deltas may extend the active delivered-text inside `SessionOrchestrator`
   - interruption truncation and `voice.previous.*` resume context should now track early streamed speech more closely instead of lagging behind late text deltas
-  - the remaining follow-up gap is now more specifically segment-level playback truth, not whether the early-audio path has any runtime-owned playback text at all
+  - the next remaining playback-truth gap should now be treated as policy depth and downstream usage, not basic segment anchoring: e.g. resume/continue behavior, richer playback completion evidence, and dynamic biasing from heard vs. missed text
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

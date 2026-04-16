@@ -162,6 +162,76 @@ func (s *ctxBoundAudioStream) Close() error {
 	return nil
 }
 
+type scriptedPlaybackSegment struct {
+	text     string
+	duration time.Duration
+	isLast   bool
+	chunks   [][]byte
+}
+
+type scriptedSegmentedAudioStream struct {
+	segments     []scriptedPlaybackSegment
+	segmentIndex int
+	chunkIndex   int
+	segmentReady bool
+	closed       bool
+}
+
+func (s *scriptedSegmentedAudioStream) NextSegment(context.Context) (voice.PlaybackSegment, bool, error) {
+	if s.closed || s.segmentIndex >= len(s.segments) {
+		return voice.PlaybackSegment{}, false, io.EOF
+	}
+	if s.segmentReady {
+		return voice.PlaybackSegment{}, false, nil
+	}
+	segment := s.segments[s.segmentIndex]
+	s.segmentReady = true
+	return voice.PlaybackSegment{
+		Index:            s.segmentIndex + 1,
+		Text:             segment.text,
+		ExpectedDuration: segment.duration,
+		IsLastSegment:    segment.isLast,
+	}, true, nil
+}
+
+func (s *scriptedSegmentedAudioStream) Next(context.Context) ([]byte, error) {
+	if s.closed || s.segmentIndex >= len(s.segments) {
+		return nil, io.EOF
+	}
+	if !s.segmentReady {
+		return nil, errors.New("segment metadata not requested")
+	}
+	segment := s.segments[s.segmentIndex]
+	if s.chunkIndex >= len(segment.chunks) {
+		s.segmentIndex++
+		s.chunkIndex = 0
+		s.segmentReady = false
+		return nil, io.EOF
+	}
+	chunk := append([]byte(nil), segment.chunks[s.chunkIndex]...)
+	s.chunkIndex++
+	return chunk, nil
+}
+
+func (s *scriptedSegmentedAudioStream) Close() error {
+	s.closed = true
+	return nil
+}
+
+func (s *scriptedSegmentedAudioStream) PlaybackDuration(frameDuration time.Duration) time.Duration {
+	var total time.Duration
+	for _, segment := range s.segments {
+		if segment.duration > 0 {
+			total += segment.duration
+			continue
+		}
+		if frameDuration > 0 {
+			total += time.Duration(len(segment.chunks)) * frameDuration
+		}
+	}
+	return total
+}
+
 type testInboundEvent struct {
 	Type      string         `json:"type"`
 	SessionID string         `json:"session_id"`
@@ -257,7 +327,7 @@ func TestRealtimeWSStreamsTextAndToolDeltas(t *testing.T) {
 		}, nil
 	})
 
-	conn := openRealtimeWS(t, profile, responder)
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
 	defer conn.Close()
 
 	sessionID := startTestSession(t, conn, profile)
@@ -303,6 +373,7 @@ func TestRealtimeWSStreamsTextAndToolDeltas(t *testing.T) {
 	if got := stringValue(chunks[3].Payload["text"]); got != "You have one event today." {
 		t.Fatalf("unexpected final text delta %q", got)
 	}
+	assertNoServerPanic(t, serverLog)
 }
 
 func TestRealtimeWSStreamingResponderFlushesDeltasBeforeReturn(t *testing.T) {
@@ -335,7 +406,7 @@ func TestRealtimeWSStreamingResponderFlushesDeltasBeforeReturn(t *testing.T) {
 		return voice.TurnResponse{Text: "You have one event today."}, nil
 	})
 
-	conn := openRealtimeWS(t, profile, responder)
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
 	defer conn.Close()
 
 	sessionID := startTestSession(t, conn, profile)
@@ -398,6 +469,7 @@ func TestRealtimeWSStreamingResponderFlushesDeltasBeforeReturn(t *testing.T) {
 	if got := stringValue(chunks[3].Payload["text"]); got != "You have one event today." {
 		t.Fatalf("unexpected streamed final text %q", got)
 	}
+	assertNoServerPanic(t, serverLog)
 }
 
 func TestRealtimeWSBinaryBeforeSessionStartIsRecoverable(t *testing.T) {
@@ -437,7 +509,7 @@ func TestRealtimeWSTurnTraceMetadataFlowsThroughResponseStartAndResponder(t *tes
 		return voice.TurnResponse{Text: "ok", AudioChunks: repeatAudioChunks(make([]byte, 640), 2)}, nil
 	})
 
-	conn := openRealtimeWS(t, profile, responder)
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
 	defer conn.Close()
 
 	sessionID := startTestSession(t, conn, profile)
@@ -506,6 +578,7 @@ func TestRealtimeWSTurnTraceMetadataFlowsThroughResponseStartAndResponder(t *tes
 	if captured.TraceID != responseTraceID {
 		t.Fatalf("expected responder trace_id %q to match response.start trace_id %q", captured.TraceID, responseTraceID)
 	}
+	assertNoServerPanic(t, serverLog)
 }
 
 func TestRealtimeWSResponderEndDirectiveClosesAfterAudio(t *testing.T) {
@@ -520,7 +593,7 @@ func TestRealtimeWSResponderEndDirectiveClosesAfterAudio(t *testing.T) {
 		return voice.TurnResponse{Text: "goodbye", AudioChunks: repeatAudioChunks(make([]byte, 640), 2), EndSession: true, EndReason: "completed", EndMessage: "dialog finished"}, nil
 	})
 
-	conn := openRealtimeWS(t, profile, responder)
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
 	defer conn.Close()
 
 	sessionID := startTestSession(t, conn, profile)
@@ -549,6 +622,7 @@ func TestRealtimeWSResponderEndDirectiveClosesAfterAudio(t *testing.T) {
 			if binaryChunks != 2 {
 				t.Fatalf("expected 2 audio chunks before session.end, got %d", binaryChunks)
 			}
+			assertNoServerPanic(t, serverLog)
 			return
 		}
 	}
@@ -1776,6 +1850,142 @@ done:
 	}
 }
 
+func TestRealtimeWSPlaybackAckEmitsAudioOutMetaPerSegment(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		if strings.TrimSpace(req.Text) != "play" {
+			return voice.TurnResponse{Text: "unexpected"}, nil
+		}
+		return voice.TurnResponse{
+			Text: "好的，先打开客厅灯。再关闭窗帘。",
+			AudioStream: &scriptedSegmentedAudioStream{
+				segments: []scriptedPlaybackSegment{
+					{
+						text:     "好的，先打开客厅灯。",
+						duration: 420 * time.Millisecond,
+						chunks:   repeatAudioChunks(make([]byte, 640), 1),
+					},
+					{
+						text:     "再关闭窗帘。",
+						duration: 360 * time.Millisecond,
+						isLast:   true,
+						chunks:   repeatAudioChunks(make([]byte, 640), 1),
+					},
+				},
+			},
+		}, nil
+	})
+
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"playback_ack": map[string]any{
+			"mode": "segment_mark_v1",
+		},
+	})
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "play"})
+
+	metas := make([]audioOutMetaPayload, 0, 2)
+	relevantEvents := make([]string, 0, 4)
+	audioChunks := 0
+	startedSent := false
+	completedSent := false
+	sawActive := false
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline failed: %v", err)
+		}
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read message failed: %v\nserver log:\n%s\nhandler log:\n%s", err, serverLog.String(), logBuffer.String())
+		}
+		if messageType == websocket.BinaryMessage {
+			relevantEvents = append(relevantEvents, "binary")
+			audioChunks++
+			if len(metas) == 2 && audioChunks >= 2 && !completedSent {
+				writeControlEvent(t, conn, "audio.out.completed", sessionID, 5, map[string]any{
+					"response_id": metas[0].ResponseID,
+					"playback_id": metas[0].PlaybackID,
+				})
+				completedSent = true
+			}
+			continue
+		}
+
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "audio.out.meta":
+			relevantEvents = append(relevantEvents, "meta")
+			meta := audioOutMetaPayload{
+				ResponseID:         stringValue(event.Payload["response_id"]),
+				PlaybackID:         stringValue(event.Payload["playback_id"]),
+				SegmentID:          stringValue(event.Payload["segment_id"]),
+				Text:               stringValue(event.Payload["text"]),
+				ExpectedDurationMs: intValue(event.Payload["expected_duration_ms"]),
+				IsLastSegment:      boolValue(event.Payload["is_last_segment"]),
+			}
+			metas = append(metas, meta)
+			if !startedSent {
+				writeControlEvent(t, conn, "audio.out.started", sessionID, 3, map[string]any{
+					"response_id": meta.ResponseID,
+					"playback_id": meta.PlaybackID,
+					"segment_id":  meta.SegmentID,
+				})
+				startedSent = true
+			}
+		case "session.update":
+			if completedSent && stringValue(event.Payload["state"]) == "active" {
+				sawActive = true
+				goto done
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+done:
+	if !sawActive {
+		t.Fatal("expected session to return to active after segmented playback completion")
+	}
+	if got := len(metas); got != 2 {
+		t.Fatalf("expected two audio.out.meta events, got %+v", metas)
+	}
+	if metas[0].ResponseID == "" || metas[0].PlaybackID == "" {
+		t.Fatalf("expected populated playback ids, got %+v", metas[0])
+	}
+	if metas[0].ResponseID != metas[1].ResponseID || metas[0].PlaybackID != metas[1].PlaybackID {
+		t.Fatalf("expected shared response/playback ids across segments, got %+v", metas)
+	}
+	if metas[0].SegmentID == metas[1].SegmentID {
+		t.Fatalf("expected unique segment ids, got %+v", metas)
+	}
+	if metas[0].Text != "好的，先打开客厅灯。" || metas[1].Text != "再关闭窗帘。" {
+		t.Fatalf("unexpected segment texts %+v", metas)
+	}
+	if metas[0].IsLastSegment {
+		t.Fatalf("expected first segment to stay non-final, got %+v", metas[0])
+	}
+	if !metas[1].IsLastSegment {
+		t.Fatalf("expected second segment to be final, got %+v", metas[1])
+	}
+	if got := strings.Join(relevantEvents, ","); got != "meta,binary,meta,binary" {
+		t.Fatalf("expected segment meta to precede each binary segment, got %q", got)
+	}
+	assertNoServerPanic(t, serverLog)
+}
+
 func testRealtimeProfile() RealtimeProfile {
 	return RealtimeProfile{WSPath: "/v1/realtime/ws", ProtocolVersion: "rtos-ws-v0", Subprotocol: "agent-server.realtime.v0", VoiceProvider: "bootstrap", TTSProvider: "none", AuthMode: "disabled", TurnMode: "client_wakeup_client_commit", IdleTimeoutMs: 15000, MaxSessionMs: 300000, MaxFrameBytes: 4096, InputCodec: "pcm16le", InputSampleRate: 16000, InputChannels: 1, OutputCodec: "pcm16le", OutputSampleRate: 16000, OutputChannels: 1, AllowOpus: false, AllowTextInput: true, AllowImageInput: false}
 }
@@ -1922,6 +2132,11 @@ func floatValue(value any) float64 {
 	default:
 		return 0
 	}
+}
+
+func boolValue(value any) bool {
+	rendered, _ := value.(bool)
+	return rendered
 }
 
 func repeatAudioChunks(chunk []byte, count int) [][]byte {

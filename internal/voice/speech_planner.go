@@ -299,15 +299,16 @@ func (p *plannedSpeechSynthesis) runWorker() {
 			case <-p.workerCtx.Done():
 				_ = stream.Close()
 				return
-			case p.stream.results <- queuedSpeechAudioResult{stream: stream}:
+			case p.stream.results <- queuedSpeechAudioResult{stream: stream, segment: playbackSegmentForClause(clause)}:
 			}
 		}
 	}
 }
 
 type queuedSpeechAudioResult struct {
-	stream AudioStream
-	err    error
+	stream  AudioStream
+	segment PlaybackSegment
+	err     error
 }
 
 type queuedSpeechAudioStream struct {
@@ -317,6 +318,7 @@ type queuedSpeechAudioStream struct {
 	closeOnce sync.Once
 	mu        sync.Mutex
 	planned   time.Duration
+	segmented bool
 }
 
 func newQueuedSpeechAudioStream(cancel context.CancelFunc) *queuedSpeechAudioStream {
@@ -338,25 +340,41 @@ func (s *queuedSpeechAudioStream) Next(ctx context.Context) ([]byte, error) {
 			}
 			_ = s.current.Close()
 			s.current = nil
+			if s.segmented {
+				return nil, io.EOF
+			}
 			continue
 		}
 
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case result, ok := <-s.results:
-			if !ok {
-				return nil, io.EOF
-			}
-			if result.err != nil {
-				return nil, result.err
-			}
-			if result.stream == nil {
-				continue
-			}
-			s.current = result.stream
+		result, ok, err := s.loadNextResult(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, io.EOF
+		}
+		if result.stream == nil {
+			continue
 		}
 	}
+}
+
+func (s *queuedSpeechAudioStream) NextSegment(ctx context.Context) (PlaybackSegment, bool, error) {
+	s.segmented = true
+	if s.current != nil {
+		return PlaybackSegment{}, false, nil
+	}
+	result, ok, err := s.loadNextResult(ctx)
+	if err != nil {
+		return PlaybackSegment{}, false, err
+	}
+	if !ok {
+		return PlaybackSegment{}, false, io.EOF
+	}
+	if result.stream == nil {
+		return PlaybackSegment{}, false, nil
+	}
+	return result.segment, true, nil
 }
 
 func (s *queuedSpeechAudioStream) Close() error {
@@ -404,6 +422,22 @@ func (s *queuedSpeechAudioStream) PlaybackDuration(_ time.Duration) time.Duratio
 	return s.planned
 }
 
+func (s *queuedSpeechAudioStream) loadNextResult(ctx context.Context) (queuedSpeechAudioResult, bool, error) {
+	select {
+	case <-ctx.Done():
+		return queuedSpeechAudioResult{}, false, ctx.Err()
+	case result, ok := <-s.results:
+		if !ok {
+			return queuedSpeechAudioResult{}, false, nil
+		}
+		if result.err != nil {
+			return queuedSpeechAudioResult{}, false, result.err
+		}
+		s.current = result.stream
+		return result, true, nil
+	}
+}
+
 func estimatePlannedSpeechDuration(text string) time.Duration {
 	runes := []rune(strings.TrimSpace(text))
 	if len(runes) == 0 {
@@ -429,6 +463,15 @@ func estimateClausePlaybackDuration(clause PlannedSpeechClause) time.Duration {
 		return clause.EstimatedDuration
 	}
 	return estimatePlannedSpeechDuration(clause.Text)
+}
+
+func playbackSegmentForClause(clause PlannedSpeechClause) PlaybackSegment {
+	return PlaybackSegment{
+		Index:            clause.Index,
+		Text:             strings.TrimSpace(clause.Text),
+		ExpectedDuration: estimateClausePlaybackDuration(clause),
+		IsLastSegment:    clause.BoundaryKind == SpeechClauseBoundaryFinalFlush,
+	}
 }
 
 func nextPlannedSpeechClause(text string, cfg SpeechPlannerConfig, flush bool, canStartBeforeFinalized bool, clauseIndex int) (PlannedSpeechClause, string) {

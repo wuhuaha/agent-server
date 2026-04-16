@@ -108,11 +108,11 @@ Current compatibility derivation:
 - `input.endpoint`: optional server -> client observational endpoint-candidate event for preview-aware clients.
 - `response.start`: begins a server response turn.
 - `response.chunk`: streams partial text or structured deltas such as `text`, `tool_call`, or `tool_result`.
-- `audio.out.meta`: optional server -> client playback-metadata event that establishes the IDs used by later playback ACK facts.
+- `audio.out.meta`: optional server -> client playback-metadata event that establishes the IDs used by later playback ACK facts. A single `response_id/playback_id` may now emit multiple `audio.out.meta` events, one per internal output segment.
 - `audio.out.chunk`: semantic name for outbound server audio chunks.
 - `audio.out.started`: optional client -> server fact that local playback for the referenced segment actually started.
-- `audio.out.mark`: optional client -> server progress fact for a referenced playback segment.
-- `audio.out.cleared`: optional client -> server fact that queued audio after a segment was cleared locally.
+- `audio.out.mark`: optional client -> server progress fact for a referenced playback segment. `played_duration_ms` is interpreted inside the referenced `segment_id`, not as whole-response elapsed time.
+- `audio.out.cleared`: optional client -> server fact that queued audio after a segment was cleared locally. `cleared_after_segment_id` means everything through that segment is treated as heard, while later queued segments are treated as not heard.
 - `audio.out.completed`: optional client -> server fact that referenced playback fully completed locally.
 - `session.end`: closes the session from either side and always includes a reason.
 - `error`: reports recoverable or terminal protocol errors.
@@ -174,6 +174,9 @@ Current implementation note:
 
 - on the native realtime main path, shared runtime orchestration may now start audio from an internal early-output stream before the final `TurnResponse` envelope has fully settled
 - on the native realtime main path, capability-gated `audio.out.meta` plus client playback ACK events may now coexist with the existing `response.start` plus streamed deltas plus binary audio surface
+- when the runtime is using internal clause or segment planning, the native realtime path may emit multiple `audio.out.meta` events for one response before later binary chunks
+- on that path, `audio.out.mark.segment_id` and `audio.out.cleared.cleared_after_segment_id` are the server's segment-truth anchor for heard-text, interruption truncation, and resume context
+- `audio.out.meta.is_last_segment=true` is guaranteed only when the server already knows that the announced segment is the final one; early-start segments may therefore remain conservatively `false`
 - when `playback_ack` has been negotiated on the native realtime path, the server may delay the final return-to-active transition until it sees `audio.out.completed` or `audio.out.cleared`, or until a short fallback timeout expires
 
 Current optional tracing fields:

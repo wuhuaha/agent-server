@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -112,11 +113,17 @@ type audioPlaybackMeta struct {
 	Text             string
 	ExpectedDuration time.Duration
 	IsLastSegment    bool
+	SegmentIndex     int
+	TextBefore       string
+	TextAfter        string
+	DurationBefore   time.Duration
+	DurationAfter    time.Duration
 }
 
 type playbackAckState struct {
 	mu            sync.Mutex
 	meta          audioPlaybackMeta
+	segments      map[string]audioPlaybackMeta
 	startedAt     time.Time
 	lastMarkMs    int
 	clearedAt     time.Time
@@ -183,13 +190,51 @@ func newAudioPlaybackMeta(responseID, text string, expectedDuration time.Duratio
 	if responseID == "" {
 		responseID = fmt.Sprintf("resp_%d", time.Now().UTC().UnixNano())
 	}
+	trimmedText := strings.TrimSpace(text)
 	return audioPlaybackMeta{
 		ResponseID:       responseID,
 		PlaybackID:       fmt.Sprintf("playback_%s", responseID),
-		SegmentID:        fmt.Sprintf("segment_%s_0001", responseID),
-		Text:             strings.TrimSpace(text),
+		SegmentID:        audioPlaybackSegmentID(responseID, 1),
+		Text:             trimmedText,
 		ExpectedDuration: expectedDuration,
 		IsLastSegment:    true,
+		SegmentIndex:     1,
+		TextBefore:       "",
+		TextAfter:        trimmedText,
+		DurationBefore:   0,
+		DurationAfter:    expectedDuration,
+	}
+}
+
+func audioPlaybackSegmentID(responseID string, segmentIndex int) string {
+	if segmentIndex <= 0 {
+		segmentIndex = 1
+	}
+	return fmt.Sprintf("segment_%s_%04d", responseID, segmentIndex)
+}
+
+func nextSegmentAudioPlaybackMeta(base audioPlaybackMeta, segmentText string, expectedDuration time.Duration, isLast bool) audioPlaybackMeta {
+	segmentText = strings.TrimSpace(segmentText)
+	index := base.SegmentIndex + 1
+	if index <= 0 {
+		index = 1
+	}
+	textBefore := base.TextAfter
+	textAfter := strings.TrimSpace(textBefore + segmentText)
+	durationBefore := base.DurationAfter
+	durationAfter := durationBefore + expectedDuration
+	return audioPlaybackMeta{
+		ResponseID:       base.ResponseID,
+		PlaybackID:       base.PlaybackID,
+		SegmentID:        audioPlaybackSegmentID(base.ResponseID, index),
+		Text:             segmentText,
+		ExpectedDuration: expectedDuration,
+		IsLastSegment:    isLast,
+		SegmentIndex:     index,
+		TextBefore:       textBefore,
+		TextAfter:        textAfter,
+		DurationBefore:   durationBefore,
+		DurationAfter:    durationAfter,
 	}
 }
 
@@ -209,6 +254,70 @@ func audioDurationMs(duration time.Duration) int {
 		return 0
 	}
 	return int(duration / time.Millisecond)
+}
+
+func clampPlaybackMarkDuration(value, maxValue time.Duration) time.Duration {
+	if value < 0 {
+		return 0
+	}
+	if maxValue > 0 && value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func playbackAckMetaForSegmentLocked(state *playbackAckState, segmentID string) audioPlaybackMeta {
+	if state == nil {
+		return audioPlaybackMeta{}
+	}
+	if trimmed := strings.TrimSpace(segmentID); trimmed != "" {
+		if meta, ok := state.segments[trimmed]; ok {
+			return meta
+		}
+	}
+	return state.meta
+}
+
+func heardTextForPlaybackSegment(meta audioPlaybackMeta, localPlayed time.Duration) string {
+	local := strings.TrimSpace(meta.Text)
+	if local == "" {
+		return strings.TrimSpace(meta.TextBefore)
+	}
+	heardLocal := voiceHeardTextForPlayback(local, localPlayed, meta.ExpectedDuration)
+	return strings.TrimSpace(strings.TrimSpace(meta.TextBefore) + heardLocal)
+}
+
+func voiceHeardTextForPlayback(text string, playedDuration, plannedDuration time.Duration) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || playedDuration <= 0 {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) == 0 {
+		return ""
+	}
+	if plannedDuration > 0 {
+		ratio := float64(playedDuration) / float64(plannedDuration)
+		if ratio >= 1 {
+			return trimmed
+		}
+		count := int(math.Ceil(float64(len(runes)) * ratio))
+		if count <= 0 {
+			count = 1
+		}
+		if count > len(runes) {
+			count = len(runes)
+		}
+		return string(runes[:count])
+	}
+	count := int(playedDuration / (110 * time.Millisecond))
+	if count <= 0 {
+		count = 1
+	}
+	if count > len(runes) {
+		count = len(runes)
+	}
+	return string(runes[:count])
 }
 
 func (h *realtimeWSHandler) emitPreviewObservationEvents(runtime *connectionRuntime, snapshot session.Snapshot, observation inputPreviewObservation) error {
@@ -279,7 +388,11 @@ func previewTextStability(text, stablePrefix string) *float64 {
 func (r *connectionRuntime) installPlaybackAckMeta(meta audioPlaybackMeta) {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
-	r.playbackAckState.meta = meta
+	r.playbackAckState.meta = audioPlaybackMeta{
+		ResponseID: meta.ResponseID,
+		PlaybackID: meta.PlaybackID,
+	}
+	r.playbackAckState.segments = make(map[string]audioPlaybackMeta, 4)
 	r.playbackAckState.startedAt = time.Time{}
 	r.playbackAckState.lastMarkMs = 0
 	r.playbackAckState.clearedAt = time.Time{}
@@ -294,6 +407,7 @@ func (r *connectionRuntime) clearPlaybackAckState() {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
 	r.playbackAckState.meta = audioPlaybackMeta{}
+	r.playbackAckState.segments = nil
 	r.playbackAckState.startedAt = time.Time{}
 	r.playbackAckState.lastMarkMs = 0
 	r.playbackAckState.clearedAt = time.Time{}
@@ -310,6 +424,19 @@ func (r *connectionRuntime) playbackAckMeta() audioPlaybackMeta {
 	return r.playbackAckState.meta
 }
 
+func (r *connectionRuntime) activatePlaybackAckSegment(meta audioPlaybackMeta) audioPlaybackMeta {
+	r.playbackAckState.mu.Lock()
+	defer r.playbackAckState.mu.Unlock()
+	if r.playbackAckState.segments == nil {
+		r.playbackAckState.segments = make(map[string]audioPlaybackMeta, 4)
+	}
+	if strings.TrimSpace(meta.SegmentID) != "" {
+		r.playbackAckState.segments[meta.SegmentID] = meta
+	}
+	r.playbackAckState.meta = meta
+	return meta
+}
+
 func (r *connectionRuntime) recordPlaybackStarted(now time.Time) audioPlaybackMeta {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
@@ -319,25 +446,34 @@ func (r *connectionRuntime) recordPlaybackStarted(now time.Time) audioPlaybackMe
 	return r.playbackAckState.meta
 }
 
-func (r *connectionRuntime) recordPlaybackMark(now time.Time, playedDurationMs int) audioPlaybackMeta {
+func (r *connectionRuntime) recordPlaybackMark(now time.Time, segmentID string, playedDurationMs int) (audioPlaybackMeta, time.Duration, string) {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
-	if playedDurationMs > r.playbackAckState.lastMarkMs {
-		r.playbackAckState.lastMarkMs = playedDurationMs
+	meta := playbackAckMetaForSegmentLocked(&r.playbackAckState, segmentID)
+	localPlayed := clampPlaybackMarkDuration(time.Duration(maxInt(playedDurationMs, 0))*time.Millisecond, meta.ExpectedDuration)
+	totalPlayed := meta.DurationBefore + localPlayed
+	totalPlayedMs := audioDurationMs(totalPlayed)
+	if totalPlayedMs > r.playbackAckState.lastMarkMs {
+		r.playbackAckState.lastMarkMs = totalPlayedMs
 	}
 	if r.playbackAckState.startedAt.IsZero() {
 		r.playbackAckState.startedAt = now
 	}
-	return r.playbackAckState.meta
+	return meta, totalPlayed, heardTextForPlaybackSegment(meta, localPlayed)
 }
 
-func (r *connectionRuntime) recordPlaybackCleared(now time.Time, reason string) audioPlaybackMeta {
+func (r *connectionRuntime) recordPlaybackCleared(now time.Time, segmentID, reason string) (audioPlaybackMeta, time.Duration, string) {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
+	meta := playbackAckMetaForSegmentLocked(&r.playbackAckState, segmentID)
+	totalPlayedMs := audioDurationMs(meta.DurationAfter)
+	if totalPlayedMs > r.playbackAckState.lastMarkMs {
+		r.playbackAckState.lastMarkMs = totalPlayedMs
+	}
 	r.playbackAckState.clearedAt = now
 	r.playbackAckState.clearedReason = strings.TrimSpace(reason)
 	r.playbackAckState.finishLocked(playbackAckTerminalCleared)
-	return r.playbackAckState.meta
+	return meta, meta.DurationAfter, strings.TrimSpace(meta.TextAfter)
 }
 
 func (r *connectionRuntime) recordPlaybackCompleted(now time.Time) audioPlaybackMeta {

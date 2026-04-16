@@ -943,9 +943,14 @@ func (h *realtimeWSHandler) recordPlaybackAckMark(runtime *connectionRuntime, pa
 		)
 		return nil
 	}
-	runtime.recordPlaybackMark(time.Now().UTC(), payload.PlayedDurationMs)
-	if runtime.voiceSession != nil && payload.PlayedDurationMs > 0 {
-		runtime.voiceSession.ObservePlaybackMarkFact(time.Duration(payload.PlayedDurationMs) * time.Millisecond)
+	_, totalPlayed, heardText := runtime.recordPlaybackMark(time.Now().UTC(), strings.TrimSpace(payload.SegmentID), payload.PlayedDurationMs)
+	if runtime.voiceSession != nil {
+		switch {
+		case strings.TrimSpace(heardText) != "":
+			runtime.voiceSession.ObservePlaybackMarkTextFact(totalPlayed, heardText)
+		case totalPlayed > 0:
+			runtime.voiceSession.ObservePlaybackMarkFact(totalPlayed)
+		}
 	}
 	logPlaybackAckInfo(h.logger, "gateway playback ack mark", runtime, payload)
 	return nil
@@ -967,7 +972,15 @@ func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime,
 		)
 		return nil
 	}
-	runtime.recordPlaybackCleared(time.Now().UTC(), payload.Reason)
+	_, totalPlayed, heardText := runtime.recordPlaybackCleared(time.Now().UTC(), strings.TrimSpace(payload.ClearedAfterSegmentID), payload.Reason)
+	if runtime.voiceSession != nil {
+		switch {
+		case strings.TrimSpace(heardText) != "":
+			runtime.voiceSession.ObservePlaybackMarkTextFact(totalPlayed, heardText)
+		case totalPlayed > 0:
+			runtime.voiceSession.ObservePlaybackMarkFact(totalPlayed)
+		}
+	}
 	logPlaybackAckInfo(h.logger, "gateway playback ack cleared", runtime, payload)
 	snapshot := runtime.session.Snapshot()
 	if snapshot.State == session.StateSpeaking {
@@ -1293,6 +1306,7 @@ func (h *realtimeWSHandler) startAudioStream(
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	stream := runtime.installOutput(cancel, completion)
+	_, sourceSegmented := audioStream.(voice.SegmentedAudioStream)
 	audioStream = newPCM16EffectAudioStream(audioStream, &stream.effects)
 	runtime.installPlaybackAckMeta(meta)
 
@@ -1302,38 +1316,51 @@ func (h *realtimeWSHandler) startAudioStream(
 		defer runtime.clearPlaybackAckState()
 		defer func() { _ = audioStream.Close() }()
 
-		if runtime.collaboration.PlaybackAckEnabled() {
-			if err := runtime.peer.WriteEvent(events.TypeAudioOutMeta, sessionID, audioOutMetaPayload{
-				ResponseID:         meta.ResponseID,
-				PlaybackID:         meta.PlaybackID,
-				SegmentID:          meta.SegmentID,
-				Text:               meta.Text,
-				ExpectedDurationMs: audioDurationMs(meta.ExpectedDuration),
-				IsLastSegment:      meta.IsLastSegment,
-			}); err != nil {
-				logTurnTraceError(h.logger, "gateway audio.out.meta write failed", sessionID, trace, err,
-					"remote_addr", runtime.remoteAddr,
-					"response_id", meta.ResponseID,
-					"playback_id", meta.PlaybackID,
-					"segment_id", meta.SegmentID,
-					"ws_stage", "audio_out_meta",
-				)
-				return
-			}
-		}
-
 		ticker := time.NewTicker(outputFrameInterval)
 		defer ticker.Stop()
 		audioChunkIndex := 0
+		var segmentedStream voice.SegmentedAudioStream
+		if sourceSegmented {
+			segmentedStream, _ = audioStream.(voice.SegmentedAudioStream)
+		}
+		segmentCursor := audioPlaybackMeta{
+			ResponseID: meta.ResponseID,
+			PlaybackID: meta.PlaybackID,
+		}
+
+		if !sourceSegmented {
+			if err := h.emitAudioOutMeta(runtime, sessionID, trace, meta); err != nil {
+				return
+			}
+		}
 
 		for {
 			if streamCtx.Err() != nil {
 				return
 			}
 
+			if sourceSegmented {
+				segment, ok, err := segmentedStream.NextSegment(streamCtx)
+				if err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+						break
+					}
+					return
+				}
+				if ok {
+					segmentCursor = nextSegmentAudioPlaybackMeta(segmentCursor, segment.Text, segment.ExpectedDuration, segment.IsLastSegment)
+					if err := h.emitAudioOutMeta(runtime, sessionID, trace, segmentCursor); err != nil {
+						return
+					}
+				}
+			}
+
 			chunk, err := audioStream.Next(streamCtx)
 			if err != nil {
 				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+					if sourceSegmented && errors.Is(err, io.EOF) {
+						continue
+					}
 					break
 				}
 				if streamCtx.Err() != nil {
@@ -1431,6 +1458,38 @@ func (h *realtimeWSHandler) startAudioStream(
 			},
 		})
 	}()
+}
+
+func (h *realtimeWSHandler) emitAudioOutMeta(runtime *connectionRuntime, sessionID string, trace turnTrace, meta audioPlaybackMeta) error {
+	runtime.activatePlaybackAckSegment(meta)
+	if !runtime.collaboration.PlaybackAckEnabled() {
+		return nil
+	}
+	if err := runtime.peer.WriteEvent(events.TypeAudioOutMeta, sessionID, audioOutMetaPayload{
+		ResponseID:         meta.ResponseID,
+		PlaybackID:         meta.PlaybackID,
+		SegmentID:          meta.SegmentID,
+		Text:               meta.Text,
+		ExpectedDurationMs: audioDurationMs(meta.ExpectedDuration),
+		IsLastSegment:      meta.IsLastSegment,
+	}); err != nil {
+		logTurnTraceError(h.logger, "gateway audio.out.meta write failed", sessionID, trace, err,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", meta.ResponseID,
+			"playback_id", meta.PlaybackID,
+			"segment_id", meta.SegmentID,
+			"ws_stage", "audio_out_meta",
+		)
+		return err
+	}
+	logTurnTraceInfo(h.logger, "gateway audio.out.meta sent", sessionID, trace,
+		"response_id", meta.ResponseID,
+		"playback_id", meta.PlaybackID,
+		"segment_id", meta.SegmentID,
+		"segment_index", meta.SegmentIndex,
+		"is_last_segment", meta.IsLastSegment,
+	)
+	return nil
 }
 
 func (h *realtimeWSHandler) validateStartPayload(payload sessionStartPayload) error {

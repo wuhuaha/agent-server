@@ -426,6 +426,15 @@ func (o *SessionOrchestrator) ObservePlaybackMarkFact(playedDuration time.Durati
 	o.updateHeardTextLocked(playedDuration, HeardTextSourceSegmentMark)
 }
 
+func (o *SessionOrchestrator) ObservePlaybackMarkTextFact(playedDuration time.Duration, heardText string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.turn == nil || !o.turn.playbackActive {
+		return
+	}
+	o.updateHeardTextExactLocked(playedDuration, heardText, HeardTextSourceSegmentMark)
+}
+
 func (o *SessionOrchestrator) ObservePlaybackCompletedFact() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -483,7 +492,9 @@ func (o *SessionOrchestrator) InterruptPlaybackWithPolicy(policy InterruptionPol
 	}
 
 	recordInterruptionPolicyLocked(o.turn, result.Policy, result.Reason)
-	o.updateHeardTextLocked(o.turn.playedDuration, o.turn.heardSource)
+	if !(o.turn.heardSource == HeardTextSourceSegmentMark && hasExactHeardTextPrefix(o.turn.deliveredText, o.turn.heardText)) {
+		o.updateHeardTextLocked(o.turn.playedDuration, o.turn.heardSource)
+	}
 	heard := o.turn.heardText
 	boundary := o.turn.heardTextBoundary
 	o.turn.playbackActive = false
@@ -686,6 +697,32 @@ func (o *SessionOrchestrator) updateHeardTextLocked(playedDuration time.Duration
 	o.turn.heardSource = normalizeHeardTextSource(source, o.turn.heardSource)
 	o.turn.heardConfidence = heardTextConfidenceForSource(o.turn.heardSource)
 	o.turn.heardPrecisionTier = heardTextPrecisionTierForSource(o.turn.heardSource)
+}
+
+func (o *SessionOrchestrator) updateHeardTextExactLocked(playedDuration time.Duration, heardText string, source HeardTextSource) {
+	if o.turn == nil {
+		return
+	}
+	if playedDuration > o.turn.playedDuration {
+		o.turn.playedDuration = playedDuration
+	}
+	trimmedHeard := strings.TrimSpace(heardText)
+	trimmedDelivered := strings.TrimSpace(o.turn.deliveredText)
+	if trimmedHeard == "" || trimmedDelivered == "" || !strings.HasPrefix(trimmedDelivered, trimmedHeard) {
+		o.updateHeardTextLocked(playedDuration, source)
+		return
+	}
+	o.turn.heardText = trimmedHeard
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(trimmedDelivered, trimmedHeard)
+	o.turn.heardSource = normalizeHeardTextSource(source, o.turn.heardSource)
+	o.turn.heardConfidence = heardTextConfidenceForSource(o.turn.heardSource)
+	o.turn.heardPrecisionTier = heardTextPrecisionTierForSource(o.turn.heardSource)
+}
+
+func hasExactHeardTextPrefix(deliveredText, heardText string) bool {
+	trimmedHeard := strings.TrimSpace(heardText)
+	trimmedDelivered := strings.TrimSpace(deliveredText)
+	return trimmedHeard != "" && trimmedDelivered != "" && strings.HasPrefix(trimmedDelivered, trimmedHeard)
 }
 
 func normalizeHeardTextSource(source, fallback HeardTextSource) HeardTextSource {

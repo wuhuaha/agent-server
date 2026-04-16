@@ -139,6 +139,14 @@ The device may additionally emit during local playback:
 - `audio.out.cleared`
 - `audio.out.completed`
 
+Playback ACK collaboration note:
+
+- one `response_id/playback_id` may now carry multiple `audio.out.meta` events, one per server-side output segment
+- devices should treat the latest `audio.out.meta` as the active segment context while preserving the shared `response_id/playback_id`
+- `audio.out.mark.played_duration_ms` is scoped to the referenced `segment_id`, not to the whole response
+- `audio.out.cleared.cleared_after_segment_id` means all segments up to and including that segment were heard, while later queued segments were cleared before playback
+- `audio.out.meta.is_last_segment=true` is conservative on early-start paths and is guaranteed only when the server already knows the segment is final
+
 ### 6. Session End
 
 Either side may send `session.end` with a reason. After sending `session.end`, no new turn starts on that socket until a new `session.start`.

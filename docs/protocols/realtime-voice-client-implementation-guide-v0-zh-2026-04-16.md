@@ -129,7 +129,7 @@
 | --- | --- | --- | --- |
 | `response_id` | string | 是 | 所属响应流 ID |
 | `playback_id` | string | 是 | 本次播放实例 ID |
-| `segment_id` | string | 是 | 当前音频片段 ID；初版通常一条响应一个 segment |
+| `segment_id` | string | 是 | 当前音频片段 ID；同一条响应内现在可能会连续收到多个 segment |
 | `text` | string | 否 | 对应文本片段，便于端侧对齐字幕 |
 | `expected_duration_ms` | int | 是 | 期望播放时长，便于端侧安排 mark / watchdog |
 | `is_last_segment` | bool | 是 | 是否最后一段 |
@@ -137,7 +137,9 @@
 端侧建议动作：
 
 - 收到 `audio.out.meta` 后建立播放上下文
-- 之后所有 ACK 事件必须带回同一组 `response_id/playback_id/segment_id`
+- 同一条响应内若再次收到新的 `audio.out.meta`，说明服务端进入了下一个 segment；应更新当前 `segment_id`，但保持同一组 `response_id/playback_id`
+- 之后所有 ACK 事件必须带回当前 segment 对应的 `response_id/playback_id/segment_id`
+- `is_last_segment=true` 只在服务端已经确定这是最后一段时才保证成立；早起播路径上较早段可能保持保守的 `false`
 
 ## 4. 端侧 -> 服务端字段表
 
@@ -165,6 +167,11 @@
 - 建议按 40~120 ms 粗粒度上报
 - 资源紧张设备可只在关键节点上报一到数次
 
+语义补充：
+
+- `played_duration_ms` 是“当前 `segment_id` 内已经播出的时长”，不是整条响应累计时长
+- 如果已经切到新的 segment，但当前 segment 还没真正播出进度，发送 `played_duration_ms=0` 也是合法的；这表示前序 segment 已全部进入 heard 区间，而当前 segment 尚未推进
+
 ### 4.3 `audio.out.cleared`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -183,6 +190,8 @@
 
 - 若服务端仍在 `speaking`，`audio.out.cleared` 可能触发服务端立刻停止当前输出并回到 `active`
 - 因此该事件不只是“日志事实”，也会参与服务端 playback truth 收尾
+- `cleared_after_segment_id` 的语义是“直到这个 segment 为止都算已听到，后面的 segment 都算未听到”
+- 即使服务端已经下发了更晚 segment 的 `audio.out.meta`，端侧仍可在本地 clear 时回报较早的 `cleared_after_segment_id`
 
 ### 4.4 `audio.out.completed`
 
@@ -206,6 +215,7 @@
 
 - 当已协商 `playback_ack` 时，服务端可能不会在音频字节发送完的瞬间立刻回到 `session.update(state=active)`。
 - 更准确的行为是：服务端优先等待 `audio.out.completed` 或 `audio.out.cleared`，再收口本轮 playback truth；若短时间内未等到，则回退到服务端启发式完成。
+- 当服务端使用 clause / segment 早起播时，`audio.out.meta` 可能在一次响应里出现多次，端侧应把 ACK 与当时活跃的 `segment_id` 绑定，而不是假设“一条响应只会有一个 segment”。
 - 因此端侧若希望 turn 收尾、heard-text、resume 更自然，`audio.out.completed` 应尽量及时发送。
 
 ## 6. 错误码与重试策略

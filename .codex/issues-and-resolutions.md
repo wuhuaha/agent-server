@@ -2,6 +2,12 @@
 
 ## 2026-04-16
 
+### Segment-Level Playback Truth Was Still Collapsing To A Single Playback Cursor
+
+- Problem: the previous playback-ack slice had already taught native realtime to trust client playback facts, but the runtime still treated one response as one playback-wide cursor. That meant clause-planned output could not surface multiple `audio.out.meta` boundaries, `audio.out.mark` on a later clause could not precisely credit earlier clauses as heard, and interruption or resume still lost fidelity at segment boundaries.
+- Resolution: added shared `voice.PlaybackSegment` / `voice.SegmentedAudioStream`, taught planned speech synthesis and gateway wrappers to preserve segment boundaries, and upgraded native realtime so `audio.out.meta` can repeat per segment while `audio.out.mark` / `audio.out.cleared` reconcile against the referenced `segment_id`. Also updated `SessionOrchestrator` so exact client-heard text survives interruption instead of being re-expanded heuristically.
+- Status: resolved.
+
 ### Playback ACK Runtime Reset Initially Replaced A Locked Struct And Caused `sync: unlock of unlocked mutex`
 
 - Problem: while landing the first native-realtime playback ACK slice, `clearPlaybackAckState()` reset the entire `playbackAckState` struct after taking its mutex. Because the deferred unlock then targeted the new zero-value mutex instead of the one that had actually been locked, the first negotiated `session.start` path in integration tests crashed with `fatal error: sync: unlock of unlocked mutex`.

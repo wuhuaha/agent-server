@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -296,6 +297,45 @@ func TestValidatePlaybackAckIdentityRequiresActiveMeta(t *testing.T) {
 	}
 	if validatePlaybackAckIdentity(audioPlaybackMeta{ResponseID: "resp_1", PlaybackID: "playback_1"}, "resp_2", "playback_1") {
 		t.Fatal("expected mismatched response id to reject ack identity")
+	}
+}
+
+func TestPlaybackAckSegmentFactsAccumulateAcrossSegments(t *testing.T) {
+	runtime := &connectionRuntime{}
+	base := newAudioPlaybackMeta("resp_segment", "", 0)
+	runtime.installPlaybackAckMeta(base)
+
+	first := nextSegmentAudioPlaybackMeta(audioPlaybackMeta{
+		ResponseID: base.ResponseID,
+		PlaybackID: base.PlaybackID,
+	}, "好的，先打开客厅灯。", 800*time.Millisecond, false)
+	second := nextSegmentAudioPlaybackMeta(first, "再关闭窗帘。", 700*time.Millisecond, true)
+	runtime.activatePlaybackAckSegment(first)
+	runtime.activatePlaybackAckSegment(second)
+
+	meta, totalPlayed, heardText := runtime.recordPlaybackMark(time.Now().UTC(), second.SegmentID, 200)
+	if meta.SegmentID != second.SegmentID {
+		t.Fatalf("expected second segment meta, got %+v", meta)
+	}
+	if want := first.DurationAfter + 200*time.Millisecond; totalPlayed != want {
+		t.Fatalf("expected total played %s, got %s", want, totalPlayed)
+	}
+	if want := heardTextForPlaybackSegment(second, 200*time.Millisecond); heardText != want {
+		t.Fatalf("expected segment-aware heard text %q, got %q", want, heardText)
+	}
+	if !strings.HasPrefix(heardText, first.TextAfter) {
+		t.Fatalf("expected heard text %q to include first segment prefix %q", heardText, first.TextAfter)
+	}
+
+	meta, totalPlayed, heardText = runtime.recordPlaybackCleared(time.Now().UTC(), first.SegmentID, "barge_in_clear")
+	if meta.SegmentID != first.SegmentID {
+		t.Fatalf("expected first segment meta on clear, got %+v", meta)
+	}
+	if totalPlayed != first.DurationAfter {
+		t.Fatalf("expected cleared duration %s, got %s", first.DurationAfter, totalPlayed)
+	}
+	if heardText != first.TextAfter {
+		t.Fatalf("expected cleared heard text %q, got %q", first.TextAfter, heardText)
 	}
 }
 

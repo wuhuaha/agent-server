@@ -272,6 +272,18 @@ type AudioStream interface {
 	Close() error
 }
 
+type PlaybackSegment struct {
+	Index            int
+	Text             string
+	ExpectedDuration time.Duration
+	IsLastSegment    bool
+}
+
+type SegmentedAudioStream interface {
+	AudioStream
+	NextSegment(context.Context) (PlaybackSegment, bool, error)
+}
+
 type StreamingSynthesizer interface {
 	Synthesizer
 	StreamSynthesize(context.Context, SynthesisRequest) (AudioStream, error)

@@ -129,6 +129,14 @@ func (s *pcm16EffectAudioStream) PlaybackDuration(frameDuration time.Duration) t
 	return 0
 }
 
+func (s *pcm16EffectAudioStream) NextSegment(ctx context.Context) (voice.PlaybackSegment, bool, error) {
+	segmented, ok := s.inner.(voice.SegmentedAudioStream)
+	if !ok {
+		return voice.PlaybackSegment{}, false, nil
+	}
+	return segmented.NextSegment(ctx)
+}
+
 func clampGain(gain float64) float64 {
 	switch {
 	case gain <= 0:

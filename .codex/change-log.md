@@ -2,6 +2,12 @@
 
 ## 2026-04-16
 
+- Landed the next native-realtime playback-truth refinement as a true segment-level path instead of a single playback-wide cursor:
+  - added `voice.PlaybackSegment` plus `voice.SegmentedAudioStream`, and taught planned speech synthesis to expose clause boundaries as stream segments
+  - native realtime now emits `audio.out.meta` per segment when the output stream exposes segment boundaries, while preserving wire compatibility through one shared `response_id/playback_id` and unique `segment_id`
+  - `audio.out.mark` and `audio.out.cleared` now reconcile against the referenced segment, so later-segment marks can still confirm earlier segments as heard and cleared facts can truncate heard-text at an exact segment boundary
+  - `internal/voice.SessionOrchestrator` now preserves exact client-reported heard text across interruption instead of always falling back to heuristic recomputation
+  - updated `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, and `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`, and added unit/integration coverage for multi-segment `audio.out.meta` plus segment-scoped mark/clear behavior
 - Deepened the native realtime `playback_ack` slice from a logging-only ingress into the shared playback-truth chain:
   - `internal/voice.SessionOrchestrator` now distinguishes heuristic heard-text from client-fact-driven heard-text, persists source / confidence / precision-tier / resume-anchor-style metadata, and derives interruption writeback from negotiated playback facts when available
   - native realtime now feeds `audio.out.started`, `audio.out.mark`, and `audio.out.completed` into that shared runtime instead of only writing gateway logs

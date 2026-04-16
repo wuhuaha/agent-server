@@ -145,6 +145,10 @@ Current planning note:
   - native realtime now prepares playback-truth turn context before early audio starts speaking instead of waiting only for final response settlement
   - while output is already `speaking`, later streamed text deltas may extend the active playback text inside `SessionOrchestrator`
   - interruption and `voice.previous.*` resume context are therefore less likely to lag behind the real spoken answer on the early-audio path
+- the finer segment-level playback-truth cursor slice is now also landed on the same shared boundary:
+  - planned clause audio can now expose internal segment boundaries through the shared `voice.SegmentedAudioStream` contract
+  - native realtime may emit multiple `audio.out.meta` events for one `response_id/playback_id`, with segment-scoped `segment_id`, `text`, `expected_duration_ms`, and conservative `is_last_segment`
+  - `audio.out.mark` and `audio.out.cleared` are now reconciled against the referenced segment instead of only the latest whole-response playback meta, so heard-text and resume anchors can stop at exact segment boundaries
 - the latest archived CPU benchmark now shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is viable only after worker preload plus readiness gating, but it is not yet the best default for the CPU demo path: it kept command-only accuracy, failed to improve the wake-word-prefixed sample, and increased response-start latency from about `2.05 s` to about `3.5 s`
 - the current local FunASR `1.3.1` runtime rejects the short KWS alias `fsmn-kws` during preload (`fsmn-kws is not registered`), but the calibrated enabled-KWS baseline is now `iic/speech_charctc_kws_phone-xiaoyun`; that worker path also needs `keywords` plus `output_dir` during `AutoModel(...)` init and still stays default-off
 - the current V100 production host cannot use the newer `torch 2.11.0+cu128` wheel family because the official wheel omits `sm_70` kernels; the long-running GPU FunASR path is now validated with a dedicated data-volume runtime on `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126`

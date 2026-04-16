@@ -281,6 +281,48 @@ func TestSessionOrchestratorUsesClientPlaybackFactsForResumeMetadata(t *testing.
 	}
 }
 
+func TestSessionOrchestratorPreservesExactSegmentBoundaryAcrossInterrupt(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-5b",
+		TurnID:     "turn-5b",
+		DeviceID:   "dev-5b",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，已经为你打开客厅灯，再把亮度调到最舒适的模式。"
+	exactHeard := "好的，已经为你打开客厅灯，"
+	orchestrator.PrepareTurn(request, "打开客厅灯并调亮一点", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 4*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackMarkTextFact(800*time.Millisecond, exactHeard)
+
+	summary := orchestrator.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "client_barge_in_after_exact_mark")
+	if summary.HeardText != exactHeard {
+		t.Fatalf("expected exact heard text %q, got %+v", exactHeard, summary)
+	}
+	if summary.HeardTextBoundary != HeardTextBoundaryPrefix || !summary.Truncated {
+		t.Fatalf("expected prefix truncated summary, got %+v", summary)
+	}
+
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected prepare + interrupt saves, got %d", got)
+	}
+	record := store.saves[1]
+	if record.HeardText != exactHeard {
+		t.Fatalf("expected persisted heard text %q, got %+v", exactHeard, record)
+	}
+	if got := record.Metadata[heardSourceMetadataKey]; got != string(HeardTextSourceSegmentMark) {
+		t.Fatalf("expected segment_mark source, got %q", got)
+	}
+	if got := record.Metadata[resumeAnchorMetadataKey]; got != exactHeard {
+		t.Fatalf("expected resume anchor %q, got %q", exactHeard, got)
+	}
+}
+
 func TestSessionOrchestratorCompletesPlaybackFromClientFactWithHighConfidence(t *testing.T) {
 	store := &countingMemoryStore{}
 	orchestrator := NewSessionOrchestrator(store)
