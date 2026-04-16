@@ -76,6 +76,8 @@ The next behavior-depth slice stays on that same boundary instead of creating a 
 
 The current long-term voice direction now explicitly converges on a `server-primary hybrid` architecture after wake and session establishment: devices keep audio-front-end, local reflex, playback execution, playback telemetry, and fallback controls, while the shared voice runtime owns preview, early-processing gates, interruption arbitration, clause-level output orchestration, and playback-truth reconciliation. The public realtime contract still evolves additively and compatibility-first while that target graduates.
 
+The next service-side optimization priority is now explicit on top of that same architecture: do not widen the transport or model surface first. Instead, keep the cascade boundary and strengthen `internal/voice` with a multi-signal turn arbitrator, acoustic-first interruption verification, layered reversible early-processing, clause-aware output planning, finer playback-truth alignment, and runtime-owned dynamic biasing for domain entities.
+
 ### 4. Device Adapters
 
 Own ingress and egress for RTOS devices, desktops, and browsers. They translate transport details into core events and shared turn inputs.
@@ -160,6 +162,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 
 ## Related Notes
 
+- [服务侧语音优化建议（深度研究，2026-04-16）](service-side-voice-optimization-recommendations-zh-2026-04-16.md)
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
 - [第一阶段语音 Agent Demo 实时体验优化研究（2026-04-14）](voice-demo-realtime-optimization-zh-2026-04-14.md)
 - [当前 realtime 全双工差距复核（2026-04-15）](realtime-full-duplex-gap-review-zh-2026-04-15.md)

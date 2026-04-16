@@ -877,3 +877,8 @@
   - `internal/agent.LLMTurnExecutor` now caches prewarmed prompt or memory or tool preparation per session and reuses it only when the later accepted text matches exactly
   - added coverage in `internal/agent/llm_executor_test.go`, `internal/voice/asr_responder_test.go`, and `internal/gateway/realtime_ws_test.go`
   - validated with `go test ./internal/app ./internal/agent ./internal/control ./internal/gateway ./internal/session ./internal/voice` and `go test -tags integration ./internal/gateway`
+
+- Added a durable deep-research note for the next service-side voice optimization stage:
+  - added `docs/architecture/service-side-voice-optimization-recommendations-zh-2026-04-16.md`, synthesizing current repository gaps with official OpenAI, Google, Amazon, Apple, FunASR, LiveKit, and Pipecat sources
+  - added `docs/adr/0036-service-side-voice-optimization-prioritizes-turn-taking-and-reversible-early-processing.md` to record the new priority order
+  - updated `docs/architecture/overview.md`, `plan.md`, and `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md` so the next service-side work stays focused on multi-signal turn-taking, acoustic-first interruption verification, clause-aware output planning, finer playback truth, and runtime-owned dynamic biasing instead of widening protocol/model surface first

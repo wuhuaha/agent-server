@@ -359,5 +359,12 @@
   - preview-aware transports may surface `stable_prefix` and derived `stability`, but those fields remain observational only
   - `internal/voice.ASRResponder` may prewarm the shared agent runtime from stable complete preview text through `agent.TurnPrewarmer`
   - `internal/agent.LLMTurnExecutor` reuses that speculative preparation only on exact text plus metadata match, so early work stays reversible
+- The next service-side voice optimization order is now explicit and should guide implementation slices:
+  - first strengthen turn-taking into a multi-signal shared arbitrator
+  - then add acoustic-first interruption verification and richer `duck_only` behavior
+  - then evolve speech planning from chunk heuristics toward clause/prosody-aware orchestration
+  - then deepen playback truth into a finer heard cursor / resume foundation
+  - then runtime-integrate dynamic bias / alias / entity catalog instead of treating it as research-only knowledge
+  - keep the current cascade architecture as the main production path while speech-to-speech remains an eval baseline
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

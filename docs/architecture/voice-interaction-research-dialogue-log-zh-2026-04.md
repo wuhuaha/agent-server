@@ -916,3 +916,56 @@
   - accepted turn 后 LLM 准备工作可以更早起步
   - 仍然不破坏当前 capability-gated 协议边界
   - 为后续更激进的 early draft / early plan 提供了更安全的中间层
+
+
+## Round 020｜2026-04-16｜回到主线：服务侧语音优化建议深度研究
+
+### 用户诉求
+
+- 回到主线，不急于直接改代码，而是先系统性研究：在当前项目现状下，服务侧语音优化最该怎么做。
+- 希望充分参考优秀开源实践、论文，以及 OpenAI、Amazon、Google、Apple 等厂商经验。
+- 同时要求这轮结论继续自动落盘。
+
+### 本轮工作方式
+
+- 先检查是否存在非常契合“deep research”的 skill。
+- 结果是没有一个真正面向此类架构研究的专门 skill；安装并检查了最接近的 curated `speech` skill，但它主要面向 OpenAI Audio API 的语音生成，不适合作为本轮研究主工具。
+- 随后改为直接结合两部分材料：
+  1. 当前仓库代码与既有研究文档
+  2. 外部一手资料，包括 OpenAI、Google、Amazon、Apple、FunASR，以及 LiveKit / Pipecat 的官方资料
+
+### 本轮核心结论
+
+- 当前项目最该做的，已经不是“再接更多模型”或“再调几个 silence 阈值”。
+- 真正决定上限的，是服务侧 runtime 的 5 类行为成熟度：
+  1. turn-taking 是否从单静音阈值升级成多信号仲裁
+  2. interruption 是否从 transcript 近似升级成声学优先 + 语义确认
+  3. early processing 是否形成分层、可撤销的前推链
+  4. speech planner 是否从字数切块升级成意群 / prosody 编排
+  5. playback truth 是否细化到更可信的 heard cursor / resume foundation
+- 结合外部资料后，当前最合适的总方向非常明确：
+  - **继续坚持当前 cascade 主架构**
+  - **继续坚持服务侧主导 turn-taking 与 interruption**
+  - **继续把 `internal/voice` 建成共享语音编排 runtime，而不是 provider glue 层**
+- 换句话说，下一阶段最值得投入的是：
+  - `MultiSignalTurnArbitrator`
+  - acoustic-first `BargeInVerifier`
+  - layered `EarlyProcessingGate`
+  - clause/prosody-aware `SpeechPlanner`
+  - finer playback timeline / heard cursor
+  - runtime-owned dynamic bias / alias / entity catalog
+
+### 本轮正式沉淀
+
+- `docs/architecture/service-side-voice-optimization-recommendations-zh-2026-04-16.md`
+- `docs/adr/0036-service-side-voice-optimization-prioritizes-turn-taking-and-reversible-early-processing.md`
+- `docs/architecture/overview.md`
+- `plan.md`
+
+### 与主线的关系
+
+- 这一轮不是新增功能，而是把“服务侧下一阶段最该做什么”真正收敛成了清晰的优先级。
+- 它对后续主线的意义在于：
+  - 避免后续优化重新发散回“多接模型 / 多改协议”的低 ROI 路线
+  - 让后续实现能围绕共享 runtime 继续加深，而不是回退到 adapter-local patch
+  - 为接下来每一个实现 slice 提供更强的判断标准：先补行为成熟度，再扩模型和能力面
