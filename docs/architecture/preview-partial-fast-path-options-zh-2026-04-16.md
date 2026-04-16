@@ -420,3 +420,20 @@
 换句话说，当前最值得做的不是直接“更早 final”，而是：
 
 `先让 preview 变成端侧可见的一等信号。`
+
+## 2026-04-17 实施补记
+
+基于后续协议演进与服务侧实现，本专题里的部分“阶段性推荐”已经有了更具体的落地结果：
+
+- preview 对端可见链路最终采用了能力协商后的 `input.preview` / `input.speech.start` / `input.endpoint` 事件，而不是继续把高频 preview 细节塞进 `session.update`
+- 当前实现新增了 `ProgressiveInputPreviewSession`，允许 `voice runtime` 在同一段入口音频内部继续切成更细的 preview 子块；网关只消费 observation 序列，不接管 ASR chunking policy
+- `ASRResponder` 现在会把较大的 PCM 入口帧按 `40 ms` 左右的小块推进 preview，因此即使端侧单帧偏大，服务侧也能在这一帧内部更早拿到 partial / speech_start / endpoint 候选
+- preview prewarm 不再死等整句 complete：当 `stable_prefix` 本身已经完整、稳定度足够、并且驻留时间达到阈值时，可以先做低风险预热；真正复用仍然要求后续 accepted text 精确匹配
+- turn detector 对连续重复的 incomplete tail（例如“打开客厅灯然后”“打开客厅灯然后”）现在更保守，不会把这段不稳定尾巴直接并入 `stable_prefix`，从而减少预热抢跑
+- 为了兼容真实链路里的 PCM 批量发送，realtime 默认 `max_frame_bytes` 已提升到 `16384`，避免 batched ingress frame 在进入 progressive preview 之前就被网关过早拒绝
+
+这意味着当前这一轮的重点已经从“要不要让 preview visible”转成了：
+
+- 如何让 preview 在一帧内部更早产生
+- 如何让 prewarm 更稳，但仍保持可撤销
+- 如何让网关只做事件转发，而不重新侵入 voice runtime 的分块和仲裁策略

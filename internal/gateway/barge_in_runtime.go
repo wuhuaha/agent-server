@@ -108,7 +108,11 @@ func (r *connectionRuntime) previewForBargeIn(ctx context.Context, responder voi
 	if responder != nil {
 		if err := r.ensureInputPreview(ctx, responder, snapshot, ""); err == nil {
 			if pushed, pushErr := r.pushInputPreviewAudio(ctx, payload); pushErr == nil {
-				observation = pushed
+				if len(pushed) > 0 {
+					// barge-in 只需要当前这一刻最新的 preview 视图，用最后一个 observation
+					// 代表“这一帧音频推进完成后的最终状态”即可。
+					observation = pushed[len(pushed)-1]
+				}
 			}
 		}
 	}

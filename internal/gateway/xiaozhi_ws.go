@@ -598,34 +598,38 @@ func (h *xiaozhiWSHandler) handleBinary(runtime *connectionRuntime, peer *xiaozh
 		if err := runtime.ensureInputPreview(context.Background(), h.responder, snapshot, ""); err != nil {
 			h.logger.Warn("gateway input preview start failed", "session_id", snapshot.SessionID, "error", err)
 		} else {
-			observation, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalized)
+			observations, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalized)
 			if pushErr != nil {
 				h.logger.Warn("gateway input preview push failed", "session_id", snapshot.SessionID, "error", pushErr)
 			} else {
-				if observation.PartialChanged {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-					)
-				}
-				if observation.SpeechStartedObserved {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
-						"audio_bytes", observation.Preview.AudioBytes,
-					)
-				}
-				if observation.EndpointCandidateObserved {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-						"endpoint_reason", observation.Preview.EndpointReason,
-					)
-				}
-				if observation.CommitSuggested {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-						"endpoint_reason", observation.Preview.EndpointReason,
-					)
+				// compat 适配层同样只消费 runtime 给出的 observation 序列，
+				// 不在网关自己重做 preview 分块或时序判断。
+				for _, observation := range observations {
+					if observation.PartialChanged {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+						)
+					}
+					if observation.SpeechStartedObserved {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
+							"audio_bytes", observation.Preview.AudioBytes,
+						)
+					}
+					if observation.EndpointCandidateObserved {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+							"endpoint_reason", observation.Preview.EndpointReason,
+						)
+					}
+					if observation.CommitSuggested {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+							"endpoint_reason", observation.Preview.EndpointReason,
+						)
+					}
 				}
 			}
 		}

@@ -214,6 +214,75 @@ func TestSilenceTurnDetectorMarksIncompletePreviewAsWaitForMore(t *testing.T) {
 	}
 }
 
+func TestSilenceTurnDetectorAllowsEarlyPrewarmOnMatureStablePrefix(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯",
+	})
+	detector.ObserveTranscriptionDelta(startedAt.Add(80*time.Millisecond), TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯然后",
+	})
+
+	early := detector.Snapshot(startedAt.Add(160 * time.Millisecond))
+	if early.Arbitration.PrewarmAllowed {
+		t.Fatalf("expected stable prefix dwell to stay below prewarm threshold, got %+v", early.Arbitration)
+	}
+
+	mature := detector.Snapshot(startedAt.Add(260 * time.Millisecond))
+	if mature.UtteranceComplete {
+		t.Fatal("expected trailing incomplete live partial to keep utterance_complete false")
+	}
+	if mature.StablePrefix != "打开客厅灯" {
+		t.Fatalf("expected stable prefix 打开客厅灯, got %q", mature.StablePrefix)
+	}
+	if mature.Arbitration.Stage != TurnArbitrationStagePrewarmAllowed {
+		t.Fatalf("expected prewarm_allowed stage, got %q", mature.Arbitration.Stage)
+	}
+	if !mature.Arbitration.PrewarmAllowed || mature.Arbitration.DraftAllowed || mature.Arbitration.AcceptCandidate {
+		t.Fatalf("expected only low-risk prewarm promotion, got %+v", mature.Arbitration)
+	}
+	if mature.Arbitration.StableForMs < defaultPrewarmStableForMs {
+		t.Fatalf("expected stable dwell >= %dms, got %+v", defaultPrewarmStableForMs, mature.Arbitration)
+	}
+}
+
+func TestSilenceTurnDetectorKeepsSafeStablePrefixAcrossRepeatedIncompleteTail(t *testing.T) {
+	detector := NewSilenceTurnDetector(NormalizeSilenceTurnDetectorConfig(SilenceTurnDetectorConfig{}), 16000, 1)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯",
+	})
+	detector.ObserveTranscriptionDelta(startedAt.Add(80*time.Millisecond), TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯然后",
+	})
+	detector.ObserveTranscriptionDelta(startedAt.Add(160*time.Millisecond), TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯然后",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(260 * time.Millisecond))
+	if snapshot.StablePrefix != "打开客厅灯" {
+		t.Fatalf("expected stable prefix to keep the completed clause, got %q", snapshot.StablePrefix)
+	}
+}
+
 func TestSilenceTurnDetectorSuppressesStablePrefixPrewarmDuringCorrectionPendingPartial(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{

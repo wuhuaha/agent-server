@@ -97,6 +97,44 @@
 - 下一轮开始，将进入基于外部资料与当前项目现状的正式深度讨论。
 
 
+## Round 020｜2026-04-17｜Preview 快路径实施闭环
+
+### 用户诉求
+
+- 先把“preview partial 尽早下发给端侧 + 更稳 prewarm，但不抢跑”这条服务侧链路继续深度优化完。
+- 在已有实现上补充适量中文注释，方便后续阅读。
+- 完成后整理测试、提交并推送远端。
+
+### 本轮实现重点
+
+- 把 preview 输入链路升级为“同一段入口音频可渐进吐出多个 observation”：
+  - 新增 `voice.ProgressiveInputPreviewSession`
+  - 网关侧 `pushInputPreviewAudio(...)` 现在消费 observation 列表，而不是只拿单个最终 snapshot
+- `ASRResponder` 现在会在 voice runtime 内把较大的 PCM 入口帧继续拆成更细 preview push，避免网关自己介入 ASR 分块策略
+- preview prewarm 从“必须 utterance complete”放宽为“成熟 stable prefix 也可低风险预热”，同时把 `turn_stage / stable_for_ms / stability_percent / endpoint_reason` 等元信息一并带进 runtime 预热链路
+- `SilenceTurnDetector` 增加 stable-prefix 驻留时间，并在 repeated incomplete tail 场景下保持更保守的安全前缀，减少因为尾部修正或续说导致的抢跑
+- gateway / barge-in 路径同步适配 progressive preview，保证 speaking 期间的 preview、日志和后续仲裁使用的是同一份最新 preview 状态
+- 为了让 batched PCM ingress frame 能真正进入 progressive preview 路径，realtime 默认 `max_frame_bytes` 提升到 `16384`
+
+### 本轮关键判断
+
+- preview 的“切多细、何时产出 observation”应继续由 `voice runtime` 控制，而不是让 websocket adapter 自己决定 chunking policy
+- stable prefix 可以承担“低风险预热”的门槛，但不能直接等同于 accepted turn；真正 accept 仍需依赖后续静音/时长/endpoint 证据
+- repeated incomplete tail 是一个很实际的误导源：如果不保守处理，会让 prewarm 过早跟随“然后 / 不对 / 等一下”之类不稳定尾巴
+
+### 本轮验证
+
+- `go test ./internal/voice -run 'TurnDetector|PreviewSession|SessionOrchestrator'`
+- `go test ./internal/gateway -run 'Preview|Progressive|CancelOnClose|ResolveSegmented'`
+- `go test ./internal/gateway ./internal/voice ./internal/agent ./internal/session`
+- `go test -tags integration ./internal/gateway -run 'PlaybackAck|StreamingResponder|Realtime'`
+
+### 当前结论
+
+- preview 已不再只是“单次 push -> 单次 snapshot”的链路，而是可以在一帧内部渐进吐出多个 client-visible observation
+- 当前更合适的后续方向是继续压 `preview -> early processing -> first audio` 之间的链路时延，而不是再把 chunking 逻辑散落到各个 adapter
+
+
 ## Round 003｜2026-04-16｜第一轮正式研究讨论
 
 ### 用户诉求

@@ -220,6 +220,7 @@ type TurnArbitration struct {
 	Stage             TurnArbitrationStage
 	Reason            string
 	Stability         float64
+	StableForMs       int
 	AudioMs           int
 	SilenceMs         int
 	RequiredSilenceMs int
@@ -234,6 +235,14 @@ type InputPreviewSession interface {
 	PushAudio(context.Context, []byte) (InputPreview, error)
 	Poll(time.Time) InputPreview
 	Close() error
+}
+
+// ProgressiveInputPreviewSession 允许 voice runtime 把一帧较大的入口音频
+// 继续拆成更细的 preview 子块。这样网关只负责转发观察结果，不需要自己接管
+// ASR 分块策略，也能更早把 partial / prewarm 信号往下游推进。
+type ProgressiveInputPreviewSession interface {
+	InputPreviewSession
+	PushAudioProgressively(context.Context, []byte, func(InputPreview)) (InputPreview, error)
 }
 
 type FinalizingInputPreviewSession interface {

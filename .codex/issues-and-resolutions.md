@@ -714,3 +714,9 @@
 - Problem: segment-level `audio.out.mark` and `audio.out.cleared` already refined heard boundaries, but on early-audio or multi-segment output they still depended on whichever delivered-text view had reached `SessionOrchestrator`. If a later segment had already been announced through `audio.out.meta` but the final response had not settled yet, the runtime could still miss the correct missed tail.
 - Resolution: native realtime now syncs the latest announced `audio.out.meta` text and cumulative duration back into the runtime playback context while output is speaking. Later ACK facts can therefore reconcile exact heard boundaries against the newest announced tail before final response settlement, and tests now cover that behavior.
 - Status: resolved.
+
+### Progressive Preview Validation Was Still Blocked By The Realtime Frame Ceiling
+
+- Problem: the new preview-fast-path tests and the intended runtime behavior both assume one ingress PCM frame may still be moderately batched and then progressively split inside `internal/voice`. With the old realtime default `max_frame_bytes=4096`, larger but still reasonable PCM batches could be rejected at the websocket edge before the progressive preview path ever ran.
+- Resolution: raised the realtime default frame ceiling to `16384`, kept preview chunking inside the shared voice runtime through `ProgressiveInputPreviewSession`, and added regression coverage for multiple preview observations from one ingress frame plus mature-stable-prefix prewarm behavior.
+- Status: resolved.

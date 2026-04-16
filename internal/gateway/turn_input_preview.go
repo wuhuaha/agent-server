@@ -33,30 +33,41 @@ func (r *connectionRuntime) ensureInputPreview(ctx context.Context, responder vo
 	})
 }
 
-func (r *connectionRuntime) pushInputPreviewAudio(ctx context.Context, payload []byte) (inputPreviewObservation, error) {
+func (r *connectionRuntime) pushInputPreviewAudio(ctx context.Context, payload []byte) ([]inputPreviewObservation, error) {
 	if r.voiceSession == nil {
-		return inputPreviewObservation{}, nil
+		return nil, nil
 	}
-	now := time.Now().UTC()
 	sessionID := r.session.Snapshot().SessionID
-	r.previewTrace.ObserveAudio(sessionID, len(payload), now)
-	observation, err := r.voiceSession.PushInputPreviewAudio(ctx, payload)
+	// 一次 websocket 音频帧可能比 preview 驱动粒度更大，这里只记录一次入口音频，
+	// 具体如何切成更小的 preview 子块交给 voice runtime 决定。
+	r.previewTrace.ObserveAudio(sessionID, len(payload), time.Now().UTC())
+
+	var observations []inputPreviewObservation
+	appendObservation := func(observation voice.InputPreviewObservation) {
+		now := time.Now().UTC()
+		if observation.Active {
+			_, _ = r.session.SetInputState(session.InputStatePreviewing)
+		}
+		trace, _, speechStarted, endpointCandidate, _ := r.previewTrace.ObservePreview(sessionID, observation.Preview, now)
+		observations = append(observations, inputPreviewObservation{
+			Preview:                   observation.Preview,
+			Active:                    observation.Active,
+			PartialChanged:            observation.PartialChanged,
+			SpeechStartedObserved:     speechStarted,
+			EndpointCandidateObserved: endpointCandidate,
+			CommitSuggested:           observation.CommitSuggested,
+			Trace:                     trace,
+		})
+	}
+
+	observation, err := r.voiceSession.PushInputPreviewAudioProgressively(ctx, payload, appendObservation)
 	if err != nil {
-		return inputPreviewObservation{}, err
+		return nil, err
 	}
-	if observation.Active {
-		_, _ = r.session.SetInputState(session.InputStatePreviewing)
+	if len(observations) == 0 && observation.Active {
+		appendObservation(observation)
 	}
-	trace, _, speechStarted, endpointCandidate, _ := r.previewTrace.ObservePreview(sessionID, observation.Preview, now)
-	return inputPreviewObservation{
-		Preview:                   observation.Preview,
-		Active:                    observation.Active,
-		PartialChanged:            observation.PartialChanged,
-		SpeechStartedObserved:     speechStarted,
-		EndpointCandidateObserved: endpointCandidate,
-		CommitSuggested:           observation.CommitSuggested,
-		Trace:                     trace,
-	}, nil
+	return observations, nil
 }
 
 func (r *connectionRuntime) pollInputPreview(now time.Time) inputPreviewObservation {

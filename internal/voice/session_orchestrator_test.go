@@ -43,6 +43,34 @@ func (s *previewTestSession) Poll(now time.Time) InputPreview {
 
 func (*previewTestSession) Close() error { return nil }
 
+type progressivePreviewTestSession struct {
+	audioBytes int
+}
+
+func (s *progressivePreviewTestSession) PushAudio(ctx context.Context, chunk []byte) (InputPreview, error) {
+	return s.PushAudioProgressively(ctx, chunk, nil)
+}
+
+func (s *progressivePreviewTestSession) PushAudioProgressively(_ context.Context, chunk []byte, emit func(InputPreview)) (InputPreview, error) {
+	s.audioBytes += len(chunk)
+	snapshots := []InputPreview{
+		{PartialText: "打开客厅", AudioBytes: s.audioBytes / 2, SpeechStarted: true},
+		{PartialText: "打开客厅灯", StablePrefix: "打开客厅", AudioBytes: s.audioBytes, SpeechStarted: true},
+	}
+	for _, snapshot := range snapshots {
+		if emit != nil {
+			emit(snapshot)
+		}
+	}
+	return snapshots[len(snapshots)-1], nil
+}
+
+func (s *progressivePreviewTestSession) Poll(time.Time) InputPreview {
+	return InputPreview{PartialText: "打开客厅灯", StablePrefix: "打开客厅", AudioBytes: s.audioBytes, SpeechStarted: s.audioBytes > 0}
+}
+
+func (*progressivePreviewTestSession) Close() error { return nil }
+
 func TestSessionOrchestratorManagesInputPreview(t *testing.T) {
 	orchestrator := NewSessionOrchestrator(nil)
 	responder := previewTestResponder{}
@@ -69,6 +97,31 @@ func TestSessionOrchestratorManagesInputPreview(t *testing.T) {
 	polled := orchestrator.PollInputPreview(time.Now().Add(800 * time.Millisecond))
 	if !polled.CommitSuggested {
 		t.Fatalf("expected commit suggestion after silence window, got %+v", polled)
+	}
+}
+
+func TestSessionOrchestratorStreamsIntermediatePreviewObservations(t *testing.T) {
+	orchestrator := NewSessionOrchestrator(nil)
+	orchestrator.preview = &inputTurnPreview{session: &progressivePreviewTestSession{}}
+
+	var observations []InputPreviewObservation
+	finalObservation, err := orchestrator.PushInputPreviewAudioProgressively(context.Background(), make([]byte, 12800), func(observation InputPreviewObservation) {
+		observations = append(observations, observation)
+	})
+	if err != nil {
+		t.Fatalf("PushInputPreviewAudioProgressively failed: %v", err)
+	}
+	if len(observations) != 2 {
+		t.Fatalf("expected two progressive observations, got %d", len(observations))
+	}
+	if observations[0].Preview.PartialText != "打开客厅" || !observations[0].PartialChanged {
+		t.Fatalf("unexpected first observation %+v", observations[0])
+	}
+	if observations[1].Preview.PartialText != "打开客厅灯" || !observations[1].PartialChanged {
+		t.Fatalf("unexpected second observation %+v", observations[1])
+	}
+	if finalObservation.Preview.PartialText != "打开客厅灯" {
+		t.Fatalf("expected final observation to keep latest preview, got %+v", finalObservation)
 	}
 }
 

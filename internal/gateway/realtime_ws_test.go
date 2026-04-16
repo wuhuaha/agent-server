@@ -125,6 +125,43 @@ func (s *fixedPartialPreviewSession) Close() error {
 	return nil
 }
 
+type progressivePreviewSession struct {
+	audioBytes int
+	partials   []voice.InputPreview
+}
+
+func (s *progressivePreviewSession) PushAudio(ctx context.Context, chunk []byte) (voice.InputPreview, error) {
+	return s.PushAudioProgressively(ctx, chunk, nil)
+}
+
+func (s *progressivePreviewSession) PushAudioProgressively(_ context.Context, chunk []byte, emit func(voice.InputPreview)) (voice.InputPreview, error) {
+	s.audioBytes += len(chunk)
+	var last voice.InputPreview
+	for _, preview := range s.partials {
+		last = preview
+		last.AudioBytes = s.audioBytes
+		last.SpeechStarted = true
+		if emit != nil {
+			emit(last)
+		}
+	}
+	return last, nil
+}
+
+func (s *progressivePreviewSession) Poll(time.Time) voice.InputPreview {
+	if len(s.partials) == 0 {
+		return voice.InputPreview{AudioBytes: s.audioBytes, SpeechStarted: s.audioBytes > 0}
+	}
+	preview := s.partials[len(s.partials)-1]
+	preview.AudioBytes = s.audioBytes
+	preview.SpeechStarted = s.audioBytes > 0
+	return preview
+}
+
+func (*progressivePreviewSession) Close() error {
+	return nil
+}
+
 type finalizingTimedInputPreviewSession struct {
 	timedInputPreviewSession
 	result voice.TranscriptionResult
@@ -1577,6 +1614,61 @@ func TestRealtimeWSEmitsNegotiatedPreviewEvents(t *testing.T) {
 	t.Fatalf("expected negotiated preview events, saw speech_start=%v preview=%v", sawSpeechStart, sawPreview)
 }
 
+func TestRealtimeWSEmitsProgressivePreviewEventsFromSingleIngressFrame(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			return voice.TurnResponse{InputText: req.Text, Text: "ok"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &progressivePreviewSession{
+				partials: []voice.InputPreview{
+					{PartialText: "打开客厅", StablePrefix: "打开"},
+					{PartialText: "打开客厅灯", StablePrefix: "打开客厅"},
+				},
+			}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	_ = startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"preview_events":  true,
+	})
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 12800)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	var previews []string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		event := readNextJSONEvent(t, conn, 500*time.Millisecond)
+		switch event.Type {
+		case "input.preview":
+			previews = append(previews, stringValue(event.Payload["text"]))
+			if len(previews) >= 2 {
+				if previews[0] != "打开客厅" || previews[1] != "打开客厅灯" {
+					t.Fatalf("unexpected preview order %v", previews)
+				}
+				return
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+	t.Fatalf("expected two preview updates from one ingress frame, got %v", previews)
+}
+
 func TestRealtimeWSEmitsPreviewEndpointCandidateBeforeAcceptedTurn(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.ServerEndpointEnabled = true
@@ -2254,7 +2346,7 @@ func TestRealtimeWSEarlySegmentMetaPromotesPlaybackContextBeforeResponseSettles(
 }
 
 func testRealtimeProfile() RealtimeProfile {
-	return RealtimeProfile{WSPath: "/v1/realtime/ws", ProtocolVersion: "rtos-ws-v0", Subprotocol: "agent-server.realtime.v0", VoiceProvider: "bootstrap", TTSProvider: "none", AuthMode: "disabled", TurnMode: "client_wakeup_client_commit", IdleTimeoutMs: 15000, MaxSessionMs: 300000, MaxFrameBytes: 4096, InputCodec: "pcm16le", InputSampleRate: 16000, InputChannels: 1, OutputCodec: "pcm16le", OutputSampleRate: 16000, OutputChannels: 1, AllowOpus: false, AllowTextInput: true, AllowImageInput: false}
+	return RealtimeProfile{WSPath: "/v1/realtime/ws", ProtocolVersion: "rtos-ws-v0", Subprotocol: "agent-server.realtime.v0", VoiceProvider: "bootstrap", TTSProvider: "none", AuthMode: "disabled", TurnMode: "client_wakeup_client_commit", IdleTimeoutMs: 15000, MaxSessionMs: 300000, MaxFrameBytes: 16384, InputCodec: "pcm16le", InputSampleRate: 16000, InputChannels: 1, OutputCodec: "pcm16le", OutputSampleRate: 16000, OutputChannels: 1, AllowOpus: false, AllowTextInput: true, AllowImageInput: false}
 }
 
 func openRealtimeWS(t *testing.T, profile RealtimeProfile, responder voice.Responder) *websocket.Conn {

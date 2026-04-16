@@ -505,37 +505,41 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 		if err := runtime.ensureInputPreview(context.Background(), h.responder, current, ""); err != nil {
 			h.logger.Warn("gateway input preview start failed", "session_id", current.SessionID, "error", err)
 		} else {
-			observation, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalizedPayload)
+			observations, pushErr := runtime.pushInputPreviewAudio(context.Background(), normalizedPayload)
 			if pushErr != nil {
 				h.logger.Warn("gateway input preview push failed", "session_id", current.SessionID, "error", pushErr)
 			} else {
-				if observation.PartialChanged {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview updated", current.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-					)
-				}
-				if observation.SpeechStartedObserved {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", current.SessionID, observation.Trace,
-						"audio_bytes", observation.Preview.AudioBytes,
-					)
-				}
-				if observation.EndpointCandidateObserved {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", current.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-						"endpoint_reason", observation.Preview.EndpointReason,
-					)
-				}
-				if observation.CommitSuggested {
-					logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", current.SessionID, observation.Trace,
-						"partial_text", observation.Preview.PartialText,
-						"audio_bytes", observation.Preview.AudioBytes,
-						"endpoint_reason", observation.Preview.EndpointReason,
-					)
-				}
-				if err := h.emitPreviewObservationEvents(runtime, current, observation); err != nil {
-					return err
+				// 同一段入口音频现在可能在 voice runtime 内被拆成多个 preview observation，
+				// 这里逐个透传，确保端侧能尽早看到 partial / endpoint 候选。
+				for _, observation := range observations {
+					if observation.PartialChanged {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview updated", current.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+						)
+					}
+					if observation.SpeechStartedObserved {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", current.SessionID, observation.Trace,
+							"audio_bytes", observation.Preview.AudioBytes,
+						)
+					}
+					if observation.EndpointCandidateObserved {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", current.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+							"endpoint_reason", observation.Preview.EndpointReason,
+						)
+					}
+					if observation.CommitSuggested {
+						logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", current.SessionID, observation.Trace,
+							"partial_text", observation.Preview.PartialText,
+							"audio_bytes", observation.Preview.AudioBytes,
+							"endpoint_reason", observation.Preview.EndpointReason,
+						)
+					}
+					if err := h.emitPreviewObservationEvents(runtime, current, observation); err != nil {
+						return err
+					}
 				}
 			}
 		}

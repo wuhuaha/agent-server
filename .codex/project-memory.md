@@ -405,3 +405,12 @@
   - deterministic continue / recap behavior in `internal/agent` should therefore trust `voice.previous.*` even when playback completed, as long as the runtime marks the tail as recoverable after soft overlap
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。
+- 当前 preview 快路径的边界约定进一步收敛：
+  - websocket adapter 只消费并转发 preview observation，不负责自行切 ASR 子块
+  - `internal/voice` 通过 `ProgressiveInputPreviewSession` 控制“一段入口音频如何渐进地产生多个 preview observation”
+  - 这条边界同样适用于 native realtime、xiaozhi compat、以及 speaking-time barge-in preview
+- 当前低风险预热策略的记录基线是：
+  - 成熟且完整的 `stable_prefix` 可以先触发可撤销 prewarm
+  - draft / accept 仍然要建立在更强的 live partial 完整度与静音收尾证据之上
+  - repeated incomplete tail 不应污染安全 `stable_prefix`
+- native realtime 默认 `max_frame_bytes` 现为 `16384`，目的是容纳适度 batched 的 PCM ingress frame，让其先进入 shared voice-runtime 的 progressive preview 路径，而不是在 gateway 边缘被过早拒绝。

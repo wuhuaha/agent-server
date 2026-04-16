@@ -114,6 +114,48 @@ func (s *previewStreamingSession) Close() error {
 	return nil
 }
 
+type stagedPreviewStreamingTranscriber struct {
+	session *stagedPreviewStreamingSession
+}
+
+func (*stagedPreviewStreamingTranscriber) Transcribe(context.Context, TranscriptionRequest) (TranscriptionResult, error) {
+	return TranscriptionResult{}, nil
+}
+
+func (t *stagedPreviewStreamingTranscriber) StartStream(_ context.Context, _ TranscriptionRequest, sink TranscriptionDeltaSink) (StreamingTranscriptionSession, error) {
+	t.session = &stagedPreviewStreamingSession{sink: sink}
+	return t.session, nil
+}
+
+type stagedPreviewStreamingSession struct {
+	sink      TranscriptionDeltaSink
+	started   bool
+	pushCount int
+}
+
+func (s *stagedPreviewStreamingSession) PushAudio(ctx context.Context, _ []byte) error {
+	s.pushCount++
+	if !s.started {
+		s.started = true
+		if err := emitTranscriptionDelta(ctx, s.sink, TranscriptionDelta{Kind: TranscriptionDeltaKindSpeechStart}); err != nil {
+			return err
+		}
+	}
+	text := "打开客厅灯然后"
+	if s.pushCount == 1 {
+		text = "打开客厅灯"
+	}
+	return emitTranscriptionDelta(ctx, s.sink, TranscriptionDelta{Kind: TranscriptionDeltaKindPartial, Text: text})
+}
+
+func (*stagedPreviewStreamingSession) Finish(context.Context) (TranscriptionResult, error) {
+	return TranscriptionResult{}, nil
+}
+
+func (*stagedPreviewStreamingSession) Close() error {
+	return nil
+}
+
 type capturingTurnExecutor struct {
 	inputs []agent.TurnInput
 }
@@ -399,6 +441,54 @@ func TestASRResponderPreviewSessionTriggersPrewarmOnStableCompletePrefix(t *test
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected preview prewarm call")
+	}
+}
+
+func TestASRResponderPreviewSessionPrewarmsMatureStablePrefixBeforeUtteranceComplete(t *testing.T) {
+	executor := &capturingPrewarmExecutor{calls: make(chan agent.TurnInput, 1)}
+	transcriber := &stagedPreviewStreamingTranscriber{}
+	responder := NewASRResponder(transcriber, "auto", "pcm16le", 16000, 1, false).
+		WithTurnExecutor(executor)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_prewarm_progressive",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 12800)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+	if transcriber.session == nil || transcriber.session.pushCount < 2 {
+		t.Fatalf("expected one ingress frame to be split into multiple preview pushes, got %+v", transcriber.session)
+	}
+
+	snapshot := preview.Poll(time.Now().Add((defaultPrewarmStableForMs + 80) * time.Millisecond))
+	if snapshot.UtteranceComplete {
+		t.Fatalf("expected live partial to stay incomplete, got %+v", snapshot)
+	}
+	if !snapshot.Arbitration.PrewarmAllowed {
+		t.Fatalf("expected mature stable prefix to allow prewarm, got %+v", snapshot.Arbitration)
+	}
+
+	select {
+	case input := <-executor.calls:
+		if got := input.UserText; got != "打开客厅灯" {
+			t.Fatalf("expected prewarm text 打开客厅灯, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.utterance_complete"]; got != "false" {
+			t.Fatalf("expected incomplete live preview metadata, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.turn_stage"]; got != string(TurnArbitrationStagePrewarmAllowed) {
+			t.Fatalf("expected prewarm stage metadata, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected mature stable prefix prewarm call")
 	}
 }
 

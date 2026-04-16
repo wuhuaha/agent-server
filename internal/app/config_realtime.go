@@ -35,7 +35,7 @@ func loadRealtimeConfig() RealtimeConfig {
 		TurnMode:         getenv("AGENT_SERVER_REALTIME_TURN_MODE", "client_wakeup_client_commit"),
 		IdleTimeoutMs:    getenvInt("AGENT_SERVER_REALTIME_IDLE_TIMEOUT_MS", 15000),
 		MaxSessionMs:     getenvInt("AGENT_SERVER_REALTIME_MAX_SESSION_MS", 300000),
-		MaxFrameBytes:    getenvInt("AGENT_SERVER_REALTIME_MAX_FRAME_BYTES", 4096),
+		MaxFrameBytes:    getenvInt("AGENT_SERVER_REALTIME_MAX_FRAME_BYTES", 16384),
 		InputCodec:       getenv("AGENT_SERVER_REALTIME_INPUT_CODEC", "pcm16le"),
 		InputSampleRate:  getenvInt("AGENT_SERVER_REALTIME_INPUT_SAMPLE_RATE", 16000),
 		InputChannels:    getenvInt("AGENT_SERVER_REALTIME_INPUT_CHANNELS", 1),
@@ -71,7 +71,7 @@ func applyRealtimeDefaults(cfg *Config) {
 		cfg.Realtime.MaxSessionMs = 300000
 	}
 	if cfg.Realtime.MaxFrameBytes <= 0 {
-		cfg.Realtime.MaxFrameBytes = 4096
+		cfg.Realtime.MaxFrameBytes = 16384
 	}
 	if cfg.Realtime.InputCodec == "" {
 		cfg.Realtime.InputCodec = "pcm16le"

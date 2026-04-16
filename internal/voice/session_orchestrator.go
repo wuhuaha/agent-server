@@ -219,6 +219,13 @@ func (o *SessionOrchestrator) EnsureInputPreview(ctx context.Context, responder 
 }
 
 func (o *SessionOrchestrator) PushInputPreviewAudio(ctx context.Context, payload []byte) (InputPreviewObservation, error) {
+	return o.PushInputPreviewAudioProgressively(ctx, payload, nil)
+}
+
+// PushInputPreviewAudioProgressively 允许 preview session 从同一段入口音频里
+// 连续吐出多个中间快照。网关只消费这些 observation，不自己决定如何切块，
+// 从而继续保持“adapter 只转发、voice runtime 负责 preview 编排”的边界。
+func (o *SessionOrchestrator) PushInputPreviewAudioProgressively(ctx context.Context, payload []byte, emit func(InputPreviewObservation)) (InputPreviewObservation, error) {
 	o.mu.Lock()
 	preview := o.preview
 	o.mu.Unlock()
@@ -226,26 +233,43 @@ func (o *SessionOrchestrator) PushInputPreviewAudio(ctx context.Context, payload
 		return InputPreviewObservation{}, nil
 	}
 
-	snapshot, err := preview.session.PushAudio(ctx, payload)
+	progressive, ok := preview.session.(ProgressiveInputPreviewSession)
+	if !ok {
+		snapshot, err := preview.session.PushAudio(ctx, payload)
+		if err != nil {
+			return InputPreviewObservation{}, err
+		}
+		observation := o.recordInputPreviewSnapshot(snapshot)
+		if emit != nil {
+			emit(observation)
+		}
+		return observation, nil
+	}
+
+	var (
+		lastObservation InputPreviewObservation
+		emittedAny      bool
+	)
+	snapshot, err := progressive.PushAudioProgressively(ctx, payload, func(intermediate InputPreview) {
+		observation := o.recordInputPreviewSnapshot(intermediate)
+		lastObservation = observation
+		emittedAny = true
+		if emit != nil {
+			emit(observation)
+		}
+	})
 	if err != nil {
 		return InputPreviewObservation{}, err
 	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.preview == nil {
-		return InputPreviewObservation{Preview: snapshot}, nil
+	finalObservation := o.recordInputPreviewSnapshot(snapshot)
+	if !emittedAny || shouldEmitFinalPreviewObservation(lastObservation, finalObservation) {
+		lastObservation = finalObservation
+		if emit != nil {
+			emit(finalObservation)
+		}
+		return finalObservation, nil
 	}
-	changed := snapshot.PartialText != "" && snapshot.PartialText != o.preview.lastPartialText
-	o.preview.last = snapshot
-	if changed {
-		o.preview.lastPartialText = snapshot.PartialText
-	}
-	return InputPreviewObservation{
-		Preview:        snapshot,
-		Active:         true,
-		PartialChanged: changed,
-	}, nil
+	return finalObservation, nil
 }
 
 func (o *SessionOrchestrator) PollInputPreview(now time.Time) InputPreviewObservation {
@@ -257,27 +281,7 @@ func (o *SessionOrchestrator) PollInputPreview(now time.Time) InputPreviewObserv
 	}
 
 	snapshot := preview.session.Poll(now)
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.preview == nil {
-		return InputPreviewObservation{Preview: snapshot}
-	}
-	changed := snapshot.PartialText != "" && snapshot.PartialText != o.preview.lastPartialText
-	if changed {
-		o.preview.lastPartialText = snapshot.PartialText
-	}
-	commitNew := snapshot.CommitSuggested && !o.preview.lastCommitLogged
-	if commitNew {
-		o.preview.lastCommitLogged = true
-	}
-	o.preview.last = snapshot
-	return InputPreviewObservation{
-		Preview:         snapshot,
-		Active:          true,
-		PartialChanged:  changed,
-		CommitSuggested: commitNew,
-	}
+	return o.recordInputPreviewSnapshot(snapshot)
 }
 
 func (o *SessionOrchestrator) ClearInputPreview() {
@@ -308,6 +312,40 @@ func (o *SessionOrchestrator) FinalizeInputPreview(ctx context.Context) (Transcr
 		err = closeErr
 	}
 	return result, true, err
+}
+
+func (o *SessionOrchestrator) recordInputPreviewSnapshot(snapshot InputPreview) InputPreviewObservation {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.preview == nil {
+		return InputPreviewObservation{Preview: snapshot}
+	}
+	// 这里把“文本是否变化”和“commit 是否首次出现”统一收口，避免 gateway 在多处
+	// 重复维护 preview 去重状态。
+	changed := snapshot.PartialText != "" && snapshot.PartialText != o.preview.lastPartialText
+	if changed {
+		o.preview.lastPartialText = snapshot.PartialText
+	}
+	commitNew := snapshot.CommitSuggested && !o.preview.lastCommitLogged
+	if commitNew {
+		o.preview.lastCommitLogged = true
+	}
+	o.preview.last = snapshot
+	return InputPreviewObservation{
+		Preview:         snapshot,
+		Active:          true,
+		PartialChanged:  changed,
+		CommitSuggested: commitNew,
+	}
+}
+
+func shouldEmitFinalPreviewObservation(previous, current InputPreviewObservation) bool {
+	return previous.Preview.PartialText != current.Preview.PartialText ||
+		previous.Preview.StablePrefix != current.Preview.StablePrefix ||
+		previous.Preview.EndpointReason != current.Preview.EndpointReason ||
+		previous.Preview.AudioBytes != current.Preview.AudioBytes ||
+		previous.Preview.SpeechStarted != current.Preview.SpeechStarted ||
+		previous.CommitSuggested != current.CommitSuggested
 }
 
 func (o *SessionOrchestrator) PreviewReadDeadline(now time.Time) time.Time {

@@ -13,6 +13,8 @@ const (
 	defaultTurnDetectorHintSilenceMs    = 160
 	defaultTurnDetectorAcceptLeadMs     = 120
 	defaultTurnDetectorLexicalMode      = "conservative"
+	defaultPrewarmStableForMs           = 120
+	defaultDraftStableForMs             = 200
 	turnDetectorLexicalModeOff          = "off"
 	turnDetectorLexicalModeConservative = "conservative"
 	defaultServerEndpointReason         = "server_silence_timeout"
@@ -39,6 +41,7 @@ type SilenceTurnDetector struct {
 	speechStarted      bool
 	latestPartial      string
 	stablePrefix       string
+	stablePrefixAt     time.Time
 	latestEndpointHint string
 	commitSuggested    bool
 	commitReason       string
@@ -54,6 +57,7 @@ type turnArbitrationInput struct {
 	audioMs           int
 	silence           time.Duration
 	requiredSilence   time.Duration
+	stableFor         time.Duration
 	endpointReason    string
 	utteranceComplete bool
 }
@@ -87,13 +91,21 @@ func (d *SilenceTurnDetector) ObserveAudio(now time.Time, audioBytes int) {
 	d.speechStarted = true
 }
 
-func (d *SilenceTurnDetector) ObserveTranscriptionDelta(_ time.Time, delta TranscriptionDelta) {
+func (d *SilenceTurnDetector) ObserveTranscriptionDelta(now time.Time, delta TranscriptionDelta) {
 	switch delta.Kind {
 	case TranscriptionDeltaKindSpeechStart:
 		d.speechStarted = true
 	case TranscriptionDeltaKindPartial, TranscriptionDeltaKindFinal:
 		if text := delta.Text; text != "" {
-			d.stablePrefix = updateStablePrefix(d.latestPartial, d.stablePrefix, text, delta.Kind == TranscriptionDeltaKindFinal)
+			previousStable := strings.TrimSpace(d.stablePrefix)
+			nextStable := updateStablePrefix(d.latestPartial, d.stablePrefix, text, delta.Kind == TranscriptionDeltaKindFinal)
+			trimmedStable := strings.TrimSpace(nextStable)
+			if trimmedStable == "" {
+				d.stablePrefixAt = time.Time{}
+			} else if trimmedStable != previousStable || d.stablePrefixAt.IsZero() {
+				d.stablePrefixAt = now
+			}
+			d.stablePrefix = nextStable
 			d.latestPartial = text
 		}
 		d.latestEndpointHint = strings.TrimSpace(delta.EndpointReason)
@@ -108,6 +120,7 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 	audioMs := d.audioDurationMs()
 	completeness := previewUtteranceCompleteness(stablePrefix, partialText)
 	utteranceComplete := completeness.Complete
+	stableFor := d.stablePrefixDuration(now)
 	preview := InputPreview{
 		PartialText:       d.latestPartial,
 		StablePrefix:      d.stablePrefix,
@@ -132,6 +145,7 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 		audioMs:           audioMs,
 		silence:           now.Sub(d.lastAudioAt),
 		requiredSilence:   requiredSilence,
+		stableFor:         stableFor,
 		endpointReason:    strings.TrimSpace(endpointReason),
 		utteranceComplete: utteranceComplete,
 	})
@@ -180,6 +194,7 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		Stage:             TurnArbitrationStagePreviewOnly,
 		Reason:            strings.TrimSpace(input.endpointReason),
 		Stability:         stability,
+		StableForMs:       durationMs(input.stableFor),
 		AudioMs:           input.audioMs,
 		SilenceMs:         durationMs(input.silence),
 		RequiredSilenceMs: durationMs(input.requiredSilence),
@@ -189,12 +204,22 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		return arbitration
 	}
 
+	// 这里把早处理门槛拆成三层：
+	// 1) 成熟 stable prefix 只允许低风险 prewarm
+	// 2) live partial 自身已完整时，才允许 draft 级前推
+	// 3) 真正 accept 仍然要再叠加静音/时长等收尾条件
 	stablePrefix := strings.TrimSpace(input.stablePrefix)
-	if stablePrefix != "" && stability >= defaultPrewarmStableRatio {
+	stablePrefixComplete := analyzeUtteranceCompleteness(stablePrefix).Complete
+	if stablePrefix != "" &&
+		stablePrefixComplete &&
+		stability >= defaultPrewarmStableRatio &&
+		input.stableFor >= time.Duration(defaultPrewarmStableForMs)*time.Millisecond {
 		arbitration.Stage = TurnArbitrationStagePrewarmAllowed
-		arbitration.PrewarmAllowed = input.utteranceComplete
+		arbitration.PrewarmAllowed = true
 	}
-	if input.utteranceComplete && stability >= defaultDraftStableRatio {
+	if input.utteranceComplete &&
+		stability >= defaultDraftStableRatio &&
+		input.stableFor >= time.Duration(defaultDraftStableForMs)*time.Millisecond {
 		arbitration.Stage = TurnArbitrationStageDraftAllowed
 		arbitration.PrewarmAllowed = true
 		arbitration.DraftAllowed = true
@@ -219,8 +244,13 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		return arbitration
 	}
 
+	// 一旦 live partial 自身已经像一句完整话，就允许更激进的可撤销前推；
+	// 更细的稳定前缀驻留时间只影响“未完整 utterance 时能否先做低风险 prewarm”。
 	arbitration.PrewarmAllowed = true
 	arbitration.DraftAllowed = true
+	if arbitration.Stage == TurnArbitrationStagePreviewOnly {
+		arbitration.Stage = TurnArbitrationStageDraftAllowed
+	}
 	if input.audioMs >= a.cfg.MinAudioMs && input.requiredSilence > 0 && input.silence+candidateLead >= input.requiredSilence {
 		arbitration.Stage = TurnArbitrationStageAcceptCandidate
 		arbitration.AcceptCandidate = true
@@ -247,6 +277,14 @@ func updateStablePrefix(previousPartial, previousStable, nextPartial string, fin
 		return stable
 	}
 	if prev == next {
+		// 对连续重复的 incomplete partial，不要把“然后 / 不对”这类尾巴直接并入
+		// stable prefix；保留前面那段已完整的安全前缀，更适合做低风险 prewarm。
+		if stable != "" &&
+			strings.HasPrefix(next, stable) &&
+			analyzeUtteranceCompleteness(stable).Complete &&
+			!analyzeUtteranceCompleteness(next).Complete {
+			return stable
+		}
 		return next
 	}
 	common := strings.TrimSpace(longestCommonPrefix(prev, next))
@@ -301,6 +339,16 @@ func durationMs(value time.Duration) int {
 
 func (d *SilenceTurnDetector) audioDurationMs() int {
 	return pcm16AudioDurationMs(d.audioBytes, d.sampleRateHz, d.channels)
+}
+
+func (d *SilenceTurnDetector) stablePrefixDuration(now time.Time) time.Duration {
+	if strings.TrimSpace(d.stablePrefix) == "" || d.stablePrefixAt.IsZero() {
+		return 0
+	}
+	if now.Before(d.stablePrefixAt) {
+		return 0
+	}
+	return now.Sub(d.stablePrefixAt)
 }
 
 func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string) {

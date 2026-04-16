@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -391,18 +392,30 @@ type asrInputPreviewSession struct {
 }
 
 func (s *asrInputPreviewSession) PushAudio(ctx context.Context, chunk []byte) (InputPreview, error) {
-	if s.detector != nil {
-		s.detector.ObserveAudio(time.Now(), len(chunk))
-	}
-	if err := s.stream.PushAudio(ctx, chunk); err != nil {
-		return InputPreview{}, err
-	}
-	if s.detector == nil {
+	return s.PushAudioProgressively(ctx, chunk, nil)
+}
+
+func (s *asrInputPreviewSession) PushAudioProgressively(ctx context.Context, chunk []byte, emit func(InputPreview)) (InputPreview, error) {
+	if s == nil {
 		return InputPreview{}, nil
 	}
-	snapshot := s.detector.Snapshot(time.Now())
-	s.maybePrewarm(snapshot)
-	return snapshot, nil
+	chunks := splitPCMForStreaming(chunk, s.previewRequest.SampleRateHz, s.previewRequest.Channels, defaultASRStreamingChunkMs)
+	if len(chunks) == 0 {
+		return InputPreview{}, nil
+	}
+
+	var last InputPreview
+	for _, piece := range chunks {
+		snapshot, err := s.pushPreviewChunk(ctx, piece)
+		if err != nil {
+			return InputPreview{}, err
+		}
+		last = snapshot
+		if emit != nil {
+			emit(snapshot)
+		}
+	}
+	return last, nil
 }
 
 func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
@@ -431,6 +444,23 @@ func (s *asrInputPreviewSession) Close() error {
 	return s.stream.Close()
 }
 
+// pushPreviewChunk 保持“入口大帧 -> preview 小步推进”这件事仍由 voice runtime
+// 负责，这样网关既能更早拿到 partial，又不会反过来接管 ASR 的分块策略。
+func (s *asrInputPreviewSession) pushPreviewChunk(ctx context.Context, chunk []byte) (InputPreview, error) {
+	if s.detector != nil {
+		s.detector.ObserveAudio(time.Now(), len(chunk))
+	}
+	if err := s.stream.PushAudio(ctx, chunk); err != nil {
+		return InputPreview{}, err
+	}
+	if s.detector == nil {
+		return InputPreview{}, nil
+	}
+	snapshot := s.detector.Snapshot(time.Now())
+	s.maybePrewarm(snapshot)
+	return snapshot, nil
+}
+
 func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 	if s == nil || s.prewarmer == nil {
 		return
@@ -442,13 +472,15 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 	if candidate == "" && snapshot.CommitSuggested && snapshot.UtteranceComplete {
 		candidate = strings.TrimSpace(snapshot.PartialText)
 	}
-	if candidate == "" || candidate == s.lastPrewarmText || !snapshot.UtteranceComplete {
+	if candidate == "" || candidate == s.lastPrewarmText {
 		return
 	}
 	if utf8.RuneCountInString(candidate) < s.minPrewarmRunes {
 		return
 	}
 	s.lastPrewarmText = candidate
+	// 这里允许在“stable prefix 已成熟、但整句还没最终 complete”时先做轻量预热；
+	// 真正复用仍然要求 accepted text 精确匹配，因此这条前推链路是可撤销的。
 	input := agent.TurnInput{
 		SessionID:  s.previewRequest.SessionID,
 		DeviceID:   s.previewRequest.DeviceID,
@@ -458,7 +490,13 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 			"voice.preview.prewarm":            "true",
 			"voice.preview.partial_text":       strings.TrimSpace(snapshot.PartialText),
 			"voice.preview.stable_prefix":      candidate,
-			"voice.preview.utterance_complete": "true",
+			"voice.preview.utterance_complete": strconv.FormatBool(snapshot.UtteranceComplete),
+			"voice.preview.turn_stage":         string(snapshot.Arbitration.Stage),
+			"voice.preview.stable_for_ms":      strconv.Itoa(snapshot.Arbitration.StableForMs),
+			"voice.preview.stability_percent":  strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
+			"voice.preview.commit_suggested":   strconv.FormatBool(snapshot.CommitSuggested),
+			"voice.preview.endpoint_candidate": strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
+			"voice.preview.endpoint_reason":    strings.TrimSpace(snapshot.EndpointReason),
 		},
 	}
 	go func() {

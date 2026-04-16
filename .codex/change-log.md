@@ -2,6 +2,13 @@
 
 ## 2026-04-17
 
+- Deepened the preview fast path and prewarm stability on the shared voice-runtime path:
+  - `internal/voice` now supports `ProgressiveInputPreviewSession`, so one ingress audio frame may emit multiple preview observations without teaching websocket adapters how to chunk ASR audio
+  - `ASRResponder` now splits larger PCM ingress payloads into smaller preview pushes, allowing earlier `speech_start` / `partial` / endpoint-candidate visibility within the same frame
+  - mature complete `stable_prefix` may now trigger low-risk prewarm before the live partial is fully complete, while repeated incomplete tails remain excluded from the safe prefix
+  - native realtime default `max_frame_bytes` is now `16384`, which keeps moderately batched PCM frames eligible for the progressive preview path instead of failing at the gateway edge
+  - added and refreshed regression coverage in `internal/voice/*_test.go` and `internal/gateway/realtime_ws_test.go`
+
 - Reviewed the recent voice-runtime slices against the latest architecture and research notes, then closed three concrete regressions plus one additional experience gap:
   - `internal/voice.SessionOrchestrator` now preserves a later exact playback boundary over an earlier `duck_only/backchannel` soft snapshot when both represent a non-full prefix, so `voice.previous.*` resume context no longer regresses to an older softer estimate
   - native realtime audio-stream completion no longer treats wrapper-added `NextSegment()` methods as proof that a plain stream is segmented; `resolveSegmentedAudioStream(...)` now filters those false positives, which fixes the EOF spin that could keep a session stuck in `speaking` after returned `AudioStream` playback finished
