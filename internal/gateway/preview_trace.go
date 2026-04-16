@@ -11,16 +11,17 @@ import (
 )
 
 type inputPreviewTrace struct {
-	PreviewID            string
-	SessionID            string
-	StartedAt            time.Time
-	SpeechStartedAt      time.Time
-	FirstPartialAt       time.Time
-	EndpointCandidateAt  time.Time
-	CommitSuggestedAt    time.Time
-	AudioBytes           int
-	LastPartialText      string
-	EndpointReason       string
+	PreviewID           string
+	SessionID           string
+	StartedAt           time.Time
+	SpeechStartedAt     time.Time
+	FirstPartialAt      time.Time
+	EndpointCandidateAt time.Time
+	CommitSuggestedAt   time.Time
+	AudioBytes          int
+	LastPartialText     string
+	EndpointReason      string
+	TurnStage           string
 }
 
 type inputPreviewTraceState struct {
@@ -87,6 +88,9 @@ func (s *inputPreviewTraceState) ObservePreview(sessionID string, preview voice.
 
 	if endpointReason := strings.TrimSpace(preview.EndpointReason); endpointReason != "" {
 		s.current.EndpointReason = endpointReason
+	}
+	if stage := strings.TrimSpace(string(preview.Arbitration.Stage)); stage != "" {
+		s.current.TurnStage = stage
 	}
 
 	endpointCandidateObserved := false
@@ -177,6 +181,9 @@ func appendInputPreviewTraceLogAttrs(attrs []any, trace inputPreviewTrace, now t
 	}
 	if endpointReason := strings.TrimSpace(trace.EndpointReason); endpointReason != "" {
 		attrs = append(attrs, "preview_endpoint_reason", endpointReason)
+	}
+	if stage := strings.TrimSpace(trace.TurnStage); stage != "" {
+		attrs = append(attrs, "preview_turn_stage", stage)
 	}
 	if partialText := strings.TrimSpace(trace.LastPartialText); partialText != "" {
 		attrs = append(attrs, "preview_partial_text", partialText)

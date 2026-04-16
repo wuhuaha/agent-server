@@ -149,6 +149,71 @@ func TestSilenceTurnDetectorUsesProviderEndpointHintToShortenSilence(t *testing.
 	}
 }
 
+func TestSilenceTurnDetectorPromotesStableCompletePreviewBeforeAccept(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "打开客厅灯",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(220 * time.Millisecond))
+	if snapshot.CommitSuggested {
+		t.Fatal("expected preview to remain uncommitted before required silence elapses")
+	}
+	if snapshot.EndpointReason != defaultServerEndpointReason {
+		t.Fatalf("expected endpoint candidate reason %q, got %q", defaultServerEndpointReason, snapshot.EndpointReason)
+	}
+	if snapshot.Arbitration.Stage != TurnArbitrationStageAcceptCandidate {
+		t.Fatalf("expected accept candidate stage, got %q", snapshot.Arbitration.Stage)
+	}
+	if !snapshot.Arbitration.PrewarmAllowed || !snapshot.Arbitration.DraftAllowed {
+		t.Fatalf("expected stable complete preview to allow prewarm and draft, got %+v", snapshot.Arbitration)
+	}
+}
+
+func TestSilenceTurnDetectorMarksIncompletePreviewAsWaitForMore(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "帮我把",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(180 * time.Millisecond))
+	if snapshot.CommitSuggested {
+		t.Fatal("expected incomplete preview to avoid commit")
+	}
+	if snapshot.Arbitration.Stage != TurnArbitrationStageWaitForMore {
+		t.Fatalf("expected wait_for_more stage, got %q", snapshot.Arbitration.Stage)
+	}
+	if snapshot.Arbitration.PrewarmAllowed || snapshot.Arbitration.DraftAllowed || snapshot.Arbitration.AcceptCandidate {
+		t.Fatalf("expected incomplete preview to avoid downstream promotion, got %+v", snapshot.Arbitration)
+	}
+}
+
 func TestSilenceTurnDetectorUsesSileroEndpointHintToShortenSilence(t *testing.T) {
 	detector := NewSilenceTurnDetector(
 		SilenceTurnDetectorConfig{

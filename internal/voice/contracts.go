@@ -202,6 +202,32 @@ type InputPreview struct {
 	CommitSuggested   bool
 	SpeechStarted     bool
 	UtteranceComplete bool
+	Arbitration       TurnArbitration
+}
+
+type TurnArbitrationStage string
+
+const (
+	TurnArbitrationStagePreviewOnly     TurnArbitrationStage = "preview_only"
+	TurnArbitrationStagePrewarmAllowed  TurnArbitrationStage = "prewarm_allowed"
+	TurnArbitrationStageDraftAllowed    TurnArbitrationStage = "draft_allowed"
+	TurnArbitrationStageAcceptCandidate TurnArbitrationStage = "accept_candidate"
+	TurnArbitrationStageAcceptNow       TurnArbitrationStage = "accept_now"
+	TurnArbitrationStageWaitForMore     TurnArbitrationStage = "wait_for_more"
+)
+
+type TurnArbitration struct {
+	Stage             TurnArbitrationStage
+	Reason            string
+	Stability         float64
+	AudioMs           int
+	SilenceMs         int
+	RequiredSilenceMs int
+	PrewarmAllowed    bool
+	DraftAllowed      bool
+	AcceptCandidate   bool
+	AcceptNow         bool
+	EndpointHinted    bool
 }
 
 type InputPreviewSession interface {

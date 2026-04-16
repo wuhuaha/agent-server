@@ -435,6 +435,9 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 	if s == nil || s.prewarmer == nil {
 		return
 	}
+	if !snapshot.Arbitration.PrewarmAllowed {
+		return
+	}
 	candidate := strings.TrimSpace(snapshot.StablePrefix)
 	if candidate == "" && snapshot.CommitSuggested && snapshot.UtteranceComplete {
 		candidate = strings.TrimSpace(snapshot.PartialText)

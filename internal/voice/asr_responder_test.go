@@ -605,3 +605,39 @@ func TestASRResponderInputPreviewAddsLexicalHoldForIncompletePartial(t *testing.
 		t.Fatalf("unexpected endpoint reason %q", snapshot.EndpointReason)
 	}
 }
+
+func TestASRResponderInputPreviewEmitsAcceptCandidateBeforeCommit(t *testing.T) {
+	responder := NewASRResponder(
+		previewStreamingTranscriber{},
+		"auto",
+		"pcm16le",
+		16000,
+		1,
+		false,
+	).WithTurnDetection(100, 300)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_preview_candidate",
+		DeviceID:     "rtos-001",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+		Language:     "zh",
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 6400)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+	snapshot := preview.Poll(time.Now().Add(220 * time.Millisecond))
+	if snapshot.CommitSuggested {
+		t.Fatal("expected accept candidate before final commit")
+	}
+	if snapshot.EndpointReason != defaultServerEndpointReason {
+		t.Fatalf("expected endpoint candidate reason %q, got %q", defaultServerEndpointReason, snapshot.EndpointReason)
+	}
+	if got := snapshot.Arbitration.Stage; got != TurnArbitrationStageAcceptCandidate {
+		t.Fatalf("expected accept candidate stage, got %q", got)
+	}
+}

@@ -92,25 +92,31 @@ func (s *timedInputPreviewSession) Close() error {
 type fixedPartialPreviewSession struct {
 	partial    string
 	stable     string
+	endpoint   string
+	commit     bool
 	audioBytes int
 }
 
 func (s *fixedPartialPreviewSession) PushAudio(_ context.Context, chunk []byte) (voice.InputPreview, error) {
 	s.audioBytes += len(chunk)
 	return voice.InputPreview{
-		PartialText:   s.partial,
-		StablePrefix:  s.stable,
-		AudioBytes:    s.audioBytes,
-		SpeechStarted: s.audioBytes > 0,
+		PartialText:     s.partial,
+		StablePrefix:    s.stable,
+		EndpointReason:  s.endpoint,
+		AudioBytes:      s.audioBytes,
+		CommitSuggested: s.commit,
+		SpeechStarted:   s.audioBytes > 0,
 	}, nil
 }
 
 func (s *fixedPartialPreviewSession) Poll(time.Time) voice.InputPreview {
 	return voice.InputPreview{
-		PartialText:   s.partial,
-		StablePrefix:  s.stable,
-		AudioBytes:    s.audioBytes,
-		SpeechStarted: s.audioBytes > 0,
+		PartialText:     s.partial,
+		StablePrefix:    s.stable,
+		EndpointReason:  s.endpoint,
+		AudioBytes:      s.audioBytes,
+		CommitSuggested: s.commit,
+		SpeechStarted:   s.audioBytes > 0,
 	}
 }
 
@@ -1491,6 +1497,70 @@ func TestRealtimeWSEmitsNegotiatedPreviewEvents(t *testing.T) {
 	}
 
 	t.Fatalf("expected negotiated preview events, saw speech_start=%v preview=%v", sawSpeechStart, sawPreview)
+}
+
+func TestRealtimeWSEmitsPreviewEndpointCandidateBeforeAcceptedTurn(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			return voice.TurnResponse{InputText: req.Text, Text: "ok"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{
+				partial:  "打开客厅灯",
+				stable:   "打开客厅灯",
+				endpoint: "preview_tail_silence",
+			}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	_ = startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"preview_events":  true,
+	})
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	var (
+		sawEndpoint bool
+		sawAccept   bool
+	)
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		event := readNextJSONEvent(t, conn, 400*time.Millisecond)
+		switch event.Type {
+		case "input.endpoint":
+			sawEndpoint = true
+			if got := stringValue(event.Payload["reason"]); got != "preview_tail_silence" {
+				t.Fatalf("expected preview endpoint reason preview_tail_silence, got %q", got)
+			}
+		case "session.update":
+			if got := stringValue(event.Payload["accept_reason"]); got != "" {
+				sawAccept = true
+			}
+		}
+		if sawEndpoint {
+			break
+		}
+	}
+
+	if !sawEndpoint {
+		t.Fatal("expected input.endpoint before any accepted-turn signal")
+	}
+	if sawAccept {
+		t.Fatal("did not expect accepted-turn signal when preview only raised endpoint candidate")
+	}
 }
 
 func TestRealtimeWSNegotiatedPlaybackAckMetaAndClientFacts(t *testing.T) {

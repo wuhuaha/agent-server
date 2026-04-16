@@ -882,3 +882,10 @@
   - added `docs/architecture/service-side-voice-optimization-recommendations-zh-2026-04-16.md`, synthesizing current repository gaps with official OpenAI, Google, Amazon, Apple, FunASR, LiveKit, and Pipecat sources
   - added `docs/adr/0036-service-side-voice-optimization-prioritizes-turn-taking-and-reversible-early-processing.md` to record the new priority order
   - updated `docs/architecture/overview.md`, `plan.md`, and `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md` so the next service-side work stays focused on multi-signal turn-taking, acoustic-first interruption verification, clause-aware output planning, finer playback truth, and runtime-owned dynamic biasing instead of widening protocol/model surface first
+
+- Landed step 1 of the next service-side voice optimization path:
+  - `internal/voice` now derives a structured `TurnArbitration` object from preview evidence instead of exposing only `CommitSuggested`
+  - `SilenceTurnDetector` now promotes stable complete preview through explicit internal stages such as `prewarm_allowed`, `draft_allowed`, `accept_candidate`, and `accept_now`
+  - preview sessions may now surface endpoint candidates before accepted-turn commit, while accepted-turn semantics still remain on `accept_reason`
+  - preview-driven runtime prewarm now keys off arbitrator state instead of a separate duplicated heuristic
+  - added unit and gateway coverage for accept-candidate preview behavior, stable complete prewarm promotion, and incomplete wait-for-more behavior
