@@ -291,6 +291,41 @@ func buildSpeechPlannerConfig(cfg Config) voice.SpeechPlannerConfig {
 	}
 }
 
+func buildVoiceSemanticJudge(cfg Config, logger *slog.Logger) (voice.SemanticTurnJudge, time.Duration, int, time.Duration) {
+	timeout := time.Duration(cfg.Voice.LLMSemanticJudgeTimeoutMs) * time.Millisecond
+	minStableFor := time.Duration(cfg.Voice.LLMSemanticJudgeMinStableForMs) * time.Millisecond
+	if !cfg.Voice.LLMSemanticJudgeEnabled {
+		return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	}
+	switch strings.ToLower(strings.TrimSpace(effectiveLLMProvider(cfg.Agent))) {
+	case "deepseek", "deepseek_chat":
+		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) == "" {
+			logger.Warn("voice llm semantic judge requested but llm api key is empty; falling back to heuristic-only turn logic")
+			return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+		}
+		model := agent.NewDeepSeekChatModel(agent.DeepSeekChatModelConfig{
+			BaseURL:     cfg.Agent.DeepSeek.BaseURL,
+			APIKey:      cfg.Agent.DeepSeek.APIKey,
+			Model:       cfg.Agent.DeepSeek.Model,
+			Temperature: 0.1,
+			MaxTokens:   128,
+			Timeout:     timeout,
+		})
+		logger.Info(
+			"voice llm semantic judge configured",
+			"provider", "deepseek_chat",
+			"model", cfg.Agent.DeepSeek.Model,
+			"timeout_ms", cfg.Voice.LLMSemanticJudgeTimeoutMs,
+			"min_runes", cfg.Voice.LLMSemanticJudgeMinRunes,
+			"min_stable_for_ms", cfg.Voice.LLMSemanticJudgeMinStableForMs,
+		)
+		return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	default:
+		logger.Info("voice llm semantic judge disabled because no llm chat model is available", "provider", effectiveLLMProvider(cfg.Agent))
+		return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	}
+}
+
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {
 	bootstrap := voice.NewBootstrapResponder(
 		cfg.Realtime.OutputCodec,
@@ -306,6 +341,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 	case "", "bootstrap":
 		return bootstrap
 	case "funasr_http":
+		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewHTTPTranscriber(
 				cfg.Voice.ASRURL,
@@ -326,6 +362,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
+			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	case "iflytek_rtasr":
@@ -335,6 +372,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			logger.Warn("iflytek rtasr provider requested but credentials are incomplete; falling back to bootstrap responder")
 			return bootstrap
 		}
+		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewBufferedStreamingTranscriber(
 				voice.NewIflytekRTASRTranscriber(voice.IflytekRTASRConfig{
@@ -367,6 +405,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithTurnDetectionConfig(buildTurnDetectionConfig(cfg)).
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
+			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	default:

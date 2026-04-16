@@ -2,6 +2,13 @@
 
 ## 2026-04-17
 
+- Landed the first LLM-assisted turn-taking and interruption slice without moving provider logic into adapters:
+  - added `internal/voice.SemanticTurnJudge` plus `LLMSemanticTurnJudge`, which asks a provider-neutral `agent.ChatModel` for a structured semantic judgement over mature preview candidates
+  - preview sessions may now asynchronously merge semantic completeness, correction, backchannel, and takeover signals back into `InputPreview.Arbitration`
+  - `EvaluateBargeIn(...)` now consumes those semantic hints to avoid false hard interrupts on short acknowledgements and to escalate earlier when semantic takeover is explicit enough
+  - wired new voice config knobs for semantic-judge enablement, timeout, and candidate maturity thresholds
+  - documented the architectural rule that LLM semantic judging stays advisory over the realtime heuristic safety floor
+
 - Deepened the preview fast path and prewarm stability on the shared voice-runtime path:
   - `internal/voice` now supports `ProgressiveInputPreviewSession`, so one ingress audio frame may emit multiple preview observations without teaching websocket adapters how to chunk ASR audio
   - `ASRResponder` now splits larger PCM ingress payloads into smaller preview pushes, allowing earlier `speech_start` / `partial` / endpoint-candidate visibility within the same frame

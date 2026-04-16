@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"agent-server/internal/agent"
 	"agent-server/internal/voice"
@@ -87,7 +88,19 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			SpeechPlannerEnabled:           true,
 			SpeechPlannerMinChunkRunes:     7,
 			SpeechPlannerTargetChunkRunes:  20,
+			LLMSemanticJudgeEnabled:        true,
+			LLMSemanticJudgeTimeoutMs:      180,
+			LLMSemanticJudgeMinRunes:       3,
+			LLMSemanticJudgeMinStableForMs: 140,
 			EmitPlaceholderAudio:           true,
+		},
+		Agent: AgentConfig{
+			LLMProvider: "deepseek_chat",
+			DeepSeek: DeepSeekChatConfig{
+				BaseURL: "http://127.0.0.1:8012/v1",
+				APIKey:  "local-llm",
+				Model:   "Qwen/Qwen3-4B-Instruct-2507",
+			},
 		},
 	})
 
@@ -119,6 +132,18 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.SpeechPlannerTargetChunkRunes != 20 {
 		t.Fatalf("expected speech planner target chunk runes 20, got %d", asrResponder.SpeechPlannerTargetChunkRunes)
+	}
+	if asrResponder.SemanticJudge == nil {
+		t.Fatal("expected llm semantic judge to be configured")
+	}
+	if asrResponder.SemanticJudgeTimeout != 180*time.Millisecond {
+		t.Fatalf("expected semantic judge timeout 180ms, got %s", asrResponder.SemanticJudgeTimeout)
+	}
+	if asrResponder.SemanticJudgeMinRunes != 3 {
+		t.Fatalf("expected semantic judge min runes 3, got %d", asrResponder.SemanticJudgeMinRunes)
+	}
+	if asrResponder.SemanticJudgeMinStableFor != 140*time.Millisecond {
+		t.Fatalf("expected semantic judge min stable_for 140ms, got %s", asrResponder.SemanticJudgeMinStableFor)
 	}
 }
 

@@ -135,6 +135,48 @@
 - 当前更合适的后续方向是继续压 `preview -> early processing -> first audio` 之间的链路时延，而不是再把 chunking 逻辑散落到各个 adapter
 
 
+## Round 021｜2026-04-17｜LLM 进入 turn-taking / interruption 语义裁判位
+
+### 用户诉求
+
+- 明确追问：当前“语句是否完成”“是否强打断”等判断到底是规则还是 `LLM + prompt`
+- 希望项目尽可能利用 LLM 能力进行智能化提升，而不是继续主要依赖规则
+- 要求先深度研究，再结合当前项目输出落地方案，并按方案开发
+
+### 现状复核结论
+
+- 当前项目虽然已经启用本地 LLM 作为主回复生成路径，但：
+  - turn completion 仍主要是 `turn_detector.go` 中的规则/阈值/尾词判断
+  - interruption 仍主要是 `barge_in.go` 中的词表、阈值、score heuristic
+- 也就是说，LLM 此前主要负责“accept 之后怎么回答”，还没有真正参与“何时认为这句话够完整”“这次 speaking-time intrusion 是 backchannel 还是 takeover”
+
+### 本轮研究后的关键判断
+
+- 不适合把 realtime turn-taking / interruption 直接改成“纯 LLM 判定”
+- 更合理的目标是：
+  - 声学/时延/静音规则保留为安全底座
+  - LLM 作为 `semantic judge` 输出结构化小结论
+  - 这些小结论用于提升 `draft_allowed`、`prewarm`、`backchannel`、`hard_interrupt` 的语义质量
+- 这与 OpenAI `semantic_vad`、Google endpointing 研究、Amazon contextual endpointing、Apple 受约束 LLM contextualization、以及 FunASR 的 2-pass 思路都更一致
+
+### 本轮落地设计
+
+- 新增 `internal/voice.SemanticTurnJudge`
+- 默认实现 `LLMSemanticTurnJudge` 通过 provider-neutral 的 `agent.ChatModel` 输出结构化 JSON
+- Preview session 在成熟 candidate 上异步发起语义判定，并把结果 merge 回 `InputPreview.Arbitration`
+- LLM judgement 只做 advisory promotion / suppression：
+  - 可把 preview 提升到 `draft_allowed`
+  - 可把 correction 拉回保守状态
+  - 可把 speaking-time `明白/好的` 这类误触发 hard interrupt 的句子拉回 `backchannel`
+  - 可把语义 takeover 更早升级为 `hard_interrupt`
+- 但模型结果不会单独制造最终 accept
+
+### 本轮专题沉淀
+
+- `docs/architecture/llm-semantic-turn-taking-and-interruption-zh-2026-04-17.md`
+- `docs/adr/0041-llm-semantic-judging-stays-advisory-over-realtime-heuristics.md`
+
+
 ## Round 003｜2026-04-16｜第一轮正式研究讨论
 
 ### 用户诉求

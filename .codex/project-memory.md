@@ -414,3 +414,13 @@
   - draft / accept 仍然要建立在更强的 live partial 完整度与静音收尾证据之上
   - repeated incomplete tail 不应污染安全 `stable_prefix`
 - native realtime 默认 `max_frame_bytes` 现为 `16384`，目的是容纳适度 batched 的 PCM ingress frame，让其先进入 shared voice-runtime 的 progressive preview 路径，而不是在 gateway 边缘被过早拒绝。
+- 当前 turn-taking / interruption 的 LLM 接入边界已经明确：
+  - LLM 不直接替代 realtime 的声学/静音/时延安全底座
+  - `internal/voice` 现在可以通过 `SemanticTurnJudge` 向 provider-neutral 的 `agent.ChatModel` 请求小而结构化的语义裁决
+  - 这些裁决只做 advisory promotion / suppression，例如 `semantic complete`、`correction`、`backchannel`、`takeover`
+  - adapter 仍然不能直接调用模型，也不能自行根据本地状态推断 `hard_interrupt`
+- 当前第一版 LLM semantic judge 的落点是：
+  - preview session 内异步判定成熟 candidate
+  - merge 回 `InputPreview.Arbitration`
+  - 改善 `draft_allowed` 和 barge-in policy
+  - 不直接单独制造最终 accept

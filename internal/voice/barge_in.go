@@ -47,25 +47,29 @@ type BargeInConfig struct {
 }
 
 type BargeInDecision struct {
-	Accepted          bool
-	Policy            InterruptionPolicy
-	Reason            string
-	AudioMs           int
-	LexicallyComplete bool
-	MinAudioMs        int
-	HoldAudioMs       int
-	AcousticReady     bool
-	SemanticReady     bool
-	AcceptCandidate   bool
-	AcceptNow         bool
-	EndpointHinted    bool
-	BackchannelLikely bool
-	TakeoverLexicon   bool
-	TurnStage         TurnArbitrationStage
-	Stability         float64
-	StablePrefixRunes int
-	IntrusionScore    float64
-	TakeoverScore     float64
+	Accepted           bool
+	Policy             InterruptionPolicy
+	Reason             string
+	AudioMs            int
+	LexicallyComplete  bool
+	MinAudioMs         int
+	HoldAudioMs        int
+	AcousticReady      bool
+	SemanticReady      bool
+	SemanticComplete   bool
+	SemanticIntent     string
+	SemanticConfidence float64
+	SemanticTakeover   bool
+	AcceptCandidate    bool
+	AcceptNow          bool
+	EndpointHinted     bool
+	BackchannelLikely  bool
+	TakeoverLexicon    bool
+	TurnStage          TurnArbitrationStage
+	Stability          float64
+	StablePrefixRunes  int
+	IntrusionScore     float64
+	TakeoverScore      float64
 }
 
 func NormalizeBargeInConfig(cfg BargeInConfig) BargeInConfig {
@@ -105,7 +109,15 @@ func EvaluateBargeIn(preview InputPreview, sampleRateHz, channels int, cfg Barge
 	decision.EndpointHinted = preview.Arbitration.EndpointHinted || strings.TrimSpace(preview.EndpointReason) != ""
 	decision.AcceptCandidate = preview.Arbitration.AcceptCandidate || decision.TurnStage == TurnArbitrationStageAcceptCandidate || decision.TurnStage == TurnArbitrationStageAcceptNow || decision.EndpointHinted
 	decision.AcceptNow = preview.Arbitration.AcceptNow || preview.CommitSuggested || decision.TurnStage == TurnArbitrationStageAcceptNow
+	decision.SemanticReady = preview.Arbitration.SemanticReady
+	decision.SemanticComplete = preview.Arbitration.SemanticComplete
+	decision.SemanticIntent = normalizeSemanticIntent(preview.Arbitration.SemanticIntent)
+	decision.SemanticConfidence = clampUnit(preview.Arbitration.SemanticConfidence)
+	decision.SemanticTakeover = semanticIntentIsTakeover(decision.SemanticIntent)
 	decision.BackchannelLikely = looksLikeBackchannel(bestText)
+	if decision.SemanticIntent == SemanticIntentBackchannel && decision.SemanticConfidence >= semanticJudgeMediumConfidence {
+		decision.BackchannelLikely = true
+	}
 	decision.TakeoverLexicon = looksLikeTakeoverLexicon(bestText)
 	decision.LexicallyComplete = looksLexicallyComplete(bestText)
 	decision.AcousticReady = audioMs >= bargeInAcousticGateMinAudioMs(cfg.MinAudioMs)
@@ -113,16 +125,28 @@ func EvaluateBargeIn(preview InputPreview, sampleRateHz, channels int, cfg Barge
 	decision.IntrusionScore = bargeInIntrusionScore(audioMs, cfg, decision, partialText, stablePrefix)
 	decision.TakeoverScore = bargeInTakeoverScore(decision)
 
+	if decision.SemanticIntent == SemanticIntentBackchannel && decision.SemanticConfidence >= semanticJudgeHighConfidence &&
+		!decision.AcceptCandidate && !decision.AcceptNow && !decision.TakeoverLexicon {
+		decision.Policy = InterruptionPolicyBackchannel
+		decision.Reason = "semantic_backchannel"
+		return decision
+	}
+	if decision.AcousticReady && decision.SemanticTakeover && decision.SemanticConfidence >= semanticJudgeHighConfidence {
+		decision.Policy = InterruptionPolicyHardInterrupt
+		decision.Accepted = true
+		decision.Reason = "accepted_semantic_takeover"
+		return decision
+	}
 	if decision.BackchannelLikely && !decision.AcceptCandidate && !decision.AcceptNow && !decision.TakeoverLexicon &&
 		audioMs >= bargeInBackchannelMinAudioMs(cfg.MinAudioMs) {
 		decision.Policy = InterruptionPolicyBackchannel
 		decision.Reason = "backchannel_short_ack"
 		return decision
 	}
-	if audioMs >= cfg.MinAudioMs && !decision.BackchannelLikely && (decision.LexicallyComplete || decision.TakeoverLexicon) {
+	if audioMs >= cfg.MinAudioMs && !decision.BackchannelLikely && (decision.LexicallyComplete || decision.TakeoverLexicon || decision.SemanticTakeover) {
 		decision.Policy = InterruptionPolicyHardInterrupt
 		decision.Accepted = true
-		if decision.TakeoverLexicon {
+		if decision.TakeoverLexicon || decision.SemanticTakeover {
 			decision.Reason = "accepted_takeover_lexicon"
 		} else {
 			decision.Reason = "accepted_complete_preview"
@@ -130,14 +154,14 @@ func EvaluateBargeIn(preview InputPreview, sampleRateHz, channels int, cfg Barge
 		return decision
 	}
 
-	if decision.AcceptNow && (decision.LexicallyComplete || decision.SemanticReady || decision.TakeoverLexicon) {
+	if decision.AcceptNow && (decision.LexicallyComplete || decision.SemanticReady || decision.TakeoverLexicon || decision.SemanticTakeover) {
 		decision.Policy = InterruptionPolicyHardInterrupt
 		decision.Accepted = true
 		decision.Reason = bargeInAcceptReason(decision)
 		return decision
 	}
 	if decision.AcceptCandidate && decision.SemanticReady && !decision.BackchannelLikely &&
-		(decision.LexicallyComplete || decision.TakeoverLexicon || decision.TakeoverScore >= 0.68) {
+		(decision.LexicallyComplete || decision.TakeoverLexicon || decision.SemanticTakeover || decision.TakeoverScore >= 0.68) {
 		decision.Policy = InterruptionPolicyHardInterrupt
 		decision.Accepted = true
 		decision.Reason = "accepted_accept_candidate"
@@ -324,10 +348,13 @@ func bargeInSemanticReady(preview InputPreview, bestText, stablePrefix string, d
 	if strings.TrimSpace(bestText) == "" {
 		return false
 	}
+	if preview.Arbitration.SemanticReady && preview.Arbitration.SemanticConfidence >= semanticJudgeMediumConfidence {
+		return true
+	}
 	if preview.Arbitration.DraftAllowed || preview.Arbitration.AcceptCandidate || preview.Arbitration.AcceptNow {
 		return true
 	}
-	if preview.UtteranceComplete || decision.LexicallyComplete || decision.TakeoverLexicon {
+	if preview.UtteranceComplete || decision.LexicallyComplete || decision.TakeoverLexicon || decision.SemanticTakeover {
 		return true
 	}
 	if stablePrefix != "" && (decision.Stability >= defaultPrewarmStableRatio || decision.StablePrefixRunes >= 4) {
@@ -359,6 +386,9 @@ func bargeInIntrusionScore(audioMs int, cfg BargeInConfig, decision BargeInDecis
 	if decision.StablePrefixRunes >= 4 {
 		score += 0.05
 	}
+	if decision.SemanticConfidence >= semanticJudgeMediumConfidence {
+		score += 0.1
+	}
 	if decision.BackchannelLikely {
 		score -= 0.15
 	}
@@ -382,6 +412,12 @@ func bargeInTakeoverScore(decision BargeInDecision) float64 {
 	if decision.TakeoverLexicon {
 		score += 0.2
 	}
+	if decision.SemanticTakeover {
+		score += 0.25
+	}
+	if decision.SemanticComplete {
+		score += 0.1
+	}
 	if decision.EndpointHinted {
 		score += 0.05
 	}
@@ -396,7 +432,7 @@ func bargeInTakeoverScore(decision BargeInDecision) float64 {
 
 func bargeInAcceptReason(decision BargeInDecision) string {
 	switch {
-	case decision.TakeoverLexicon:
+	case decision.TakeoverLexicon || decision.SemanticTakeover:
 		return "accepted_takeover_lexicon"
 	case decision.AcceptNow:
 		return "accepted_accept_now"
@@ -404,6 +440,15 @@ func bargeInAcceptReason(decision BargeInDecision) string {
 		return "accepted_complete_preview"
 	default:
 		return "accepted_semantic_confirmation"
+	}
+}
+
+func semanticIntentIsTakeover(intent string) bool {
+	switch normalizeSemanticIntent(intent) {
+	case SemanticIntentTakeover, SemanticIntentCorrection, SemanticIntentRequest, SemanticIntentQuestion, SemanticIntentContinue:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -720,3 +720,9 @@
 - Problem: the new preview-fast-path tests and the intended runtime behavior both assume one ingress PCM frame may still be moderately batched and then progressively split inside `internal/voice`. With the old realtime default `max_frame_bytes=4096`, larger but still reasonable PCM batches could be rejected at the websocket edge before the progressive preview path ever ran.
 - Resolution: raised the realtime default frame ceiling to `16384`, kept preview chunking inside the shared voice runtime through `ProgressiveInputPreviewSession`, and added regression coverage for multiple preview observations from one ingress frame plus mature-stable-prefix prewarm behavior.
 - Status: resolved.
+
+### Turn Completion And Strong Interruption Were Still Mostly Rule-Driven Despite A Local LLM Path
+
+- Problem: the service already had a local LLM for reply generation, but the crucial spoken-interaction policies — utterance completeness, backchannel-vs-takeover, and interruption escalation — still relied almost entirely on lexical heuristics, token lists, and threshold scores. That left the project short of the intended "intelligent" realtime behavior.
+- Resolution: introduced a runtime-owned `SemanticTurnJudge` inside `internal/voice`, backed by the provider-neutral `agent.ChatModel` interface. Mature preview candidates may now be judged asynchronously for structured semantic signals such as `complete`, `correction`, `backchannel`, and `takeover`, and those signals now advise preview promotion and barge-in policy while the heuristic acoustic/timing floor remains in place.
+- Status: resolved for the first advisory-LMM slice; later work should add slot completeness, richer context, and disagreement evals.

@@ -18,6 +18,10 @@ type VoiceConfig struct {
 	ServerEndpointHintSilenceMs    int
 	BargeInMinAudioMs              int
 	BargeInHoldAudioMs             int
+	LLMSemanticJudgeEnabled        bool
+	LLMSemanticJudgeTimeoutMs      int
+	LLMSemanticJudgeMinRunes       int
+	LLMSemanticJudgeMinStableForMs int
 	SpeechPlannerEnabled           bool
 	SpeechPlannerMinChunkRunes     int
 	SpeechPlannerTargetChunkRunes  int
@@ -54,6 +58,10 @@ func loadVoiceConfig() VoiceConfig {
 		ServerEndpointHintSilenceMs:    getenvInt("AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS", 160),
 		BargeInMinAudioMs:              getenvInt("AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS", 120),
 		BargeInHoldAudioMs:             getenvInt("AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS", 240),
+		LLMSemanticJudgeEnabled:        getenvBool("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ENABLED", true),
+		LLMSemanticJudgeTimeoutMs:      getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_TIMEOUT_MS", 220),
+		LLMSemanticJudgeMinRunes:       getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_RUNES", 2),
+		LLMSemanticJudgeMinStableForMs: getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_STABLE_FOR_MS", 120),
 		SpeechPlannerEnabled:           getenvBool("AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED", true),
 		SpeechPlannerMinChunkRunes:     getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES", 6),
 		SpeechPlannerTargetChunkRunes:  getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES", 24),
@@ -108,6 +116,15 @@ func applyVoiceDefaults(cfg *Config) {
 	}
 	if cfg.Voice.BargeInHoldAudioMs <= 0 {
 		cfg.Voice.BargeInHoldAudioMs = 240
+	}
+	if cfg.Voice.LLMSemanticJudgeTimeoutMs <= 0 {
+		cfg.Voice.LLMSemanticJudgeTimeoutMs = 220
+	}
+	if cfg.Voice.LLMSemanticJudgeMinRunes <= 0 {
+		cfg.Voice.LLMSemanticJudgeMinRunes = 2
+	}
+	if cfg.Voice.LLMSemanticJudgeMinStableForMs <= 0 {
+		cfg.Voice.LLMSemanticJudgeMinStableForMs = 120
 	}
 	if cfg.Voice.SpeechPlannerMinChunkRunes <= 0 {
 		cfg.Voice.SpeechPlannerMinChunkRunes = 6

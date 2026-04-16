@@ -21,6 +21,7 @@ const (
 type ASRResponder struct {
 	Transcriber                   Transcriber
 	Executor                      agent.TurnExecutor
+	SemanticJudge                 SemanticTurnJudge
 	Synthesizer                   Synthesizer
 	MemoryStore                   agent.MemoryStore
 	Language                      string
@@ -29,6 +30,9 @@ type ASRResponder struct {
 	TurnDetectionLexicalMode      string
 	TurnDetectionIncompleteHoldMs int
 	TurnDetectionHintSilenceMs    int
+	SemanticJudgeTimeout          time.Duration
+	SemanticJudgeMinRunes         int
+	SemanticJudgeMinStableFor     time.Duration
 	OutputCodec                   string
 	OutputSampleRate              int
 	OutputChannels                int
@@ -67,11 +71,15 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		return nil, err
 	}
 	return &asrInputPreviewSession{
-		stream:          stream,
-		detector:        &detector,
-		prewarmer:       previewTurnPrewarmer(r.Executor),
-		previewRequest:  req,
-		minPrewarmRunes: defaultPreviewPrewarmMinRunes,
+		stream:               stream,
+		detector:             &detector,
+		prewarmer:            previewTurnPrewarmer(r.Executor),
+		semanticJudge:        r.SemanticJudge,
+		semanticTimeout:      firstPositiveDuration(r.SemanticJudgeTimeout, defaultSemanticJudgeTimeout),
+		semanticMinRunes:     maxInt(r.SemanticJudgeMinRunes, defaultSemanticJudgeMinRunes),
+		semanticMinStableFor: firstPositiveDuration(r.SemanticJudgeMinStableFor, defaultSemanticJudgeMinStableFor),
+		previewRequest:       req,
+		minPrewarmRunes:      defaultPreviewPrewarmMinRunes,
 	}, nil
 }
 
@@ -85,6 +93,9 @@ func NewASRResponder(
 	return ASRResponder{
 		Transcriber:                   transcriber,
 		Language:                      strings.TrimSpace(language),
+		SemanticJudgeTimeout:          defaultSemanticJudgeTimeout,
+		SemanticJudgeMinRunes:         defaultSemanticJudgeMinRunes,
+		SemanticJudgeMinStableFor:     defaultSemanticJudgeMinStableFor,
 		OutputCodec:                   outputCodec,
 		OutputSampleRate:              outputSampleRate,
 		OutputChannels:                outputChannels,
@@ -189,6 +200,20 @@ func (r ASRResponder) singleTextResponse(ctx context.Context, req TurnRequest, u
 
 func (r ASRResponder) WithTurnExecutor(executor agent.TurnExecutor) ASRResponder {
 	r.Executor = executor
+	return r
+}
+
+func (r ASRResponder) WithSemanticJudge(judge SemanticTurnJudge, timeout time.Duration, minRunes int, minStableFor time.Duration) ASRResponder {
+	r.SemanticJudge = judge
+	if timeout > 0 {
+		r.SemanticJudgeTimeout = timeout
+	}
+	if minRunes > 0 {
+		r.SemanticJudgeMinRunes = minRunes
+	}
+	if minStableFor > 0 {
+		r.SemanticJudgeMinStableFor = minStableFor
+	}
 	return r
 }
 
@@ -380,15 +405,20 @@ func (r ASRResponder) turnDetectionConfig() SilenceTurnDetectorConfig {
 }
 
 type asrInputPreviewSession struct {
-	stream          StreamingTranscriptionSession
-	detector        *SilenceTurnDetector
-	prewarmer       agent.TurnPrewarmer
-	previewRequest  InputPreviewRequest
-	minPrewarmRunes int
-	lastPrewarmText string
-	finishOnce      sync.Once
-	finishResult    TranscriptionResult
-	finishErr       error
+	stream               StreamingTranscriptionSession
+	detector             *SilenceTurnDetector
+	prewarmer            agent.TurnPrewarmer
+	semanticJudge        SemanticTurnJudge
+	semanticState        previewSemanticJudgeState
+	semanticTimeout      time.Duration
+	semanticMinRunes     int
+	semanticMinStableFor time.Duration
+	previewRequest       InputPreviewRequest
+	minPrewarmRunes      int
+	lastPrewarmText      string
+	finishOnce           sync.Once
+	finishResult         TranscriptionResult
+	finishErr            error
 }
 
 func (s *asrInputPreviewSession) PushAudio(ctx context.Context, chunk []byte) (InputPreview, error) {
@@ -423,6 +453,8 @@ func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
 		return InputPreview{}
 	}
 	snapshot := s.detector.Snapshot(now)
+	s.maybeLaunchSemanticJudge(snapshot)
+	snapshot = s.mergedSemanticSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
 	return snapshot
 }
@@ -457,6 +489,8 @@ func (s *asrInputPreviewSession) pushPreviewChunk(ctx context.Context, chunk []b
 		return InputPreview{}, nil
 	}
 	snapshot := s.detector.Snapshot(time.Now())
+	s.maybeLaunchSemanticJudge(snapshot)
+	snapshot = s.mergedSemanticSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
 	return snapshot, nil
 }
@@ -487,16 +521,20 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 		ClientType: s.previewRequest.ClientType,
 		UserText:   candidate,
 		Metadata: map[string]string{
-			"voice.preview.prewarm":            "true",
-			"voice.preview.partial_text":       strings.TrimSpace(snapshot.PartialText),
-			"voice.preview.stable_prefix":      candidate,
-			"voice.preview.utterance_complete": strconv.FormatBool(snapshot.UtteranceComplete),
-			"voice.preview.turn_stage":         string(snapshot.Arbitration.Stage),
-			"voice.preview.stable_for_ms":      strconv.Itoa(snapshot.Arbitration.StableForMs),
-			"voice.preview.stability_percent":  strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
-			"voice.preview.commit_suggested":   strconv.FormatBool(snapshot.CommitSuggested),
-			"voice.preview.endpoint_candidate": strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
-			"voice.preview.endpoint_reason":    strings.TrimSpace(snapshot.EndpointReason),
+			"voice.preview.prewarm":             "true",
+			"voice.preview.partial_text":        strings.TrimSpace(snapshot.PartialText),
+			"voice.preview.stable_prefix":       candidate,
+			"voice.preview.utterance_complete":  strconv.FormatBool(snapshot.UtteranceComplete),
+			"voice.preview.turn_stage":          string(snapshot.Arbitration.Stage),
+			"voice.preview.stable_for_ms":       strconv.Itoa(snapshot.Arbitration.StableForMs),
+			"voice.preview.stability_percent":   strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
+			"voice.preview.commit_suggested":    strconv.FormatBool(snapshot.CommitSuggested),
+			"voice.preview.endpoint_candidate":  strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
+			"voice.preview.endpoint_reason":     strings.TrimSpace(snapshot.EndpointReason),
+			"voice.preview.semantic_ready":      strconv.FormatBool(snapshot.Arbitration.SemanticReady),
+			"voice.preview.semantic_complete":   strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
+			"voice.preview.semantic_intent":     strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
+			"voice.preview.semantic_confidence": strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
 		},
 	}
 	go func() {
@@ -509,4 +547,66 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 func previewTurnPrewarmer(executor agent.TurnExecutor) agent.TurnPrewarmer {
 	prewarmer, _ := executor.(agent.TurnPrewarmer)
 	return prewarmer
+}
+
+func (s *asrInputPreviewSession) maybeLaunchSemanticJudge(snapshot InputPreview) {
+	if s == nil || s.semanticJudge == nil {
+		return
+	}
+	if !shouldJudgeSemantic(snapshot, s.semanticMinRunes, s.semanticMinStableFor) {
+		return
+	}
+	request := s.semanticTurnRequest(snapshot)
+	if request == nil {
+		return
+	}
+	key := semanticCandidateKey(request.StablePrefix, request.PartialText)
+	if !s.semanticState.shouldLaunch(key) {
+		return
+	}
+	go func(request SemanticTurnRequest, key string) {
+		ctx, cancel := context.WithTimeout(context.Background(), firstPositiveDuration(s.semanticTimeout, defaultSemanticJudgeTimeout))
+		defer cancel()
+		result, err := s.semanticJudge.JudgePreview(ctx, request)
+		if err != nil {
+			s.semanticState.clearRequest()
+			return
+		}
+		result.CandidateKey = key
+		s.semanticState.storeResult(result)
+	}(*request, key)
+}
+
+func (s *asrInputPreviewSession) semanticTurnRequest(snapshot InputPreview) *SemanticTurnRequest {
+	if s == nil {
+		return nil
+	}
+	partialText := strings.TrimSpace(snapshot.PartialText)
+	stablePrefix := strings.TrimSpace(snapshot.StablePrefix)
+	if partialText == "" && stablePrefix == "" {
+		return nil
+	}
+	return &SemanticTurnRequest{
+		SessionID:      s.previewRequest.SessionID,
+		DeviceID:       s.previewRequest.DeviceID,
+		ClientType:     s.previewRequest.ClientType,
+		PartialText:    partialText,
+		StablePrefix:   stablePrefix,
+		AudioMs:        snapshot.Arbitration.AudioMs,
+		Stability:      snapshot.Arbitration.Stability,
+		StableForMs:    snapshot.Arbitration.StableForMs,
+		TurnStage:      snapshot.Arbitration.Stage,
+		EndpointHinted: snapshot.Arbitration.EndpointHinted,
+	}
+}
+
+func (s *asrInputPreviewSession) mergedSemanticSnapshot(snapshot InputPreview) InputPreview {
+	if s == nil {
+		return snapshot
+	}
+	result, ok := s.semanticState.resultFor(semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText))
+	if !ok {
+		return snapshot
+	}
+	return mergeSemanticJudgement(snapshot, result)
 }

@@ -101,3 +101,43 @@ func TestEvaluateBargeInRejectsEmptyOrUnsoundedPreview(t *testing.T) {
 		t.Fatalf("expected preview without speech_started to be ignored, got %+v", decision)
 	}
 }
+
+func TestEvaluateBargeInUsesSemanticBackchannelToAvoidHardInterrupt(t *testing.T) {
+	cfg := BargeInConfig{MinAudioMs: 120, IncompleteHoldMs: 240}
+	decision := EvaluateBargeIn(InputPreview{
+		PartialText:   "明白",
+		AudioBytes:    pcmFrameBytes(16000, 1, 180),
+		SpeechStarted: true,
+		Arbitration: TurnArbitration{
+			SemanticReady:      true,
+			SemanticIntent:     SemanticIntentBackchannel,
+			SemanticConfidence: 0.91,
+		},
+	}, 16000, 1, cfg)
+	if decision.Policy != InterruptionPolicyBackchannel || decision.Accepted {
+		t.Fatalf("expected semantic backchannel to avoid hard interrupt, got %+v", decision)
+	}
+	if decision.Reason != "semantic_backchannel" {
+		t.Fatalf("expected semantic_backchannel reason, got %+v", decision)
+	}
+}
+
+func TestEvaluateBargeInUsesSemanticTakeoverToInterruptEarlier(t *testing.T) {
+	cfg := BargeInConfig{MinAudioMs: 120, IncompleteHoldMs: 240}
+	decision := EvaluateBargeIn(InputPreview{
+		PartialText:   "不要这个",
+		AudioBytes:    pcmFrameBytes(16000, 1, 80),
+		SpeechStarted: true,
+		Arbitration: TurnArbitration{
+			SemanticReady:      true,
+			SemanticIntent:     SemanticIntentTakeover,
+			SemanticConfidence: 0.9,
+		},
+	}, 16000, 1, cfg)
+	if decision.Policy != InterruptionPolicyHardInterrupt || !decision.Accepted {
+		t.Fatalf("expected semantic takeover to interrupt at acoustic gate, got %+v", decision)
+	}
+	if decision.Reason != "accepted_semantic_takeover" {
+		t.Fatalf("expected accepted_semantic_takeover reason, got %+v", decision)
+	}
+}

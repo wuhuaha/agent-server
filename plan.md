@@ -118,6 +118,7 @@ The detailed task breakdown for this track now lives in:
 - `docs/architecture/realtime-full-duplex-gap-review-zh-2026-04-15.md`
 - `docs/architecture/voice-architecture-blueprint-zh-2026-04-16.md`
 - `docs/architecture/voice-architecture-execution-roadmap-zh-2026-04-16.md`
+- `docs/architecture/llm-semantic-turn-taking-and-interruption-zh-2026-04-17.md`
 - `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md`
 - `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md`
 - `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
@@ -133,6 +134,10 @@ Current planning note:
 - the next voice-demo follow-up should benchmark concrete local model combinations and live latency/accuracy trade-offs on top of that worker boundary rather than widening the public realtime contract again
 - the repository now has a formal voice architecture baseline in `docs/architecture/voice-architecture-blueprint-zh-2026-04-16.md`; future voice changes should align with its server-primary hybrid boundary, layered early-processing gate, output orchestration, playback-truth chain, and milestone-latency quality model
 - the next service-side optimization order is now explicit: multi-signal turn-taking -> acoustic-first interruption verification -> clause/prosody-aware output planning -> finer playback-truth cursoring -> dynamic bias/alias/entity runtime integration; keep the current cascade architecture as the main path while speech-to-speech remains an eval baseline
+- the next semantic depth slice is now also explicit on that same shared boundary:
+  - keep the heuristic acoustic/timing floor for realtime safety
+  - let an optional runtime-owned LLM semantic judge advise `utterance_complete`, `correction`, `backchannel`, and `takeover` interpretation on mature preview candidates
+  - use that judgement to improve `draft_allowed` promotion and speaking-time interruption policy without letting adapters or protocol peers call providers directly
 - the second slice of that optimization order is now landed without widening the public protocol:
   - speaking-time interruption now uses an acoustic-first verifier that can enter `duck_only` before transcript text is ready
   - stable-prefix, preview turn-stage, lexical completeness, and takeover lexicon now act as semantic confirmation for escalation to `hard_interrupt`

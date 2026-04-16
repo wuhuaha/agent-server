@@ -217,18 +217,24 @@ const (
 )
 
 type TurnArbitration struct {
-	Stage             TurnArbitrationStage
-	Reason            string
-	Stability         float64
-	StableForMs       int
-	AudioMs           int
-	SilenceMs         int
-	RequiredSilenceMs int
-	PrewarmAllowed    bool
-	DraftAllowed      bool
-	AcceptCandidate   bool
-	AcceptNow         bool
-	EndpointHinted    bool
+	Stage              TurnArbitrationStage
+	Reason             string
+	Stability          float64
+	StableForMs        int
+	AudioMs            int
+	SilenceMs          int
+	RequiredSilenceMs  int
+	PrewarmAllowed     bool
+	DraftAllowed       bool
+	AcceptCandidate    bool
+	AcceptNow          bool
+	EndpointHinted     bool
+	SemanticReady      bool
+	SemanticComplete   bool
+	SemanticIntent     string
+	SemanticReason     string
+	SemanticSource     string
+	SemanticConfidence float64
 }
 
 type InputPreviewSession interface {

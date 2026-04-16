@@ -179,6 +179,14 @@ func (e *capturingPrewarmExecutor) PrewarmTurn(_ context.Context, input agent.Tu
 	}
 }
 
+type fixedSemanticJudge struct {
+	result SemanticTurnJudgement
+}
+
+func (j fixedSemanticJudge) JudgePreview(context.Context, SemanticTurnRequest) (SemanticTurnJudgement, error) {
+	return j.result, nil
+}
+
 func TestASRResponderForAudio(t *testing.T) {
 	responder := NewASRResponder(
 		fakeTranscriber{result: TranscriptionResult{Text: "hello from local asr"}},
@@ -490,6 +498,51 @@ func TestASRResponderPreviewSessionPrewarmsMatureStablePrefixBeforeUtteranceComp
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected mature stable prefix prewarm call")
 	}
+}
+
+func TestASRResponderPreviewSessionPollIncludesSemanticJudgeResult(t *testing.T) {
+	responder := NewASRResponder(previewStreamingTranscriber{text: "明白"}, "auto", "pcm16le", 16000, 1, false).
+		WithSemanticJudge(fixedSemanticJudge{
+			result: SemanticTurnJudgement{
+				UtteranceStatus:    SemanticUtteranceIncomplete,
+				InterruptionIntent: SemanticIntentBackchannel,
+				Confidence:         0.92,
+				Reason:             "short_ack",
+				Source:             "test",
+			},
+		}, 80*time.Millisecond, 2, 0)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_semantic_preview",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 1280)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		snapshot := preview.Poll(time.Now())
+		if snapshot.Arbitration.SemanticReady {
+			if snapshot.Arbitration.SemanticIntent != SemanticIntentBackchannel {
+				t.Fatalf("expected semantic backchannel intent, got %+v", snapshot.Arbitration)
+			}
+			if snapshot.Arbitration.SemanticConfidence < 0.9 {
+				t.Fatalf("expected semantic confidence to propagate, got %+v", snapshot.Arbitration)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("expected preview poll to include semantic judgement result")
 }
 
 func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {
