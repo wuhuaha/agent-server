@@ -152,6 +152,10 @@ Current planning note:
 - the next resume/continue behavior slice is now also landed on top of that boundary:
   - exact follow-up requests such as `继续` / `接着说` / `后面呢` may now deterministically continue from `voice.previous.missed_text` instead of only hinting the LLM prompt
   - the embedded collaboration docs now also include a dedicated playback-ack interop appendix covering multi-segment ACK ownership, mid-segment clear encoding, and RTOS client lane/state guidance
+- the latest playback-truth depth slice is now also landed on the same shared boundary:
+  - native realtime now syncs the latest announced `audio.out.meta` segment text back into the runtime playback context while output is still speaking
+  - later `audio.out.mark` / `audio.out.cleared` / `audio.out.completed` can therefore reconcile heard-text and missed-tail boundaries against the most recently announced playback text instead of waiting for final response settlement
+  - `duck_only` / `backchannel` may now leave recoverable `voice.previous.missed_text` even when `playback_completed=true`, so soft overlap no longer always collapses into “user heard the full reply”
 - the latest archived CPU benchmark now shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is viable only after worker preload plus readiness gating, but it is not yet the best default for the CPU demo path: it kept command-only accuracy, failed to improve the wake-word-prefixed sample, and increased response-start latency from about `2.05 s` to about `3.5 s`
 - the current local FunASR `1.3.1` runtime rejects the short KWS alias `fsmn-kws` during preload (`fsmn-kws is not registered`), but the calibrated enabled-KWS baseline is now `iic/speech_charctc_kws_phone-xiaoyun`; that worker path also needs `keywords` plus `output_dir` during `AutoModel(...)` init and still stays default-off
 - the current V100 production host cannot use the newer `torch 2.11.0+cu128` wheel family because the official wheel omits `sm_70` kernels; the long-running GPU FunASR path is now validated with a dedicated data-volume runtime on `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126`

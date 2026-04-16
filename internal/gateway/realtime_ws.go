@@ -920,6 +920,7 @@ func (h *realtimeWSHandler) recordPlaybackAckStarted(runtime *connectionRuntime,
 		return nil
 	}
 	runtime.recordPlaybackStarted(time.Now().UTC())
+	runtime.syncAnnouncedPlaybackContext()
 	if runtime.voiceSession != nil {
 		runtime.voiceSession.ObservePlaybackStartedFact()
 	}
@@ -943,6 +944,7 @@ func (h *realtimeWSHandler) recordPlaybackAckMark(runtime *connectionRuntime, pa
 		)
 		return nil
 	}
+	runtime.syncAnnouncedPlaybackContext()
 	_, totalPlayed, heardText := runtime.recordPlaybackMark(time.Now().UTC(), strings.TrimSpace(payload.SegmentID), payload.PlayedDurationMs)
 	if runtime.voiceSession != nil {
 		switch {
@@ -972,6 +974,7 @@ func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime,
 		)
 		return nil
 	}
+	runtime.syncAnnouncedPlaybackContext()
 	_, totalPlayed, heardText := runtime.recordPlaybackCleared(time.Now().UTC(), strings.TrimSpace(payload.ClearedAfterSegmentID), payload.Reason)
 	if runtime.voiceSession != nil {
 		switch {
@@ -1012,6 +1015,7 @@ func (h *realtimeWSHandler) recordPlaybackAckCompleted(runtime *connectionRuntim
 		)
 		return nil
 	}
+	runtime.syncAnnouncedPlaybackContext()
 	runtime.recordPlaybackCompleted(time.Now().UTC())
 	if runtime.voiceSession != nil {
 		runtime.voiceSession.ObservePlaybackCompletedFact()
@@ -1463,6 +1467,7 @@ func (h *realtimeWSHandler) startAudioStream(
 func (h *realtimeWSHandler) emitAudioOutMeta(runtime *connectionRuntime, sessionID string, trace turnTrace, meta audioPlaybackMeta) error {
 	runtime.activatePlaybackAckSegment(meta)
 	if !runtime.collaboration.PlaybackAckEnabled() {
+		runtime.syncAnnouncedPlaybackContext()
 		return nil
 	}
 	if err := runtime.peer.WriteEvent(events.TypeAudioOutMeta, sessionID, audioOutMetaPayload{
@@ -1482,6 +1487,7 @@ func (h *realtimeWSHandler) emitAudioOutMeta(runtime *connectionRuntime, session
 		)
 		return err
 	}
+	runtime.syncAnnouncedPlaybackContext()
 	logTurnTraceInfo(h.logger, "gateway audio.out.meta sent", sessionID, trace,
 		"response_id", meta.ResponseID,
 		"playback_id", meta.PlaybackID,

@@ -135,6 +135,7 @@ Client -> Server: audio.out.completed(playback)
 
 - `audio.out.completed` 只出现一次。
 - `seg2` 的 `started/mark` 必须等到 seg2 真正进入播放后才发送。
+- 即使 `seg2` 还没真正开始播，服务端内部也可能已经把 `meta(seg2)` 纳入“当前已宣布文本”；因此后续对 `seg1` 的 `mark/cleared` 仍可能得到更完整的续播锚点 / missed-text。
 
 ### 5.2 mid-segment clear
 

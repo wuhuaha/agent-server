@@ -7,6 +7,8 @@ const (
 	previousPlaybackHeardTextKey    = "voice.previous.heard_text"
 	previousPlaybackMissedTextKey   = "voice.previous.missed_text"
 	previousPlaybackResumeAnchorKey = "voice.previous.resume_anchor"
+	previousPlaybackPolicyKey       = "voice.previous.interruption_policy"
+	previousPlaybackCompletedKey    = "voice.previous.playback_completed"
 	previousPlaybackInterruptedKey  = "voice.previous.response_interrupted"
 	previousPlaybackTruncatedKey    = "voice.previous.response_truncated"
 )
@@ -16,6 +18,8 @@ type previousPlaybackContext struct {
 	HeardText           string
 	MissedText          string
 	ResumeAnchor        string
+	InterruptionPolicy  string
+	PlaybackCompleted   bool
 	ResponseInterrupted bool
 	ResponseTruncated   bool
 }
@@ -35,6 +39,8 @@ func parsePreviousPlaybackContext(metadata map[string]string) previousPlaybackCo
 		HeardText:           strings.TrimSpace(metadata[previousPlaybackHeardTextKey]),
 		MissedText:          strings.TrimSpace(metadata[previousPlaybackMissedTextKey]),
 		ResumeAnchor:        strings.TrimSpace(metadata[previousPlaybackResumeAnchorKey]),
+		InterruptionPolicy:  strings.TrimSpace(metadata[previousPlaybackPolicyKey]),
+		PlaybackCompleted:   metadataFlag(metadata, previousPlaybackCompletedKey),
 		ResponseInterrupted: metadataFlag(metadata, previousPlaybackInterruptedKey),
 		ResponseTruncated:   metadataFlag(metadata, previousPlaybackTruncatedKey),
 	}
@@ -46,6 +52,18 @@ func parsePreviousPlaybackContext(metadata map[string]string) previousPlaybackCo
 
 func (c previousPlaybackContext) actionable() bool {
 	return c.Available && (c.HeardText != "" || c.MissedText != "" || c.ResumeAnchor != "")
+}
+
+func (c previousPlaybackContext) softRecoveryContext() bool {
+	if !c.PlaybackCompleted || c.ResponseInterrupted || c.MissedText == "" {
+		return false
+	}
+	switch c.InterruptionPolicy {
+	case "duck_only", "backchannel":
+		return true
+	default:
+		return false
+	}
 }
 
 func detectPlaybackFollowUpIntent(userText string, ctx previousPlaybackContext) playbackFollowUpIntent {
@@ -113,6 +131,8 @@ func deterministicPlaybackFollowUpText(userText string, metadata map[string]stri
 		}
 	case playbackFollowUpIntentRecallBoundary:
 		switch {
+		case ctx.softRecoveryContext() && ctx.HeardText != "" && ctx.MissedText != "":
+			return "我刚刚大概说到：" + ctx.HeardText + "。你说话那会儿后面可能没完整听到的是：" + ctx.MissedText, true
 		case ctx.HeardText != "" && ctx.MissedText != "":
 			return "我刚刚说到：" + ctx.HeardText + "。后面还没播完的是：" + ctx.MissedText, true
 		case ctx.HeardText != "":
@@ -122,6 +142,8 @@ func deterministicPlaybackFollowUpText(userText string, metadata map[string]stri
 		}
 	case playbackFollowUpIntentRecapTail:
 		switch {
+		case ctx.softRecoveryContext() && ctx.MissedText != "":
+			return "你刚刚可能没完整听到的是：" + ctx.MissedText, true
 		case ctx.MissedText != "":
 			return "后面那句是：" + ctx.MissedText, true
 		case ctx.HeardText != "":
@@ -176,6 +198,12 @@ func playbackFollowUpMessages(userText string, metadata map[string]string) []Cha
 	}
 	if ctx.ResponseInterrupted || ctx.ResponseTruncated {
 		lines = append(lines, "- The previous spoken reply was interrupted before full playback completion.")
+	}
+	if ctx.softRecoveryContext() {
+		lines = append(lines,
+			"- The previous spoken reply reached playback completion, but the user likely talked over the remaining tail.",
+			"- Treat the unheard tail as recoverable spoken context even though the transport completed naturally.",
+		)
 	}
 	return []ChatMessage{{
 		Role:    "system",

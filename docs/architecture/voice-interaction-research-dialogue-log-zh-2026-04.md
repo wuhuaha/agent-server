@@ -969,3 +969,15 @@
   - 避免后续优化重新发散回“多接模型 / 多改协议”的低 ROI 路线
   - 让后续实现能围绕共享 runtime 继续加深，而不是回退到 adapter-local patch
   - 为接下来每一个实现 slice 提供更强的判断标准：先补行为成熟度，再扩模型和能力面
+
+## 2026-04-16 补充：soft interruption 的恢复语义下沉到 voice runtime
+
+- 本轮把 `duck_only` / `backchannel` 从“只记一条 metadata + duck 一下”推进成了 `internal/voice` 内部真正的恢复真相。
+- 新约束是：
+  - `hard_interrupt` 仍然表示播报被硬截断，`response_interrupted=true`、`response_truncated=true` 语义不变。
+  - `duck_only` / `backchannel` 若发生在播报尾部很短的剩余区间，可仍视作“软打断但用户大概率完整听到”。
+  - `duck_only` / `backchannel` 若发生时剩余尾段仍较长，则即使 transport 后续自然播完，也会沉淀为“playback_completed=true，但 heard boundary 仍是 prefix / none，且保留 missed_text”。
+- 这样下一轮用户再说“继续 / 后面呢 / 没听清”时，agent 不必依赖 gateway 额外补协议，也能基于 `voice.previous.heard_text` / `voice.previous.missed_text` 做更真实的恢复。
+- 这条边界继续保持 runtime-owned：
+  - `internal/voice` 负责判断“用户到底听到了多少”
+  - `internal/agent` 只消费 `voice.previous.*` 元数据，不自行重建播放真相

@@ -210,6 +210,9 @@ func TestSessionOrchestratorPersistsBackchannelPolicyWithoutInterrupt(t *testing
 
 	orchestrator.PrepareTurn(request, "打开主灯", "好的，已经为你打开主灯。")
 	orchestrator.StartPlayback("好的，已经为你打开主灯。", 200*time.Millisecond, 2*time.Second)
+	for i := 0; i < 9; i++ {
+		orchestrator.ObservePlaybackChunk()
+	}
 	orchestrator.RecordInterruptionDecision(BargeInDecision{
 		Policy: InterruptionPolicyBackchannel,
 		Reason: "backchannel_short_ack",
@@ -228,6 +231,9 @@ func TestSessionOrchestratorPersistsBackchannelPolicyWithoutInterrupt(t *testing
 	}
 	if got := record.Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryFull) {
 		t.Fatalf("expected full heard boundary on completed playback, got %q", got)
+	}
+	if record.HeardText != "好的，已经为你打开主灯。" {
+		t.Fatalf("expected late backchannel to preserve full heard text, got %+v", record)
 	}
 }
 
@@ -416,6 +422,67 @@ func TestSessionOrchestratorExposesLastPlaybackOutcomeForNextTurnContext(t *test
 	}
 	if got := metadata["voice.previous.interruption_policy"]; got != string(InterruptionPolicyHardInterrupt) {
 		t.Fatalf("expected previous interruption policy %q, got %q", InterruptionPolicyHardInterrupt, got)
+	}
+}
+
+func TestSessionOrchestratorExposesSoftDuckRecoveryContextForNextTurn(t *testing.T) {
+	orchestrator := NewSessionOrchestrator(nil)
+	request := TurnRequest{
+		SessionID:  "sess-soft-duck",
+		TurnID:     "turn-soft-duck",
+		DeviceID:   "dev-soft-duck",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，正在帮你把客厅灯调暗一些，并切到阅读模式。"
+	orchestrator.PrepareTurn(request, "把客厅灯调暗并切到阅读模式", delivered)
+	orchestrator.StartPlayback(delivered, 200*time.Millisecond, 2*time.Second)
+	orchestrator.ObservePlaybackChunk()
+	orchestrator.ObservePlaybackChunk()
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyDuckOnly,
+		Reason: "duck_pending_incomplete_preview",
+	})
+	orchestrator.CompletePlayback()
+
+	outcome, ok := orchestrator.LastPlaybackOutcome()
+	if !ok {
+		t.Fatal("expected last playback outcome after soft duck completion")
+	}
+	if !outcome.PlaybackCompleted || outcome.ResponseInterrupted || outcome.ResponseTruncated {
+		t.Fatalf("expected completed-but-recoverable outcome, got %+v", outcome)
+	}
+	if outcome.InterruptionPolicy != InterruptionPolicyDuckOnly {
+		t.Fatalf("expected duck_only policy, got %+v", outcome)
+	}
+	if outcome.HeardText == "" || outcome.HeardText == delivered {
+		t.Fatalf("expected heard prefix after soft duck, got %+v", outcome)
+	}
+	if outcome.HeardTextBoundary != HeardTextBoundaryPrefix {
+		t.Fatalf("expected prefix heard boundary, got %+v", outcome)
+	}
+	if outcome.MissedText == "" || outcome.ResumeAnchor != outcome.HeardText {
+		t.Fatalf("expected missed tail and resume anchor, got %+v", outcome)
+	}
+
+	metadata := orchestrator.LastPlaybackContextMetadata()
+	if got := metadata["voice.previous.playback_completed"]; got != "true" {
+		t.Fatalf("expected previous playback_completed=true, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.response_interrupted"]; got != "false" {
+		t.Fatalf("expected previous response_interrupted=false, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.response_truncated"]; got != "false" {
+		t.Fatalf("expected previous response_truncated=false, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.interruption_policy"]; got != string(InterruptionPolicyDuckOnly) {
+		t.Fatalf("expected previous interruption policy duck_only, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.heard_boundary"]; got != string(HeardTextBoundaryPrefix) {
+		t.Fatalf("expected previous heard boundary prefix, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.missed_text"]; got == "" {
+		t.Fatalf("expected previous missed text metadata, got %+v", metadata)
 	}
 }
 

@@ -161,6 +161,18 @@ type orchestratedTurn struct {
 	heardConfidence     HeardTextConfidence
 	heardPrecisionTier  HeardTextPrecisionTier
 	preferClientFacts   bool
+	softRecovery        *softRecoverySnapshot
+}
+
+type softRecoverySnapshot struct {
+	policy            InterruptionPolicy
+	reason            string
+	heardText         string
+	heardTextBoundary HeardTextBoundary
+	heardSource       HeardTextSource
+	heardConfidence   HeardTextConfidence
+	heardPrecision    HeardTextPrecisionTier
+	playedDuration    time.Duration
 }
 
 func NewSessionOrchestrator(memoryStore agent.MemoryStore) *SessionOrchestrator {
@@ -377,6 +389,7 @@ func (o *SessionOrchestrator) StartPlaybackWithOptions(deliveredText string, chu
 	o.turn.preferClientFacts = opts.PreferClientFacts
 	o.turn.interruptionPolicy = InterruptionPolicyIgnore
 	o.turn.interruptionReason = ""
+	o.turn.softRecovery = nil
 }
 
 func (o *SessionOrchestrator) UpdatePlayback(deliveredText string, plannedDuration time.Duration) {
@@ -466,7 +479,10 @@ func (o *SessionOrchestrator) RecordInterruptionPolicy(policy InterruptionPolicy
 	if o.turn == nil {
 		return
 	}
-	recordInterruptionPolicyLocked(o.turn, policy, reason)
+	normalized := recordInterruptionPolicyLocked(o.turn, policy, reason)
+	if normalized == InterruptionPolicyBackchannel || normalized == InterruptionPolicyDuckOnly {
+		o.captureSoftRecoverySnapshotLocked(normalized, strings.TrimSpace(reason))
+	}
 }
 
 func (o *SessionOrchestrator) InterruptPlaybackWithDecision(decision BargeInDecision) PlaybackInterruption {
@@ -534,6 +550,7 @@ func (o *SessionOrchestrator) CompletePlaybackWithSource(source HeardTextSource)
 		o.turn.heardText = o.turn.deliveredText
 	}
 	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, o.turn.heardText)
+	o.applySoftRecoveryOutcomeLocked()
 	o.turn.responseInterrupted = false
 	o.turn.responseTruncated = false
 	o.persistLocked()
@@ -719,6 +736,50 @@ func (o *SessionOrchestrator) updateHeardTextExactLocked(playedDuration time.Dur
 	o.turn.heardPrecisionTier = heardTextPrecisionTierForSource(o.turn.heardSource)
 }
 
+func (o *SessionOrchestrator) captureSoftRecoverySnapshotLocked(policy InterruptionPolicy, reason string) {
+	if o.turn == nil || !o.turn.playbackActive {
+		return
+	}
+	if !(o.turn.heardSource == HeardTextSourceSegmentMark && hasExactHeardTextPrefix(o.turn.deliveredText, o.turn.heardText)) {
+		o.updateHeardTextLocked(o.turn.playedDuration, o.turn.heardSource)
+	}
+
+	if existing := o.turn.softRecovery; existing != nil {
+		if existing.playedDuration < o.turn.playedDuration {
+			return
+		}
+		if existing.playedDuration == o.turn.playedDuration && softRecoveryPolicyRank(existing.policy) >= softRecoveryPolicyRank(policy) {
+			return
+		}
+	}
+
+	o.turn.softRecovery = &softRecoverySnapshot{
+		policy:            policy,
+		reason:            reason,
+		heardText:         o.turn.heardText,
+		heardTextBoundary: o.turn.heardTextBoundary,
+		heardSource:       o.turn.heardSource,
+		heardConfidence:   o.turn.heardConfidence,
+		heardPrecision:    o.turn.heardPrecisionTier,
+		playedDuration:    o.turn.playedDuration,
+	}
+}
+
+func (o *SessionOrchestrator) applySoftRecoveryOutcomeLocked() {
+	if o.turn == nil || o.turn.softRecovery == nil {
+		return
+	}
+	snapshot := o.turn.softRecovery
+	if !shouldLimitCompletedPlaybackToSoftRecovery(o.turn, snapshot) {
+		return
+	}
+	o.turn.heardText = snapshot.heardText
+	o.turn.heardTextBoundary = heardTextBoundaryForTexts(o.turn.deliveredText, snapshot.heardText)
+	o.turn.heardSource = normalizeHeardTextSource(snapshot.heardSource, HeardTextSourceUnknown)
+	o.turn.heardConfidence = heardTextConfidenceForSource(o.turn.heardSource)
+	o.turn.heardPrecisionTier = heardTextPrecisionTierForSource(o.turn.heardSource)
+}
+
 func hasExactHeardTextPrefix(deliveredText, heardText string) bool {
 	trimmedHeard := strings.TrimSpace(heardText)
 	trimmedDelivered := strings.TrimSpace(deliveredText)
@@ -767,18 +828,67 @@ func normalizeInterruptionPolicy(policy InterruptionPolicy) InterruptionPolicy {
 	}
 }
 
-func recordInterruptionPolicyLocked(turn *orchestratedTurn, policy InterruptionPolicy, reason string) {
+func recordInterruptionPolicyLocked(turn *orchestratedTurn, policy InterruptionPolicy, reason string) InterruptionPolicy {
 	if turn == nil {
-		return
+		return InterruptionPolicyIgnore
 	}
 	normalized := normalizeInterruptionPolicy(policy)
 	if normalized == InterruptionPolicyIgnore {
-		return
+		return normalized
 	}
 	turn.interruptionPolicy = normalized
 	turn.interruptionReason = strings.TrimSpace(reason)
 	if turn.interruptionReason == "" {
 		turn.interruptionReason = string(normalized)
+	}
+	return normalized
+}
+
+func softRecoveryPolicyRank(policy InterruptionPolicy) int {
+	switch policy {
+	case InterruptionPolicyDuckOnly:
+		return 2
+	case InterruptionPolicyBackchannel:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func shouldLimitCompletedPlaybackToSoftRecovery(turn *orchestratedTurn, snapshot *softRecoverySnapshot) bool {
+	if turn == nil || snapshot == nil {
+		return false
+	}
+	delivered := strings.TrimSpace(turn.deliveredText)
+	if delivered == "" {
+		return false
+	}
+	missedTail := missedTextForTexts(delivered, snapshot.heardText)
+	if missedTail == "" {
+		return false
+	}
+
+	remainingDuration := time.Duration(0)
+	if turn.plannedDuration > 0 && snapshot.playedDuration < turn.plannedDuration {
+		remainingDuration = turn.plannedDuration - snapshot.playedDuration
+	}
+	remainingRunes := len([]rune(missedTail))
+	remainingRatio := heardRatioPercent(delivered, snapshot.heardText)
+	if remainingRatio < 0 {
+		remainingRatio = 0
+	}
+	remainingRatio = 100 - remainingRatio
+
+	switch snapshot.policy {
+	case InterruptionPolicyDuckOnly:
+		return remainingRunes >= 2 || remainingRatio >= 12 || remainingDuration >= 260*time.Millisecond
+	case InterruptionPolicyBackchannel:
+		if remainingRunes >= 8 {
+			return true
+		}
+		return remainingRunes >= 4 && (remainingRatio >= 30 || remainingDuration >= 650*time.Millisecond)
+	default:
+		return false
 	}
 }
 

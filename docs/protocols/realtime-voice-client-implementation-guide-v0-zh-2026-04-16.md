@@ -145,6 +145,7 @@
 - 端侧内部至少应区分三种指针：`latest_announced_segment_id`、`currently_playing_segment_id`、`last_fully_heard_segment_id`；不要只保留一个 `segment_id`。
 - 后续所有 ACK 必须带回对应的 `response_id/playback_id`；其中 `started/mark` 绑定真实播放中的 segment，`cleared` 绑定“最后一个完整听到的 segment 边界”。
 - `is_last_segment=true` 只在服务端已经确定这是最后一段时才保证成立；早起播路径上较早段可能保持保守的 `false`。
+- 当前服务端也会在 speaking 期间用 `audio.out.meta` 推进自己的播放上下文；因此后续 `audio.out.mark/cleared/completed` 会基于“最新已宣布文本”与“实际 ACK segment”一起收敛 heard / missed 边界，而不是只能等整轮结束后再补账。
 
 ## 4. 端侧 -> 服务端字段表
 
@@ -236,6 +237,7 @@
 - 当已协商 `playback_ack` 时，服务端可能不会在音频字节发送完的瞬间立刻回到 `session.update(state=active)`。
 - 更准确的行为是：服务端优先等待 `audio.out.completed` 或 `audio.out.cleared`，再收口本轮 playback truth；若短时间内未等到，则回退到服务端启发式完成。
 - 当服务端使用 clause / segment 早起播时，`audio.out.meta` 可能在一次响应里出现多次；端侧必须把 ACK 与“真实播放的 segment”绑定，而不是假设“一条响应只会有一个 segment”。
+- 即使端侧还在播放较早的 segment，只要服务端已经下发了更晚的 `audio.out.meta`，服务端内部也可能已经把这些更晚 segment 纳入“当前已宣布文本”；这正是续播锚点 / missed-text 能在 speaking 期间逐步变准的原因。
 - `audio.out.completed` 是整轮 playback 终态；不要每切一个 segment 就发送一次 completed。
 - 若发送了 `audio.out.cleared`，端侧应立即结束该 playback 的 ACK 生命周期；之后若还在继续采音，那是新一轮输入的上行阶段，不是旧 playback 的后续 ACK。
 - 若本地只实现最小集，应优先保证：`audio.out.started` 准、`audio.out.completed` 及时、`audio.out.mark` 单调、`audio.out.cleared` 不过度记账。

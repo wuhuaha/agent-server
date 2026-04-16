@@ -932,3 +932,17 @@
     - `go test ./internal/gateway ./internal/voice -run 'TurnFlow|ExecuteTurnResponse|SessionOrchestrator|Realtime'`
     - `go test ./internal/gateway ./internal/voice ./internal/session`
     - `go test -tags integration ./internal/gateway -run 'Realtime|StreamingResponder|PlaybackAck'`
+
+- Landed the next soft-recovery and announced-playback-context slice without widening the public contract:
+  - `internal/voice.SessionOrchestrator` now snapshots `duck_only` / `backchannel` overlap boundaries and may keep recoverable `missed_text` even when transport playback later reaches `playback_completed=true`
+  - `internal/agent` deterministic follow-up handling and runtime hints now treat that completed-but-masked tail as recoverable spoken context instead of assuming natural completion means the user heard the whole reply
+  - native realtime now syncs the latest announced `audio.out.meta` segment text into runtime playback context during speaking, so later `audio.out.mark` / `audio.out.cleared` can combine exact heard boundaries with the most recently announced tail before final response settlement
+  - refreshed protocol guidance in:
+    - `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`
+    - `docs/protocols/realtime-voice-client-playback-ack-interop-appendix-v0-zh-2026-04-16.md`
+  - recorded the runtime boundary in:
+    - `docs/adr/0040-soft-recovery-and-announced-playback-context-stay-runtime-owned.md`
+    - `docs/architecture/overview.md`
+    - `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+  - validated with:
+    - `go test ./internal/agent ./internal/voice ./internal/gateway ./internal/session`

@@ -682,3 +682,15 @@
 - Problem: the current machine-local `Qwen3-8B` cache directory exists, but the shard index expects five safetensor parts while only shards `00004` and `00005` are present locally.
 - Resolution: verified the cache against `model.safetensors.index.json` and confirmed that shards `model-00001-of-00005.safetensors`, `model-00002-of-00005.safetensors`, and `model-00003-of-00005.safetensors` are still missing. The runtime therefore stays on the current `Qwen3-4B-Instruct-2507` path and should not switch to `8B` until the download is completed and revalidated.
 - Status: open.
+
+### Soft Duck Or Backchannel Overlap Was Lost Once Playback Completed Naturally
+
+- Problem: `duck_only` and `backchannel` already ducked live playout, but once transport playback later completed naturally the runtime still collapsed the outcome back to “user heard the full reply”. That made `继续 / 后面呢 / 没听清` unnatural after soft overlap because no recoverable missed-tail context survived into `voice.previous.*`.
+- Resolution: `internal/voice.SessionOrchestrator` now snapshots the heard boundary when soft overlap happens and may preserve a recoverable prefix or missed tail even when `playback_completed=true`. The agent runtime now consumes that same runtime-owned context for deterministic continue or recap handling without adding gateway heuristics or protocol fields.
+- Status: resolved.
+
+### Playback ACK Segment Truth Still Lagged Behind The Latest Announced Tail On Early-Audio Turns
+
+- Problem: segment-level `audio.out.mark` and `audio.out.cleared` already refined heard boundaries, but on early-audio or multi-segment output they still depended on whichever delivered-text view had reached `SessionOrchestrator`. If a later segment had already been announced through `audio.out.meta` but the final response had not settled yet, the runtime could still miss the correct missed tail.
+- Resolution: native realtime now syncs the latest announced `audio.out.meta` text and cumulative duration back into the runtime playback context while output is speaking. Later ACK facts can therefore reconcile exact heard boundaries against the newest announced tail before final response settlement, and tests now cover that behavior.
+- Status: resolved.

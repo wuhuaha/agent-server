@@ -424,6 +424,25 @@ func (r *connectionRuntime) playbackAckMeta() audioPlaybackMeta {
 	return r.playbackAckState.meta
 }
 
+func (r *connectionRuntime) syncAnnouncedPlaybackContext() {
+	if r == nil || r.voiceSession == nil {
+		return
+	}
+	meta := r.playbackAckMeta()
+	deliveredText := strings.TrimSpace(meta.TextAfter)
+	if deliveredText == "" {
+		deliveredText = strings.TrimSpace(meta.Text)
+	}
+	plannedDuration := meta.DurationAfter
+	if plannedDuration <= 0 {
+		plannedDuration = meta.ExpectedDuration
+	}
+	if deliveredText == "" && plannedDuration <= 0 {
+		return
+	}
+	r.voiceSession.UpdatePlayback(deliveredText, plannedDuration)
+}
+
 func (r *connectionRuntime) activatePlaybackAckSegment(meta audioPlaybackMeta) audioPlaybackMeta {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()

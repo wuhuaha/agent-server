@@ -307,6 +307,41 @@ func TestLLMTurnExecutorBypassesModelForDeterministicContinueFollowUp(t *testing
 	}
 }
 
+func TestLLMTurnExecutorBypassesModelForDeterministicContinueAfterSoftDuckCompletion(t *testing.T) {
+	memoryStore := &recordingMemoryStore{}
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "不应该调用模型"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(memoryStore)
+
+	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-follow-up-soft-duck",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "后面呢",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.interruption_policy":  "duck_only",
+			"voice.previous.playback_completed":   "true",
+			"voice.previous.response_interrupted": "false",
+			"voice.previous.response_truncated":   "false",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if got := output.Text; got != "现在把亮度调到了最舒适的模式。" {
+		t.Fatalf("expected deterministic missed-tail reply after soft duck, got %q", got)
+	}
+	if len(model.requests) != 0 {
+		t.Fatalf("expected soft duck continue follow-up to bypass model, got %d request(s)", len(model.requests))
+	}
+}
+
 func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForLooseContinue(t *testing.T) {
 	model := &recordingChatModel{
 		response: ChatModelResponse{Text: "继续说明。"},
@@ -352,6 +387,51 @@ func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForLooseContinue(t *testi
 	}
 	if !found {
 		t.Fatalf("expected runtime follow-up system hint, got %+v", messages)
+	}
+}
+
+func TestLLMTurnExecutorAddsSoftRecoveryRuntimeHintForCompletedPlaybackOverlap(t *testing.T) {
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "你刚刚可能没完整听到后半句。"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(&recordingMemoryStore{})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-follow-up-soft-overlap",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "没听清，你刚刚最后一句是什么",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.interruption_policy":  "backchannel",
+			"voice.previous.playback_completed":   "true",
+			"voice.previous.response_interrupted": "false",
+			"voice.previous.response_truncated":   "false",
+		},
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if len(model.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(model.requests))
+	}
+	found := false
+	for _, message := range model.requests[0].Messages {
+		if message.Role != "system" {
+			continue
+		}
+		if strings.Contains(message.Content, "Runtime voice follow-up hint:") &&
+			strings.Contains(message.Content, "reached playback completion") &&
+			strings.Contains(message.Content, "recoverable spoken context") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected soft recovery runtime hint, got %+v", model.requests[0].Messages)
 	}
 }
 

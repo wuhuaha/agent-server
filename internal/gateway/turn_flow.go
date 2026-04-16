@@ -510,8 +510,16 @@ func modalitiesForAudioStart(start voice.ResponseAudioStart, seenAnyDelta bool) 
 }
 
 func aggregatedTextForAudioStart(collector collectedTurnText, start voice.ResponseAudioStart) string {
-	if joined := collector.Joined(); strings.TrimSpace(joined) != "" {
+	joined := strings.TrimSpace(collector.Joined())
+	audioHint := strings.TrimSpace(start.Text)
+	switch {
+	case joined == "":
+		return audioHint
+	case audioHint == "":
+		return joined
+	case strings.HasPrefix(audioHint, joined):
+		return audioHint
+	default:
 		return joined
 	}
-	return strings.TrimSpace(start.Text)
 }

@@ -395,5 +395,10 @@
   - while output is already `speaking`, later streamed text deltas may extend the active delivered-text inside `SessionOrchestrator`
   - interruption truncation and `voice.previous.*` resume context should now track early streamed speech more closely instead of lagging behind late text deltas
   - the next remaining playback-truth gap should now be treated as policy depth and downstream usage, not basic segment anchoring: e.g. resume/continue behavior, richer playback completion evidence, and dynamic biasing from heard vs. missed text
+- The next playback-truth depth slice is now also landed on the same shared boundary:
+  - native realtime now syncs the latest announced `audio.out.meta` segment text and cumulative duration back into runtime playback context while output is still speaking
+  - later `audio.out.mark` / `audio.out.cleared` / `audio.out.completed` may therefore reconcile exact heard boundaries against the newest announced tail before final response settlement
+  - `duck_only` / `backchannel` no longer always collapse into “user heard the full reply” when playback later completes naturally; `SessionOrchestrator` may keep recoverable `heard_text` / `missed_text` even with `playback_completed=true`
+  - deterministic continue / recap behavior in `internal/agent` should therefore trust `voice.previous.*` even when playback completed, as long as the runtime marks the tail as recoverable after soft overlap
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

@@ -2137,6 +2137,122 @@ done:
 	assertNoServerPanic(t, serverLog)
 }
 
+func TestRealtimeWSEarlySegmentMetaPromotesPlaybackContextBeforeResponseSettles(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	store := &recordingMemoryStore{}
+	responder := orchestratingProviderResponder{
+		memory: store,
+		respondOrchestrated: func(context.Context, voice.TurnRequest, voice.ResponseDeltaSink) (voice.TurnResponseFuture, error) {
+			return fakeTurnResponseFuture{
+				audioAfter:    5 * time.Millisecond,
+				responseAfter: 900 * time.Millisecond,
+				stream: &scriptedSegmentedAudioStream{
+					segments: []scriptedPlaybackSegment{
+						{
+							text:     "好的，先打开客厅灯。",
+							duration: 500 * time.Millisecond,
+							chunks:   repeatAudioChunks(make([]byte, 640), 25),
+						},
+						{
+							text:     "再关闭窗帘。",
+							duration: 500 * time.Millisecond,
+							isLast:   true,
+							chunks:   repeatAudioChunks(make([]byte, 640), 25),
+						},
+					},
+				},
+				finalStream: voice.NewStaticAudioStream([][]byte{make([]byte, 8)}),
+				text:        "好的，先打开客厅灯。再关闭窗帘。",
+				audioText:   "好的，先打开客厅灯。",
+			}, nil
+		},
+	}
+
+	conn, serverLog := openRealtimeWSWithServerLog(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"playback_ack": map[string]any{
+			"mode": "segment_mark_v1",
+		},
+	})
+
+	startedAt := time.Now()
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "play"})
+
+	metaCount := 0
+	for metaCount < 2 {
+		if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline failed: %v", err)
+		}
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read message failed before second meta: %v\nserver log:\n%s", err, serverLog.String())
+		}
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "audio.out.meta":
+			metaCount++
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		latest, ok := store.Latest()
+		if ok && latest.DeliveredText == "好的，先打开客厅灯。再关闭窗帘。" {
+			if latest.PlaybackCompleted {
+				t.Fatalf("expected speaking-time context promotion before playback completed, got %+v", latest)
+			}
+			if time.Since(startedAt) >= 850*time.Millisecond {
+				t.Fatalf("expected context promotion before final response settles, got %s", time.Since(startedAt))
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			if latest, ok := store.Latest(); ok {
+				t.Fatalf("expected latest announced segment to promote playback context early, got %+v", latest)
+			}
+			t.Fatal("expected persisted playback context before final response settled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	drainDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(drainDeadline) {
+		if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline failed: %v", err)
+		}
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		if event.Type == "session.update" && stringValue(event.Payload["state"]) == "active" {
+			break
+		}
+		if event.Type == "error" {
+			t.Fatalf("unexpected error event while draining: %#v", event.Payload)
+		}
+	}
+
+	assertNoServerPanic(t, serverLog)
+}
+
 func testRealtimeProfile() RealtimeProfile {
 	return RealtimeProfile{WSPath: "/v1/realtime/ws", ProtocolVersion: "rtos-ws-v0", Subprotocol: "agent-server.realtime.v0", VoiceProvider: "bootstrap", TTSProvider: "none", AuthMode: "disabled", TurnMode: "client_wakeup_client_commit", IdleTimeoutMs: 15000, MaxSessionMs: 300000, MaxFrameBytes: 4096, InputCodec: "pcm16le", InputSampleRate: 16000, InputChannels: 1, OutputCodec: "pcm16le", OutputSampleRate: 16000, OutputChannels: 1, AllowOpus: false, AllowTextInput: true, AllowImageInput: false}
 }

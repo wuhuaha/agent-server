@@ -9,13 +9,13 @@ func TestEvaluateBargeInPolicyBoundaries(t *testing.T) {
 	cfg := BargeInConfig{MinAudioMs: 120, IncompleteHoldMs: 240}
 
 	tests := []struct {
-		name            string
-		preview         InputPreview
-		wantPolicy      InterruptionPolicy
-		wantAccepted    bool
-		wantInterrupt   bool
-		wantDuckOutput  bool
-		wantReason      string
+		name           string
+		preview        InputPreview
+		wantPolicy     InterruptionPolicy
+		wantAccepted   bool
+		wantInterrupt  bool
+		wantDuckOutput bool
+		wantReason     string
 	}{
 		{
 			name:         "ignore_without_speech_start",
@@ -170,18 +170,18 @@ func TestEvaluateBargeInThresholdEdges(t *testing.T) {
 
 func TestBargeInDecisionPlaybackDirectiveProfiles(t *testing.T) {
 	tests := []struct {
-		name              string
-		decision          BargeInDecision
-		wantAction        PlaybackAction
-		wantPolicy        InterruptionPolicy
-		wantGain          float64
-		wantAttack        time.Duration
-		wantHold          time.Duration
-		wantRelease       time.Duration
-		wantKeepPreview   bool
-		wantKeepPending   bool
-		wantDuckOutput    bool
-		wantInterrupt     bool
+		name            string
+		decision        BargeInDecision
+		wantAction      PlaybackAction
+		wantPolicy      InterruptionPolicy
+		wantGain        float64
+		wantAttack      time.Duration
+		wantHold        time.Duration
+		wantRelease     time.Duration
+		wantKeepPreview bool
+		wantKeepPending bool
+		wantDuckOutput  bool
+		wantInterrupt   bool
 	}{
 		{
 			name: "normal_ignore",
@@ -201,9 +201,9 @@ func TestBargeInDecisionPlaybackDirectiveProfiles(t *testing.T) {
 		{
 			name: "duck_light_backchannel",
 			decision: BargeInDecision{
-				Policy:   InterruptionPolicyBackchannel,
-				Reason:   "backchannel_short_ack",
-				AudioMs:  180,
+				Policy:     InterruptionPolicyBackchannel,
+				Reason:     "backchannel_short_ack",
+				AudioMs:    180,
 				MinAudioMs: 120,
 			},
 			wantAction:      PlaybackActionDuckLight,
@@ -308,20 +308,70 @@ func TestSessionOrchestratorPersistsDuckOnlyMetadataOnCompletedPlayback(t *testi
 	if record.ResponseInterrupted || record.ResponseTruncated {
 		t.Fatalf("expected duck_only to avoid interruption flags, got %+v", record)
 	}
+	if !record.PlaybackCompleted {
+		t.Fatalf("expected duck_only path to keep playback_completed, got %+v", record)
+	}
+	if record.HeardText == "" || record.HeardText == "好的，正在帮你把灯光调暗一些。" {
+		t.Fatalf("expected duck_only completion to preserve heard prefix instead of full text, got %+v", record)
+	}
 	if got := record.Metadata[interruptionPolicyMetadataKey]; got != string(InterruptionPolicyDuckOnly) {
 		t.Fatalf("expected duck_only policy metadata, got %q", got)
 	}
 	if got := record.Metadata[interruptionReasonMetadataKey]; got != "duck_pending_incomplete_preview" {
 		t.Fatalf("expected duck_only reason metadata, got %q", got)
 	}
-	if got := record.Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryFull) {
-		t.Fatalf("expected full heard-text boundary after completed playback, got %q", got)
+	if got := record.Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryPrefix) {
+		t.Fatalf("expected prefix heard-text boundary after completed playback, got %q", got)
 	}
 	if got := record.Metadata[playedDurationMetadataKey]; got != "400" {
 		t.Fatalf("expected played duration metadata 400ms, got %q", got)
 	}
 	if got := record.Metadata[plannedDurationMetadataKey]; got != "2000" {
 		t.Fatalf("expected planned duration metadata 2000ms, got %q", got)
+	}
+	if got := record.Metadata[missedTextMetadataKey]; got == "" {
+		t.Fatalf("expected duck_only completion to retain missed text metadata, got %+v", record.Metadata)
+	}
+}
+
+func TestSessionOrchestratorPersistsBackchannelRecoveryContextWhenTailLikelyMasked(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-backchannel-tail",
+		TurnID:     "turn-backchannel-tail",
+		DeviceID:   "dev-backchannel-tail",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，已经为你打开客厅灯，现在把亮度调到了最舒适的模式。"
+	orchestrator.PrepareTurn(request, "打开客厅灯并调亮一点", delivered)
+	orchestrator.StartPlayback(delivered, 200*time.Millisecond, 2*time.Second)
+	orchestrator.ObservePlaybackChunk()
+	orchestrator.RecordInterruptionDecision(BargeInDecision{
+		Policy: InterruptionPolicyBackchannel,
+		Reason: "backchannel_short_ack",
+	})
+	orchestrator.CompletePlayback()
+
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected prepare + complete saves, got %d", got)
+	}
+	record := store.saves[1]
+	if record.ResponseInterrupted || record.ResponseTruncated || !record.PlaybackCompleted {
+		t.Fatalf("expected completed soft-recovery record, got %+v", record)
+	}
+	if record.HeardText == "" || record.HeardText == delivered {
+		t.Fatalf("expected early backchannel to preserve heard prefix, got %+v", record)
+	}
+	if got := record.Metadata[interruptionPolicyMetadataKey]; got != string(InterruptionPolicyBackchannel) {
+		t.Fatalf("expected backchannel policy metadata, got %q", got)
+	}
+	if got := record.Metadata[heardTextBoundaryMetadataKey]; got != string(HeardTextBoundaryPrefix) {
+		t.Fatalf("expected prefix heard boundary after masked backchannel tail, got %q", got)
+	}
+	if got := record.Metadata[missedTextMetadataKey]; got == "" {
+		t.Fatalf("expected missed text metadata for masked backchannel tail, got %+v", record.Metadata)
 	}
 }
 
