@@ -22,6 +22,7 @@ type ASRResponder struct {
 	Transcriber                   Transcriber
 	Executor                      agent.TurnExecutor
 	SemanticJudge                 SemanticTurnJudge
+	SlotParser                    SemanticSlotParser
 	Synthesizer                   Synthesizer
 	MemoryStore                   agent.MemoryStore
 	Language                      string
@@ -33,6 +34,9 @@ type ASRResponder struct {
 	SemanticJudgeTimeout          time.Duration
 	SemanticJudgeMinRunes         int
 	SemanticJudgeMinStableFor     time.Duration
+	SlotParserTimeout             time.Duration
+	SlotParserMinRunes            int
+	SlotParserMinStableFor        time.Duration
 	OutputCodec                   string
 	OutputSampleRate              int
 	OutputChannels                int
@@ -78,6 +82,10 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		semanticTimeout:      firstPositiveDuration(r.SemanticJudgeTimeout, defaultSemanticJudgeTimeout),
 		semanticMinRunes:     maxInt(r.SemanticJudgeMinRunes, defaultSemanticJudgeMinRunes),
 		semanticMinStableFor: firstPositiveDuration(r.SemanticJudgeMinStableFor, defaultSemanticJudgeMinStableFor),
+		slotParser:           r.SlotParser,
+		slotParserTimeout:    firstPositiveDuration(r.SlotParserTimeout, defaultSemanticSlotParserTimeout),
+		slotParserMinRunes:   maxInt(r.SlotParserMinRunes, defaultSemanticSlotParserMinRunes),
+		slotParserStableFor:  firstPositiveDuration(r.SlotParserMinStableFor, defaultSemanticSlotParserMinStableFor),
 		previewRequest:       req,
 		minPrewarmRunes:      defaultPreviewPrewarmMinRunes,
 	}, nil
@@ -96,6 +104,9 @@ func NewASRResponder(
 		SemanticJudgeTimeout:          defaultSemanticJudgeTimeout,
 		SemanticJudgeMinRunes:         defaultSemanticJudgeMinRunes,
 		SemanticJudgeMinStableFor:     defaultSemanticJudgeMinStableFor,
+		SlotParserTimeout:             defaultSemanticSlotParserTimeout,
+		SlotParserMinRunes:            defaultSemanticSlotParserMinRunes,
+		SlotParserMinStableFor:        defaultSemanticSlotParserMinStableFor,
 		OutputCodec:                   outputCodec,
 		OutputSampleRate:              outputSampleRate,
 		OutputChannels:                outputChannels,
@@ -213,6 +224,20 @@ func (r ASRResponder) WithSemanticJudge(judge SemanticTurnJudge, timeout time.Du
 	}
 	if minStableFor > 0 {
 		r.SemanticJudgeMinStableFor = minStableFor
+	}
+	return r
+}
+
+func (r ASRResponder) WithSlotParser(parser SemanticSlotParser, timeout time.Duration, minRunes int, minStableFor time.Duration) ASRResponder {
+	r.SlotParser = parser
+	if timeout > 0 {
+		r.SlotParserTimeout = timeout
+	}
+	if minRunes > 0 {
+		r.SlotParserMinRunes = minRunes
+	}
+	if minStableFor > 0 {
+		r.SlotParserMinStableFor = minStableFor
 	}
 	return r
 }
@@ -413,6 +438,11 @@ type asrInputPreviewSession struct {
 	semanticTimeout      time.Duration
 	semanticMinRunes     int
 	semanticMinStableFor time.Duration
+	slotParser           SemanticSlotParser
+	slotState            previewSemanticSlotParserState
+	slotParserTimeout    time.Duration
+	slotParserMinRunes   int
+	slotParserStableFor  time.Duration
 	previewRequest       InputPreviewRequest
 	minPrewarmRunes      int
 	lastPrewarmText      string
@@ -455,6 +485,8 @@ func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
 	snapshot := s.detector.Snapshot(now)
 	s.maybeLaunchSemanticJudge(snapshot)
 	snapshot = s.mergedSemanticSnapshot(snapshot)
+	s.maybeLaunchSlotParser(snapshot)
+	snapshot = s.mergedSlotSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
 	return snapshot
 }
@@ -491,6 +523,8 @@ func (s *asrInputPreviewSession) pushPreviewChunk(ctx context.Context, chunk []b
 	snapshot := s.detector.Snapshot(time.Now())
 	s.maybeLaunchSemanticJudge(snapshot)
 	snapshot = s.mergedSemanticSnapshot(snapshot)
+	s.maybeLaunchSlotParser(snapshot)
+	snapshot = s.mergedSlotSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
 	return snapshot, nil
 }
@@ -535,6 +569,15 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 			"voice.preview.semantic_complete":   strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
 			"voice.preview.semantic_intent":     strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
 			"voice.preview.semantic_confidence": strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
+			"voice.preview.slot_ready":          strconv.FormatBool(snapshot.Arbitration.SlotReady),
+			"voice.preview.slot_complete":       strconv.FormatBool(snapshot.Arbitration.SlotComplete),
+			"voice.preview.slot_domain":         strings.TrimSpace(snapshot.Arbitration.SlotDomain),
+			"voice.preview.slot_intent":         strings.TrimSpace(snapshot.Arbitration.SlotIntent),
+			"voice.preview.slot_status":         strings.TrimSpace(snapshot.Arbitration.SlotStatus),
+			"voice.preview.slot_actionability":  strings.TrimSpace(snapshot.Arbitration.SlotActionability),
+			"voice.preview.slot_clarify_needed": strconv.FormatBool(snapshot.Arbitration.SlotClarifyNeeded),
+			"voice.preview.slot_missing":        encodeSpeechStringList(snapshot.Arbitration.SlotMissing),
+			"voice.preview.slot_ambiguous":      encodeSpeechStringList(snapshot.Arbitration.SlotAmbiguous),
 		},
 	}
 	go func() {
@@ -609,4 +652,67 @@ func (s *asrInputPreviewSession) mergedSemanticSnapshot(snapshot InputPreview) I
 		return snapshot
 	}
 	return mergeSemanticJudgement(snapshot, result)
+}
+
+func (s *asrInputPreviewSession) maybeLaunchSlotParser(snapshot InputPreview) {
+	if s == nil || s.slotParser == nil {
+		return
+	}
+	if !shouldParseSemanticSlots(snapshot, s.slotParserMinRunes, s.slotParserStableFor) {
+		return
+	}
+	request := s.semanticSlotParseRequest(snapshot)
+	if request == nil {
+		return
+	}
+	key := semanticCandidateKey(request.StablePrefix, request.PartialText)
+	if !s.slotState.shouldLaunch(key) {
+		return
+	}
+	go func(request SemanticSlotParseRequest, key string) {
+		ctx, cancel := context.WithTimeout(context.Background(), firstPositiveDuration(s.slotParserTimeout, defaultSemanticSlotParserTimeout))
+		defer cancel()
+		result, err := s.slotParser.ParsePreview(ctx, request)
+		if err != nil {
+			s.slotState.clearRequest()
+			return
+		}
+		result.CandidateKey = key
+		s.slotState.storeResult(result)
+	}(*request, key)
+}
+
+func (s *asrInputPreviewSession) semanticSlotParseRequest(snapshot InputPreview) *SemanticSlotParseRequest {
+	if s == nil {
+		return nil
+	}
+	partialText := strings.TrimSpace(snapshot.PartialText)
+	stablePrefix := strings.TrimSpace(snapshot.StablePrefix)
+	if partialText == "" && stablePrefix == "" {
+		return nil
+	}
+	return &SemanticSlotParseRequest{
+		SessionID:      s.previewRequest.SessionID,
+		DeviceID:       s.previewRequest.DeviceID,
+		ClientType:     s.previewRequest.ClientType,
+		PartialText:    partialText,
+		StablePrefix:   stablePrefix,
+		AudioMs:        snapshot.Arbitration.AudioMs,
+		Stability:      snapshot.Arbitration.Stability,
+		StableForMs:    snapshot.Arbitration.StableForMs,
+		TurnStage:      snapshot.Arbitration.Stage,
+		EndpointHinted: snapshot.Arbitration.EndpointHinted,
+		SemanticIntent: snapshot.Arbitration.SemanticIntent,
+	}
+}
+
+func (s *asrInputPreviewSession) mergedSlotSnapshot(snapshot InputPreview) InputPreview {
+	if s == nil {
+		return snapshot
+	}
+	result, ok := s.slotState.resultFor(semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText))
+	if !ok {
+		return snapshot
+	}
+	return mergeSemanticSlotParse(snapshot, result)
 }

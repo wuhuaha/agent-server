@@ -93,3 +93,86 @@ func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) 
 		t.Fatalf("expected correction judgement to suppress draft, got %+v", merged.Arbitration)
 	}
 }
+
+func TestLLMSemanticSlotParserDecodesJSONResponse(t *testing.T) {
+	parser := NewLLMSemanticSlotParser(staticSemanticChatModel{
+		text: "```json\n{\"domain\":\"smart_home\",\"intent\":\"device_control\",\"slot_status\":\"complete\",\"actionability\":\"act_candidate\",\"clarify_needed\":false,\"missing_slots\":[],\"ambiguous_slots\":[],\"confidence\":0.88,\"reason\":\"required_slots_grounded\"}\n```",
+	})
+	result, err := parser.ParsePreview(context.Background(), SemanticSlotParseRequest{
+		SessionID:   "sess_slot",
+		PartialText: "打开客厅灯",
+	})
+	if err != nil {
+		t.Fatalf("ParsePreview failed: %v", err)
+	}
+	if result.Domain != SemanticSlotDomainSmartHome {
+		t.Fatalf("expected smart_home domain, got %+v", result)
+	}
+	if result.Intent != "device_control" {
+		t.Fatalf("expected device_control intent, got %+v", result)
+	}
+	if result.SlotStatus != SemanticSlotStatusComplete || result.Actionability != SemanticSlotActionabilityActCandidate {
+		t.Fatalf("expected complete act_candidate, got %+v", result)
+	}
+}
+
+func TestMergeSemanticSlotParsePromotesClarifyDraft(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "把灯调亮一点",
+		StablePrefix: "把灯调亮一点",
+		Arbitration: TurnArbitration{
+			Stage:          TurnArbitrationStageWaitForMore,
+			PrewarmAllowed: false,
+			DraftAllowed:   false,
+		},
+	}
+	merged := mergeSemanticSlotParse(snapshot, SemanticSlotParseResult{
+		CandidateKey:  semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "set_attribute",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityClarifyNeeded,
+		ClarifyNeeded: true,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.84,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+	if merged.Arbitration.Stage != TurnArbitrationStageDraftAllowed {
+		t.Fatalf("expected clarify-needed slot parse to promote draft_allowed, got %+v", merged.Arbitration)
+	}
+	if !merged.Arbitration.DraftAllowed || !merged.Arbitration.SlotClarifyNeeded {
+		t.Fatalf("expected draft + clarify flags, got %+v", merged.Arbitration)
+	}
+	if got := merged.Arbitration.SlotMissing; len(got) != 1 || got[0] != "target" {
+		t.Fatalf("expected missing target slot, got %+v", got)
+	}
+}
+
+func TestMergeSemanticSlotParseCanPullDraftBackToWaitMore(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "把客厅灯",
+		StablePrefix: "把客厅灯",
+		Arbitration: TurnArbitration{
+			Stage:          TurnArbitrationStageDraftAllowed,
+			PrewarmAllowed: true,
+			DraftAllowed:   true,
+		},
+	}
+	merged := mergeSemanticSlotParse(snapshot, SemanticSlotParseResult{
+		CandidateKey:  semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityWaitMore,
+		Confidence:    0.82,
+		Reason:        "tail_slot_incomplete",
+		Source:        "test",
+	})
+	if merged.Arbitration.DraftAllowed {
+		t.Fatalf("expected slot wait_more to suppress draft, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.Stage != TurnArbitrationStagePrewarmAllowed {
+		t.Fatalf("expected slot wait_more to keep only prewarm_allowed, got %+v", merged.Arbitration)
+	}
+}

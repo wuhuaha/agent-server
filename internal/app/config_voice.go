@@ -23,6 +23,11 @@ type VoiceConfig struct {
 	LLMSemanticJudgeTimeoutMs      int
 	LLMSemanticJudgeMinRunes       int
 	LLMSemanticJudgeMinStableForMs int
+	LLMSlotParserEnabled           bool
+	LLMSlotParserLLM               VoiceLLMProviderConfig
+	LLMSlotParserTimeoutMs         int
+	LLMSlotParserMinRunes          int
+	LLMSlotParserMinStableForMs    int
 	SpeechPlannerEnabled           bool
 	SpeechPlannerMinChunkRunes     int
 	SpeechPlannerTargetChunkRunes  int
@@ -67,6 +72,10 @@ func loadVoiceConfig() VoiceConfig {
 			}
 		}
 	}
+	slotParserProvider := getenv("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_PROVIDER", semanticJudgeProvider)
+	slotParserBaseURL := getenv("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_BASE_URL", semanticJudgeBaseURL)
+	slotParserAPIKey := getenv("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_API_KEY", semanticJudgeAPIKey)
+	slotParserModel := getenv("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MODEL", semanticJudgeModel)
 	return VoiceConfig{
 		Provider:                       getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
 		ASRURL:                         getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
@@ -92,10 +101,22 @@ func loadVoiceConfig() VoiceConfig {
 		LLMSemanticJudgeTimeoutMs:      getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_TIMEOUT_MS", 220),
 		LLMSemanticJudgeMinRunes:       getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_RUNES", 2),
 		LLMSemanticJudgeMinStableForMs: getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_STABLE_FOR_MS", 120),
-		SpeechPlannerEnabled:           getenvBool("AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED", true),
-		SpeechPlannerMinChunkRunes:     getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES", 6),
-		SpeechPlannerTargetChunkRunes:  getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES", 24),
-		EmitPlaceholderAudio:           getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
+		LLMSlotParserEnabled:           getenvBool("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_ENABLED", true),
+		LLMSlotParserLLM: VoiceLLMProviderConfig{
+			Provider:    slotParserProvider,
+			BaseURL:     slotParserBaseURL,
+			APIKey:      slotParserAPIKey,
+			Model:       slotParserModel,
+			Temperature: getenvFloat64("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_TEMPERATURE", 0.1),
+			MaxTokens:   getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MAX_TOKENS", 256),
+		},
+		LLMSlotParserTimeoutMs:        getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_TIMEOUT_MS", 280),
+		LLMSlotParserMinRunes:         getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_RUNES", 4),
+		LLMSlotParserMinStableForMs:   getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_STABLE_FOR_MS", 160),
+		SpeechPlannerEnabled:          getenvBool("AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED", true),
+		SpeechPlannerMinChunkRunes:    getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES", 6),
+		SpeechPlannerTargetChunkRunes: getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES", 24),
+		EmitPlaceholderAudio:          getenvBool("AGENT_SERVER_VOICE_EMIT_PLACEHOLDER_AUDIO", true),
 		IflytekRTASR: IflytekRTASRProviderConfig{
 			AppID:           getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_APP_ID", ""),
 			AccessKeyID:     getenv("AGENT_SERVER_VOICE_IFLYTEK_RTASR_ACCESS_KEY_ID", ""),
@@ -163,6 +184,22 @@ func applyVoiceDefaults(cfg *Config) {
 	if cfg.Voice.LLMSemanticJudgeMinStableForMs <= 0 {
 		cfg.Voice.LLMSemanticJudgeMinStableForMs = 120
 	}
+	cfg.Voice.LLMSlotParserLLM.Provider = normalizeVoiceLLMProvider(cfg.Voice.LLMSlotParserLLM.Provider)
+	if strings.TrimSpace(cfg.Voice.LLMSlotParserLLM.BaseURL) == "" && cfg.Voice.LLMSlotParserLLM.Provider == "deepseek_chat" {
+		cfg.Voice.LLMSlotParserLLM.BaseURL = "https://api.deepseek.com"
+	}
+	if strings.TrimSpace(cfg.Voice.LLMSlotParserLLM.Model) == "" && cfg.Voice.LLMSlotParserLLM.Provider == "deepseek_chat" {
+		cfg.Voice.LLMSlotParserLLM.Model = "deepseek-chat"
+	}
+	if cfg.Voice.LLMSlotParserTimeoutMs <= 0 {
+		cfg.Voice.LLMSlotParserTimeoutMs = 280
+	}
+	if cfg.Voice.LLMSlotParserMinRunes <= 0 {
+		cfg.Voice.LLMSlotParserMinRunes = 4
+	}
+	if cfg.Voice.LLMSlotParserMinStableForMs <= 0 {
+		cfg.Voice.LLMSlotParserMinStableForMs = 160
+	}
 	if cfg.Voice.SpeechPlannerMinChunkRunes <= 0 {
 		cfg.Voice.SpeechPlannerMinChunkRunes = 6
 	}
@@ -195,19 +232,10 @@ func validateVoiceConfig(cfg Config) error {
 		problems = append(problems, "voice.server_endpoint_enabled requires a streaming preview-capable transcriber")
 	}
 	if cfg.Voice.LLMSemanticJudgeEnabled {
-		switch cfg.Voice.LLMSemanticJudgeLLM.Provider {
-		case "", "disabled":
-		case "deepseek_chat":
-			if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.APIKey) == "" {
-				problems = append(problems, "voice.llm_semantic_judge api key is required when semantic judge provider is deepseek_chat")
-			}
-		case "openai_compat":
-			if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.BaseURL) == "" {
-				problems = append(problems, "voice.llm_semantic_judge base_url is required when semantic judge provider is openai_compat")
-			}
-		default:
-			problems = append(problems, "voice.llm_semantic_judge provider must be disabled, deepseek_chat, or openai_compat")
-		}
+		problems = append(problems, validateVoiceLLMProvider("voice.llm_semantic_judge", cfg.Voice.LLMSemanticJudgeLLM)...)
+	}
+	if cfg.Voice.LLMSlotParserEnabled {
+		problems = append(problems, validateVoiceLLMProvider("voice.llm_slot_parser", cfg.Voice.LLMSlotParserLLM)...)
 	}
 	if len(problems) == 0 {
 		return nil
@@ -234,5 +262,24 @@ func normalizeVoiceLLMProvider(provider string) string {
 		return "openai_compat"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func validateVoiceLLMProvider(name string, cfg VoiceLLMProviderConfig) []string {
+	switch normalizeVoiceLLMProvider(cfg.Provider) {
+	case "", "disabled":
+		return nil
+	case "deepseek_chat":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return []string{name + " api key is required when provider is deepseek_chat"}
+		}
+		return nil
+	case "openai_compat":
+		if strings.TrimSpace(cfg.BaseURL) == "" {
+			return []string{name + " base_url is required when provider is openai_compat"}
+		}
+		return nil
+	default:
+		return []string{name + " provider must be disabled, deepseek_chat, or openai_compat"}
 	}
 }

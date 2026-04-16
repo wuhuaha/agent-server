@@ -450,3 +450,9 @@
   - semantic-judge model selection now lives under `cfg.Voice` with dedicated provider/base_url/api_key/model/temperature/max_tokens settings
   - the current supported semantic-judge endpoint modes are `deepseek_chat` and `openai_compat`
   - local OpenAI-compatible judge workers may omit a real API key, while `deepseek_chat` still requires one
+
+- The first slot-completeness runtime slice is now landed:
+  - `internal/voice` now owns a `SemanticSlotParser` boundary alongside `SemanticTurnJudge`
+  - preview arbitration now carries slot summaries: `slot_domain`, `slot_intent`, `slot_status`, `slot_actionability`, `slot_missing`, `slot_ambiguous`, and `slot_clarify_needed`
+  - `clarify_needed` and `act_candidate` can promote preview into `draft_allowed`, while `wait_more` can pull a premature draft back to a more conservative state
+  - this slot layer is still advisory and does not directly manufacture final accept

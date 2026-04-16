@@ -187,6 +187,14 @@ func (j fixedSemanticJudge) JudgePreview(context.Context, SemanticTurnRequest) (
 	return j.result, nil
 }
 
+type fixedSemanticSlotParser struct {
+	result SemanticSlotParseResult
+}
+
+func (p fixedSemanticSlotParser) ParsePreview(context.Context, SemanticSlotParseRequest) (SemanticSlotParseResult, error) {
+	return p.result, nil
+}
+
 func TestASRResponderForAudio(t *testing.T) {
 	responder := NewASRResponder(
 		fakeTranscriber{result: TranscriptionResult{Text: "hello from local asr"}},
@@ -543,6 +551,58 @@ func TestASRResponderPreviewSessionPollIncludesSemanticJudgeResult(t *testing.T)
 	}
 
 	t.Fatal("expected preview poll to include semantic judgement result")
+}
+
+func TestASRResponderPreviewSessionPollIncludesSlotParserResult(t *testing.T) {
+	responder := NewASRResponder(previewStreamingTranscriber{text: "把灯调亮一点"}, "auto", "pcm16le", 16000, 1, false).
+		WithSlotParser(fixedSemanticSlotParser{
+			result: SemanticSlotParseResult{
+				Domain:        SemanticSlotDomainSmartHome,
+				Intent:        "set_attribute",
+				SlotStatus:    SemanticSlotStatusPartial,
+				Actionability: SemanticSlotActionabilityClarifyNeeded,
+				ClarifyNeeded: true,
+				MissingSlots:  []string{"target"},
+				Confidence:    0.9,
+				Reason:        "missing_target_need_clarify",
+				Source:        "test",
+			},
+		}, 80*time.Millisecond, 4, 0)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_slot_preview",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 1280)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		snapshot := preview.Poll(time.Now())
+		if snapshot.Arbitration.SlotReady {
+			if snapshot.Arbitration.SlotDomain != SemanticSlotDomainSmartHome {
+				t.Fatalf("expected smart_home slot domain, got %+v", snapshot.Arbitration)
+			}
+			if !snapshot.Arbitration.SlotClarifyNeeded {
+				t.Fatalf("expected clarify-needed slot parse, got %+v", snapshot.Arbitration)
+			}
+			if snapshot.Arbitration.Stage != TurnArbitrationStageDraftAllowed {
+				t.Fatalf("expected slot parse to promote draft_allowed, got %+v", snapshot.Arbitration)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("expected preview poll to include slot parser result")
 }
 
 func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {

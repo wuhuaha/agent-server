@@ -235,6 +235,18 @@ type TurnArbitration struct {
 	SemanticReason     string
 	SemanticSource     string
 	SemanticConfidence float64
+	SlotReady          bool
+	SlotComplete       bool
+	SlotDomain         string
+	SlotIntent         string
+	SlotStatus         string
+	SlotActionability  string
+	SlotReason         string
+	SlotSource         string
+	SlotConfidence     float64
+	SlotClarifyNeeded  bool
+	SlotMissing        []string
+	SlotAmbiguous      []string
 }
 
 type InputPreviewSession interface {

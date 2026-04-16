@@ -641,6 +641,11 @@ Recorded follow-through:
   - architecture/protocol follow-through: `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, and ADR `0029`
   - validation: targeted Go tests for `/v1/realtime` and `/v1/info`, plus desktop-client protocol/runner unit tests
 
+- `2026-04-17 Step2 Semantic Slot Parser MVP`
+  - added a shared `SemanticSlotParser` lane inside `internal/voice`
+  - preview arbitration now carries slot/domain summaries and may distinguish `act_candidate`, `clarify_needed`, and `wait_more`
+  - validation: `go test ./internal/voice ./internal/app -run 'Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`
+
 - `2026-04-17 Step1 Semantic Judge Independent Model Config`
   - the realtime semantic-judge lane now owns its own voice-side model configuration instead of reusing the main dialogue LLM config
   - current supported semantic-judge endpoint modes are `deepseek_chat` and `openai_compat`

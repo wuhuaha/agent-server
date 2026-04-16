@@ -984,3 +984,10 @@
   - semantic-judge runtime wiring now builds from the voice-owned config and supports both `deepseek_chat` and generic `openai_compat` endpoints
   - added validation coverage so `deepseek_chat` still requires a key while local OpenAI-compatible judge endpoints may run without one
   - validated with `go test ./internal/app ./internal/voice -run 'Semantic|BuildResponder|TurnDetector|ConfigValidate'`
+
+- Landed step 2 of the tiered voice-intelligence implementation path:
+  - added a runtime-owned `SemanticSlotParser` under `internal/voice` for `domain / intent / slot completeness / actionability / clarify_needed` preview parsing
+  - preview snapshots now carry slot-level summary fields such as `slot_domain`, `slot_intent`, `slot_status`, `slot_actionability`, `slot_missing`, and `slot_clarify_needed`
+  - preview arbitration may now promote `draft_allowed` on `clarify_needed` / `act_candidate`, or pull a premature draft back toward `wait_more` when the slot parser marks the tail as incomplete
+  - `ASRResponder` prewarm metadata now includes slot-parser summaries so the shared runtime can reuse them in later speculative work
+  - validated with `go test ./internal/voice ./internal/app -run 'Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`

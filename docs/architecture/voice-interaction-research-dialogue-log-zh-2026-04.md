@@ -1223,3 +1223,47 @@
 
 - 这是分层语音智能主线的第一个真正代码切片。
 - 它把“主回复 LLM”和“实时语义裁判 LLM”从配置 ownership 上拆开，为后续 `SemanticSlotParser` 和不同尺寸模型分工打下了实际基础。
+
+
+## Round 024｜2026-04-17｜Step2 落地：slot completeness 进入 preview 仲裁
+
+### 用户诉求
+
+- 在独立 `semantic judge` 配置落地后，继续直接实现第二步：
+  - 新增 `SemanticSlotParser`
+  - 让 `slot completeness` 不再只停留在研究文档里，而是真正进入 preview arbitration
+
+### 本轮实现内容
+
+- 在 `internal/voice` 中新增 `SemanticSlotParser` 与 `LLMSemanticSlotParser`：
+  - 输入仍是成熟 preview candidate
+  - 输出结构化 JSON，包括：
+    - `domain`
+    - `intent`
+    - `slot_status`
+    - `actionability`
+    - `clarify_needed`
+    - `missing_slots`
+    - `ambiguous_slots`
+- `TurnArbitration` 现在新增 slot 摘要字段：
+  - `SlotDomain`
+  - `SlotIntent`
+  - `SlotStatus`
+  - `SlotActionability`
+  - `SlotClarifyNeeded`
+  - `SlotMissing`
+  - `SlotAmbiguous`
+- merge 规则保持 advisory：
+  - `clarify_needed` / `draft_ok` / `act_candidate` 可以把 preview 提升到 `draft_allowed`
+  - `wait_more` 可以把过早的 `draft_allowed` 拉回更保守状态
+  - slot parser 仍不直接制造最终 accept
+- `ASRResponder` 的 preview prewarm metadata 也新增了 slot 摘要，方便后续 shared runtime 利用这些结构化信号。
+
+### 验证
+
+- `go test ./internal/voice ./internal/app -run 'Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`
+
+### 与主线的关系
+
+- 这一轮把“语句是否完成”扩展成了“语义是否足够可处理”。
+- 对智能家居 / 桌面助理场景尤其重要，因为很多体验问题并不是句子没说完，而是槽位没齐、应该澄清、或者尾部参数还在补充。

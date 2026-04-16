@@ -97,7 +97,16 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			LLMSemanticJudgeTimeoutMs:      180,
 			LLMSemanticJudgeMinRunes:       3,
 			LLMSemanticJudgeMinStableForMs: 140,
-			EmitPlaceholderAudio:           true,
+			LLMSlotParserEnabled:           true,
+			LLMSlotParserLLM: VoiceLLMProviderConfig{
+				Provider: "openai_compat",
+				BaseURL:  "http://127.0.0.1:8012/v1",
+				Model:    "Qwen/Qwen3-4B-Instruct-2507",
+			},
+			LLMSlotParserTimeoutMs:      260,
+			LLMSlotParserMinRunes:       5,
+			LLMSlotParserMinStableForMs: 180,
+			EmitPlaceholderAudio:        true,
 		},
 	})
 
@@ -141,6 +150,18 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.SemanticJudgeMinStableFor != 140*time.Millisecond {
 		t.Fatalf("expected semantic judge min stable_for 140ms, got %s", asrResponder.SemanticJudgeMinStableFor)
+	}
+	if asrResponder.SlotParser == nil {
+		t.Fatal("expected llm slot parser to be configured")
+	}
+	if asrResponder.SlotParserTimeout != 260*time.Millisecond {
+		t.Fatalf("expected slot parser timeout 260ms, got %s", asrResponder.SlotParserTimeout)
+	}
+	if asrResponder.SlotParserMinRunes != 5 {
+		t.Fatalf("expected slot parser min runes 5, got %d", asrResponder.SlotParserMinRunes)
+	}
+	if asrResponder.SlotParserMinStableFor != 180*time.Millisecond {
+		t.Fatalf("expected slot parser min stable_for 180ms, got %s", asrResponder.SlotParserMinStableFor)
 	}
 }
 

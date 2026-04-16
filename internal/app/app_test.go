@@ -336,6 +336,23 @@ func TestConfigValidateRejectsSemanticJudgeDeepSeekWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsSlotParserOpenAICompatWithoutAPIKey(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:             "funasr_http",
+			LLMSlotParserEnabled: true,
+			LLMSlotParserLLM: VoiceLLMProviderConfig{
+				Provider: "openai_compat",
+				BaseURL:  "http://127.0.0.1:8012/v1",
+				Model:    "Qwen/Qwen3-4B-Instruct-2507",
+			},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("expected openai-compatible slot parser config to validate, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsXiaozhiWithoutPCM16LERealtimeOutput(t *testing.T) {
 	err := Config{
 		Xiaozhi: XiaozhiCompatConfig{

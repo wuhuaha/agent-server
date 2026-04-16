@@ -342,6 +342,37 @@ func buildVoiceSemanticJudge(cfg Config, logger *slog.Logger) (voice.SemanticTur
 	return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 }
 
+func buildVoiceSemanticSlotParser(cfg Config, logger *slog.Logger) (voice.SemanticSlotParser, time.Duration, int, time.Duration) {
+	timeout := time.Duration(cfg.Voice.LLMSlotParserTimeoutMs) * time.Millisecond
+	minStableFor := time.Duration(cfg.Voice.LLMSlotParserMinStableForMs) * time.Millisecond
+	if !cfg.Voice.LLMSlotParserEnabled {
+		return nil, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+	}
+	model, provider, ok := buildVoiceChatModel(cfg.Voice.LLMSlotParserLLM, timeout)
+	if !ok || model == nil {
+		if provider == "" {
+			logger.Info("voice llm slot parser disabled because no dedicated slot parser provider is configured")
+		} else {
+			logger.Warn("voice llm slot parser disabled because provider is unsupported", "provider", provider)
+		}
+		return nil, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+	}
+	if provider == "deepseek_chat" && strings.TrimSpace(cfg.Voice.LLMSlotParserLLM.APIKey) == "" {
+		logger.Warn("voice llm slot parser requested but slot parser api key is empty; falling back to slot-parser-off")
+		return nil, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+	}
+	logger.Info(
+		"voice llm slot parser configured",
+		"provider", provider,
+		"model", cfg.Voice.LLMSlotParserLLM.Model,
+		"base_url", cfg.Voice.LLMSlotParserLLM.BaseURL,
+		"timeout_ms", cfg.Voice.LLMSlotParserTimeoutMs,
+		"min_runes", cfg.Voice.LLMSlotParserMinRunes,
+		"min_stable_for_ms", cfg.Voice.LLMSlotParserMinStableForMs,
+	)
+	return voice.NewLLMSemanticSlotParser(model), timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+}
+
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {
 	bootstrap := voice.NewBootstrapResponder(
 		cfg.Realtime.OutputCodec,
@@ -358,6 +389,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 		return bootstrap
 	case "funasr_http":
 		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
+		slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor := buildVoiceSemanticSlotParser(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewHTTPTranscriber(
 				cfg.Voice.ASRURL,
@@ -379,6 +411,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
+			WithSlotParser(slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	case "iflytek_rtasr":
@@ -389,6 +422,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			return bootstrap
 		}
 		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
+		slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor := buildVoiceSemanticSlotParser(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewBufferedStreamingTranscriber(
 				voice.NewIflytekRTASRTranscriber(voice.IflytekRTASRConfig{
@@ -422,6 +456,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
+			WithSlotParser(slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
 	default:

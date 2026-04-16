@@ -736,3 +736,13 @@
   - runtime wiring now builds the semantic judge from the voice-owned config instead of reading `cfg.Agent` directly
   - `deepseek_chat` and generic `openai_compat` judge endpoints are both supported on the same provider-neutral `agent.ChatModel` boundary
 - Status: resolved for semantic-judge configuration. Follow-up work remains open for `SemanticSlotParser` and richer FunASR metadata consumption.
+
+
+### Slot Completeness Was Still Research-Only And Could Not Constrain Preview Arbitration
+
+- Problem: although the repository already had deep research on `slot completeness`, the runtime still had no structured parser or summary fields to express whether a spoken command was executable, clarify-needed, or obviously still missing tail slots. That meant preview promotion still leaned too heavily on utterance completeness alone.
+- Resolution: landed a first runtime-owned `SemanticSlotParser` in `internal/voice`:
+  - preview parsing now yields `domain`, `intent`, `slot_status`, `actionability`, `clarify_needed`, `missing_slots`, and `ambiguous_slots`
+  - these summaries merge back into `TurnArbitration` as advisory signals
+  - `clarify_needed` and `act_candidate` may promote `draft_allowed`, while `wait_more` may suppress a premature draft
+- Status: resolved for the first MVP slot-completeness slice. Richer entity catalog grounding and canonical-value normalization are still follow-up work.
