@@ -119,6 +119,8 @@ PYTHONPATH=clients/python-desktop-client/src python3 -m agent_server_desktop_cli
   --save-rx-dir artifacts/live-baseline/$(date +%Y%m%d)/desktop-regression
 ```
 
+The desktop `text`, `audio`, and `server-end` checks are semantic-response friendly: they require a meaningful non-empty response text or audio instead of bootstrap-style input echoing.
+
 RTOS mock archived baseline:
 
 ```bash

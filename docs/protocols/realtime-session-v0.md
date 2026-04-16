@@ -6,6 +6,10 @@ This contract defines the first shared event model for realtime sessions across 
 
 This document defines the transport-neutral semantic model. The first concrete RTOS wire profile is documented in `docs/protocols/rtos-device-ws-v0.md`.
 
+Client collaboration note:
+
+- for a concrete capability-gated proposal that embedded clients can implement in parallel, see `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+
 ## Session States
 
 - `idle`: no active session.

@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from agent_server_desktop_client.runner import (
+    RealtimeScenarioRunner,
     ScenarioMetrics,
     ScenarioResult,
     ValidationReport,
@@ -13,6 +14,17 @@ from agent_server_desktop_client.runner import (
     _build_parser,
     build_quality_summary,
 )
+
+
+class _AsyncConnect:
+    def __init__(self, ws: object) -> None:
+        self._ws = ws
+
+    async def __aenter__(self) -> object:
+        return self._ws
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 class RunnerTests(unittest.TestCase):
@@ -115,6 +127,99 @@ class RunnerTests(unittest.TestCase):
 
 
 class RunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_text_scenario_accepts_semantic_reply_without_echo(self) -> None:
+        runner = RealtimeScenarioRunner.__new__(RealtimeScenarioRunner)
+        runner._connect = mock.Mock(return_value=_AsyncConnect(object()))
+        runner._start_session = mock.AsyncMock()
+        runner._send_text = mock.AsyncMock()
+        runner._end_session = mock.AsyncMock()
+        runner._recv_json = mock.AsyncMock(return_value={"type": "session.end"})
+        runner._write_scenario_artifacts = mock.Mock()
+
+        async def populate_result(ws, result, **kwargs) -> None:
+            result.events.append({"type": "response.start"})
+            result.response_texts.extend(["明天", "是", "星期四", "。"])
+
+        runner._collect_until_active_or_end = mock.AsyncMock(side_effect=populate_result)
+
+        result = await RealtimeScenarioRunner.run_text_scenario(runner, "明天周几")
+
+        self.assertTrue(result.ok)
+        self.assertIn("received non-empty response text or audio", result.checks)
+        self.assertNotIn("response includes echoed text input", result.issues)
+
+    async def test_server_end_scenario_accepts_semantic_close_reply(self) -> None:
+        runner = RealtimeScenarioRunner.__new__(RealtimeScenarioRunner)
+        runner._connect = mock.Mock(return_value=_AsyncConnect(object()))
+        runner._start_session = mock.AsyncMock()
+        runner._send_text = mock.AsyncMock()
+        runner._write_scenario_artifacts = mock.Mock()
+
+        async def populate_result(ws, result, **kwargs) -> None:
+            result.events.extend(
+                [
+                    {"type": "response.start"},
+                    {"type": "session.end", "payload": {"reason": "completed"}},
+                ]
+            )
+            result.response_texts.extend(["已", "结束", "当前", "会话", "。"])
+
+        runner._collect_until_active_or_end = mock.AsyncMock(side_effect=populate_result)
+
+        result = await RealtimeScenarioRunner.run_server_end_scenario(runner)
+
+        self.assertTrue(result.ok)
+        self.assertIn("received non-empty response text or audio before close", result.checks)
+        self.assertNotIn("response includes /end trigger echo", result.issues)
+
+    async def test_run_full_and_regression_report_server_endpoint_metadata(self) -> None:
+        runner = RealtimeScenarioRunner.__new__(RealtimeScenarioRunner)
+        runner.generated_at = "2026-04-15T00:00:00Z"
+        runner.run_id = "run_report"
+        runner.http_base = "http://127.0.0.1:8080"
+        runner.discovery = SimpleNamespace(
+            protocol_version="rtos-ws-v0",
+            ws_path="/v1/realtime/ws",
+            subprotocol="agent-server.realtime.v0",
+            turn_mode="client_wakeup_client_commit",
+            llm_provider="deepseek_chat",
+            voice_provider="funasr_http",
+            tts_provider="cosyvoice_http",
+            server_endpoint_mode="server_vad_assisted",
+            server_endpoint_enabled=True,
+            server_endpoint_main_path_candidate=True,
+        )
+        runner._artifact_root = mock.Mock(return_value=None)
+        runner.run_text_scenario = mock.AsyncMock(return_value=ScenarioResult(name="text", session_id="sess_text", ok=True))
+        runner.run_audio_scenario = mock.AsyncMock(return_value=ScenarioResult(name="audio", session_id="sess_audio", ok=True))
+        runner.run_server_end_scenario = mock.AsyncMock(
+            return_value=ScenarioResult(name="server-end", session_id="sess_end", ok=True)
+        )
+        runner.run_tool_scenario = mock.AsyncMock(return_value=ScenarioResult(name="tool", session_id="sess_tool", ok=True))
+        runner.run_barge_in_scenario = mock.AsyncMock(
+            return_value=ScenarioResult(name="barge-in", session_id="sess_barge", ok=True)
+        )
+        runner.run_timeout_scenario = mock.AsyncMock(
+            return_value=ScenarioResult(name="timeout", session_id="sess_timeout", ok=True)
+        )
+
+        full_report = await RealtimeScenarioRunner.run_full(runner, "hello", 1000, 20, wav_path=None, save_rx_dir=None)
+        regression_report = await RealtimeScenarioRunner.run_regression(
+            runner,
+            "hello",
+            1000,
+            20,
+            wav_path=None,
+            save_rx_dir=None,
+        )
+
+        self.assertEqual(full_report.server_endpoint_mode, "server_vad_assisted")
+        self.assertTrue(full_report.server_endpoint_enabled)
+        self.assertTrue(full_report.server_endpoint_main_path_candidate)
+        self.assertEqual(regression_report.server_endpoint_mode, "server_vad_assisted")
+        self.assertTrue(regression_report.server_endpoint_enabled)
+        self.assertTrue(regression_report.server_endpoint_main_path_candidate)
+
     async def test_run_from_args_dispatches_server_endpoint_preview(self) -> None:
         scenario = ScenarioResult(name="server-endpoint-preview", session_id="sess_preview", ok=True)
         fake_runner = mock.MagicMock()

@@ -481,7 +481,7 @@ def build_config(argv: list[str] | None = None) -> WorkerConfig:
 
 
 def build_app(engine: LocalLLMEngine):
-    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi import Body, FastAPI, Header, HTTPException
     from fastapi.responses import JSONResponse, StreamingResponse
 
     app = FastAPI(title="agent-server local llm worker", version="0.1.0")
@@ -505,9 +505,8 @@ def build_app(engine: LocalLLMEngine):
 
     @app.post("/chat/completions")
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request, authorization: str | None = Header(default=None)):
+    async def chat_completions(payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)):
         del authorization  # Local worker does not validate bearer tokens.
-        payload = await request.json()
         try:
             if payload.get("stream"):
                 return StreamingResponse(engine.stream(payload), media_type="text/event-stream")

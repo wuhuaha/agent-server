@@ -66,6 +66,8 @@ The latest orchestration slice also makes `internal/voice` the owner of hidden p
 
 The next behavior-depth slice stays on that same boundary instead of creating a second protocol family. Soft interruption outcomes such as `backchannel` and `duck_only` now flow through a runtime-owned `PlaybackDirective` and can duck shared PCM16 playout on the native realtime path without inventing new wire events. Earlier speech-planner audio start also stays internal: responders may expose a `TurnResponseFuture` so the gateway can start output before the final `TurnResponse` settles, while transports still emit the same public `response.start -> response.chunk -> audio` lifecycle.
 
+The current long-term voice direction now explicitly converges on a `server-primary hybrid` architecture after wake and session establishment: devices keep audio-front-end, local reflex, playback execution, playback telemetry, and fallback controls, while the shared voice runtime owns preview, early-processing gates, interruption arbitration, clause-level output orchestration, and playback-truth reconciliation. The public realtime contract still evolves additively and compatibility-first while that target graduates.
+
 ### 4. Device Adapters
 
 Own ingress and egress for RTOS devices, desktops, and browsers. They translate transport details into core events and shared turn inputs.
@@ -151,6 +153,10 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [项目优化路线图（2026-04-04）](project-optimization-roadmap-zh-2026-04.md)
 - [第一阶段语音 Agent Demo 实时体验优化研究（2026-04-14）](voice-demo-realtime-optimization-zh-2026-04-14.md)
 - [当前 realtime 全双工差距复核（2026-04-15）](realtime-full-duplex-gap-review-zh-2026-04-15.md)
+- [语音架构完整方案（2026-04-16）](voice-architecture-blueprint-zh-2026-04-16.md)
+- [语音架构执行路线图（2026-04-16）](voice-architecture-execution-roadmap-zh-2026-04-16.md)
+- [端到端时延预算与主观体感映射（2026-04-16）](latency-budget-and-subjective-feel-zh-2026-04-16.md)
+- [播放事实回传与 heard-text 真相链（2026-04-16）](playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md)
 - [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
 - [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
 - [本地 CosyVoice GPU TTS 接入说明](local-cosyvoice-gpu-tts.md)

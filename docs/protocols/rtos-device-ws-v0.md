@@ -21,6 +21,10 @@ The bootstrap WebSocket handler is implemented in the repository for the first b
 
 For browser or H5 direct bring-up against the same native profile, the service also exposes a built-in debug page at `/debug/realtime-h5/`. That page still talks to `GET /v1/realtime` and `/v1/realtime/ws`; it does not introduce a second browser-only wire contract.
 
+Client collaboration note:
+
+- for a concrete capability-gated proposal that embedded clients can implement in parallel, see `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+
 ## Goals
 
 - Wake word hit on the client can immediately open a session.

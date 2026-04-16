@@ -1,5 +1,20 @@
 # Change Log
 
+## 2026-04-16
+
+- Continued the research-first voice-interaction analysis thread and added two durable architecture notes:
+  - `docs/architecture/latency-budget-and-subjective-feel-zh-2026-04-16.md` records a milestone-based latency-budget view that maps preview, endpoint, first-audio, audible playout, and barge-in cutoff to user-perceived responsiveness instead of treating total response time as the only KPI.
+  - `docs/architecture/playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md` records the playback-truth-chain model (`generated -> delivered -> played -> heard estimate`) and why interruption, resume, and memory need adapter-reported playout facts rather than full generated text.
+- Appended Round 011 to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md` and indexed the two new notes from `docs/architecture/overview.md`.
+- Consolidated the recent research thread into a formal voice architecture blueprint:
+  - added `docs/architecture/voice-architecture-blueprint-zh-2026-04-16.md`, which defines the target `server-primary hybrid` voice architecture, the shared voice-runtime loops, the layered early-processing gate, the output orchestration model, the playback truth chain, the eval strategy, and the incremental rollout path
+  - added ADR `0032-voice-architecture-converges-on-server-primary-hybrid.md` to freeze the new integrated voice-architecture baseline
+  - updated `docs/architecture/overview.md`, `plan.md`, `.codex/project-memory.md`, and the research dialogue log so the blueprint is discoverable from the main architecture and planning entrypoints
+- Split the new voice blueprint into two implementation-facing companion deliverables:
+  - added `docs/architecture/voice-architecture-execution-roadmap-zh-2026-04-16.md`, which turns the blueprint into phased execution slices, file-level task lists, validation commands, and milestone acceptance criteria
+  - added `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`, which defines a concrete capability-gated client collaboration proposal for preview events, accepted-turn signaling, and playback-truth telemetry without breaking the current v0 baseline
+  - updated `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, `docs/architecture/overview.md`, and `plan.md` so both deliverables are discoverable from the main architecture/protocol entrypoints
+
 ## 2026-04-15
 
 - Recorded the current realtime full-duplex gap review against the device-side `S1` to `S4` suggestions:

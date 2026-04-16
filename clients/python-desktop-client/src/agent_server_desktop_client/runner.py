@@ -165,7 +165,11 @@ class RealtimeScenarioRunner:
             result.received_audio_bytes = len(received_audio)
             result.metrics.received_audio_bytes = result.received_audio_bytes
             result.metrics.response_text_count = len(result.response_texts)
-            self._check(any(text in chunk for chunk in result.response_texts), result, "response includes echoed text input")
+            self._check(
+                self._has_non_empty_response(result),
+                result,
+                "received non-empty response text or audio",
+            )
             self._check(any(event.get("type") == "response.start" for event in result.events), result, "response.start received")
             self._check(any(event.get("type") == "session.end" for event in result.events), result, "client session.end acknowledged")
             result.ok = len(result.issues) == 0 and len(result.checks) == 3
@@ -193,7 +197,11 @@ class RealtimeScenarioRunner:
             result.received_audio_bytes = len(received_audio)
             result.metrics.received_audio_bytes = result.received_audio_bytes
             result.metrics.response_text_count = len(result.response_texts)
-            self._check(any(chunk.strip() for chunk in result.response_texts), result, "received non-empty response text")
+            self._check(
+                self._has_non_empty_response(result),
+                result,
+                "received non-empty response text or audio",
+            )
             self._check(any(event.get("type") == "response.start" for event in result.events), result, "response.start received")
             self._check(any(event.get("type") == "session.end" for event in result.events), result, "client session.end acknowledged")
             result.ok = len(result.issues) == 0 and len(result.checks) == 3
@@ -218,7 +226,11 @@ class RealtimeScenarioRunner:
             result.received_audio_bytes = len(received_audio)
             result.metrics.received_audio_bytes = result.received_audio_bytes
             result.metrics.response_text_count = len(result.response_texts)
-            self._check(any("/end" in chunk for chunk in result.response_texts), result, "response includes /end trigger echo")
+            self._check(
+                self._has_non_empty_response(result),
+                result,
+                "received non-empty response text or audio before close",
+            )
             self._check(any(event.get("type") == "session.end" for event in result.events), result, "server initiated session.end observed")
             self._check(any(event.get("type") == "response.start" for event in result.events), result, "response.start received before close")
             result.ok = len(result.issues) == 0 and len(result.checks) == 3
@@ -260,7 +272,11 @@ class RealtimeScenarioRunner:
             result.metrics.received_audio_bytes = result.received_audio_bytes
             result.metrics.response_text_count = len(result.response_texts)
             self._check(not timed_out, result, "server-endpoint preview returned before client commit")
-            self._check(any(chunk.strip() for chunk in result.response_texts), result, "received non-empty response text")
+            self._check(
+                self._has_non_empty_response(result),
+                result,
+                "received non-empty response text or audio",
+            )
             self._check(any(event.get("type") == "response.start" for event in result.events), result, "response.start received")
             self._check(any(event.get("type") == "session.end" for event in result.events), result, "client session.end acknowledged")
             result.ok = len(result.issues) == 0 and len(result.checks) == 4
@@ -433,6 +449,9 @@ class RealtimeScenarioRunner:
             tts_provider=self.discovery.tts_provider,
             scenarios=scenarios,
             artifact_dir=str(artifact_root) if artifact_root else None,
+            server_endpoint_mode=self.discovery.server_endpoint_mode,
+            server_endpoint_enabled=self.discovery.server_endpoint_enabled,
+            server_endpoint_main_path_candidate=self.discovery.server_endpoint_main_path_candidate,
         )
 
     async def run_regression(
@@ -465,6 +484,9 @@ class RealtimeScenarioRunner:
             tts_provider=self.discovery.tts_provider,
             scenarios=scenarios,
             artifact_dir=str(artifact_root) if artifact_root else None,
+            server_endpoint_mode=self.discovery.server_endpoint_mode,
+            server_endpoint_enabled=self.discovery.server_endpoint_enabled,
+            server_endpoint_main_path_candidate=self.discovery.server_endpoint_main_path_candidate,
         )
 
     def _connect(self) -> websockets.ClientConnection:
@@ -670,6 +692,9 @@ class RealtimeScenarioRunner:
             return
         result.issues.append(description)
 
+    def _has_non_empty_response(self, result: ScenarioResult) -> bool:
+        return any(chunk.strip() for chunk in result.response_texts) or result.metrics.audio_chunk_count > 0
+
     def _artifact_root(self, raw_dir: str | None) -> Path | None:
         if not raw_dir:
             return None
@@ -708,7 +733,7 @@ class RealtimeScenarioRunner:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Scripted validation runner for agent-server realtime bootstrap.")
+    parser = argparse.ArgumentParser(description="Scripted validation runner for agent-server realtime sessions.")
     parser.add_argument("--http-base", default="http://127.0.0.1:8080", help="HTTP base URL for agent-server.")
     parser.add_argument(
         "--scenario",

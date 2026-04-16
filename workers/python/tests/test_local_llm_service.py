@@ -7,6 +7,7 @@ from unittest.mock import patch
 from agent_server_workers.local_llm_service import (
     StreamingThinkFilter,
     WorkerConfig,
+    build_app,
     build_config,
     build_model_load_kwargs,
     inject_no_think,
@@ -85,6 +86,31 @@ class LocalLLMServiceTests(unittest.TestCase):
             kwargs = build_model_load_kwargs(torch_stub, config)
         self.assertEqual(kwargs["torch_dtype"], "fp16")
         self.assertNotIn("low_cpu_mem_usage", kwargs)
+
+    def test_build_app_accepts_json_body_for_chat_completions(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except Exception:
+            self.skipTest("fastapi[testclient] is not installed")
+
+        class StubEngine:
+            def health(self) -> dict[str, object]:
+                return {"status": "ok"}
+
+            def complete(self, payload: dict[str, object]) -> dict[str, object]:
+                return {"ok": True, "echo": payload.get("messages")}
+
+            def stream(self, payload: dict[str, object]):
+                raise AssertionError("stream should not be used in this test")
+
+        client = TestClient(build_app(StubEngine()))
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "你好"}], "stream": False},
+            headers={"Authorization": "Bearer local-llm"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
 
 
 if __name__ == "__main__":

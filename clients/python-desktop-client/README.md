@@ -96,6 +96,8 @@ The `regression` scenario runs the broader migration baseline:
 5. `barge-in`
 6. `timeout`
 
+`text`, `audio`, and `server-end` now validate "received a meaningful non-empty response text or audio" instead of requiring bootstrap-style echo responses, so the same suites remain valid after switching to semantic LLM replies.
+
 For the canonical artifact-root and profile naming convention used across the repository, see [../../docs/codex/live-validation-runbook.md](../../docs/codex/live-validation-runbook.md).
 
 Current intent of the additional scenarios:
