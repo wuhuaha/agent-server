@@ -141,6 +141,10 @@ Current planning note:
   - the shared speech planner now produces structured internal clauses with boundary kind, prosody hint, launchability, and estimated duration
   - planner synthesis now uses a buffered clause queue so one slow TTS build does not block later text deltas as easily
   - when early audio wins the race, the gateway now falls back to `ResponseAudioStart.Text` for `response.start` modality truth and playback-text initialization
+- the next playback-truth refinement slice is now also landed on the same shared boundary:
+  - native realtime now prepares playback-truth turn context before early audio starts speaking instead of waiting only for final response settlement
+  - while output is already `speaking`, later streamed text deltas may extend the active playback text inside `SessionOrchestrator`
+  - interruption and `voice.previous.*` resume context are therefore less likely to lag behind the real spoken answer on the early-audio path
 - the latest archived CPU benchmark now shows that `SenseVoiceSmall + paraformer-zh-streaming + fsmn-vad` is viable only after worker preload plus readiness gating, but it is not yet the best default for the CPU demo path: it kept command-only accuracy, failed to improve the wake-word-prefixed sample, and increased response-start latency from about `2.05 s` to about `3.5 s`
 - the current local FunASR `1.3.1` runtime rejects the short KWS alias `fsmn-kws` during preload (`fsmn-kws is not registered`), but the calibrated enabled-KWS baseline is now `iic/speech_charctc_kws_phone-xiaoyun`; that worker path also needs `keywords` plus `output_dir` during `AutoModel(...)` init and still stays default-off
 - the current V100 production host cannot use the newer `torch 2.11.0+cu128` wheel family because the official wheel omits `sm_70` kernels; the long-running GPU FunASR path is now validated with a dedicated data-volume runtime on `torch 2.7.1+cu126` plus `torchaudio 2.7.1+cu126`

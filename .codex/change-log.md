@@ -910,3 +910,14 @@
     - `go test ./internal/voice ./internal/gateway -run 'SpeechPlanner|Planner|TurnFlow|ExecuteTurnResponse|ASRResponder'`
     - `go test ./internal/voice ./internal/gateway ./internal/session`
     - `go test -tags integration ./internal/gateway -run 'Realtime|StreamingResponder'`
+
+- Landed the next playback-truth/resume refinement for the early-audio path:
+  - `executeTurnResponse(...)` now exposes a shared text-collection callback so gateways can refresh runtime playback text while output is already speaking
+  - native realtime now prepares provisional turn context before early audio starts and extends delivered-text during speaking as later text deltas arrive
+  - this keeps interruption truncation and next-turn `voice.previous.*` context closer to the spoken output on the early-audio path
+  - added regression coverage in `internal/gateway/turn_flow_test.go` and `internal/voice/session_orchestrator_test.go`
+  - documented the durable boundary in `docs/adr/0039-early-audio-playback-truth-must-be-established-before-final-response-settles.md`
+  - validated with:
+    - `go test ./internal/gateway ./internal/voice -run 'TurnFlow|ExecuteTurnResponse|SessionOrchestrator|Realtime'`
+    - `go test ./internal/gateway ./internal/voice ./internal/session`
+    - `go test -tags integration ./internal/gateway -run 'Realtime|StreamingResponder|PlaybackAck'`

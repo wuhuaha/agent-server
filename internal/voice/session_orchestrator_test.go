@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -373,5 +374,45 @@ func TestSessionOrchestratorExposesLastPlaybackOutcomeForNextTurnContext(t *test
 	}
 	if got := metadata["voice.previous.interruption_policy"]; got != string(InterruptionPolicyHardInterrupt) {
 		t.Fatalf("expected previous interruption policy %q, got %q", InterruptionPolicyHardInterrupt, got)
+	}
+}
+
+func TestSessionOrchestratorUpdatesPlaybackTruthWhenDeliveredTextExtendsDuringSpeaking(t *testing.T) {
+	orchestrator := NewSessionOrchestrator(nil)
+	request := TurnRequest{
+		SessionID:  "sess-8",
+		TurnID:     "turn-8",
+		DeviceID:   "dev-8",
+		ClientType: "rtos",
+	}
+
+	orchestrator.PrepareTurn(request, "打开客厅灯", "")
+	orchestrator.StartPlaybackWithOptions("好的，", 200*time.Millisecond, 2*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.UpdatePlayback("好的，现在把客厅灯打开。", 2*time.Second)
+	orchestrator.ObservePlaybackMarkFact(600 * time.Millisecond)
+
+	summary := orchestrator.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "client_barge_in_after_mark")
+	if summary.HeardText == "" {
+		t.Fatalf("expected heard text after interruption, got %+v", summary)
+	}
+
+	outcome, ok := orchestrator.LastPlaybackOutcome()
+	if !ok {
+		t.Fatal("expected last playback outcome")
+	}
+	if outcome.DeliveredText != "好的，现在把客厅灯打开。" {
+		t.Fatalf("expected extended delivered text to persist, got %+v", outcome)
+	}
+	if outcome.HeardText == "" || outcome.HeardText == "好的，" {
+		t.Fatalf("expected heard text to be recalculated against extended playback text, got %+v", outcome)
+	}
+	if !strings.Contains(outcome.MissedText, "客厅灯") {
+		t.Fatalf("expected missed text to retain the later suffix, got %+v", outcome)
+	}
+	if outcome.ResumeAnchor != outcome.HeardText {
+		t.Fatalf("expected resume anchor to follow updated heard text, got %+v", outcome)
 	}
 }

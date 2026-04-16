@@ -172,3 +172,72 @@ func TestExecuteTurnResponseUsesAudioStartTextWhenAudioWinsRace(t *testing.T) {
 		t.Fatalf("expected audio-first aggregated text fallback, got %q", startText)
 	}
 }
+
+func TestExecuteTurnResponseExtendsPlaybackTextAfterEarlyAudioStart(t *testing.T) {
+	audioChunk := []byte{5, 4, 3, 2}
+	responder := orchestratingResponderFunc(func(ctx context.Context, req voice.TurnRequest, sink voice.ResponseDeltaSink) (voice.TurnResponseFuture, error) {
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			_ = sink.EmitResponseDelta(ctx, voice.ResponseDelta{Kind: voice.ResponseDeltaKindText, Text: "先回答一点，"})
+			time.Sleep(20 * time.Millisecond)
+			_ = sink.EmitResponseDelta(ctx, voice.ResponseDelta{Kind: voice.ResponseDeltaKindText, Text: "后面再补全。"})
+		}()
+		return fakeTurnResponseFuture{
+			audioAfter:    12 * time.Millisecond,
+			responseAfter: 70 * time.Millisecond,
+			stream:        voice.NewStaticAudioStream([][]byte{audioChunk}),
+			finalStream:   voice.NewStaticAudioStream([][]byte{audioChunk}),
+			text:          "先回答一点，后面再补全。",
+		}, nil
+	})
+
+	runtime := newConnectionRuntime(nil, nil, session.NewRealtimeSession(), responder)
+	if _, err := runtime.session.Start(session.StartRequest{
+		RequestedSessionID: "sess_playback_truth",
+		DeviceID:           "dev_playback_truth",
+		ClientType:         "rtos",
+		Mode:               "voice",
+		InputCodec:         "pcm16le",
+		InputSampleRate:    16000,
+		InputChannels:      1,
+		ClientCanEnd:       true,
+		ServerCanEnd:       true,
+	}); err != nil {
+		t.Fatalf("start session failed: %v", err)
+	}
+	var speakingTexts []string
+	_, err := executeTurnResponse(context.Background(), voice.TurnRequest{
+		SessionID: "sess_playback_truth",
+		TurnID:    "turn_playback_truth",
+		TraceID:   "trace_playback_truth",
+		Text:      "测试增量播放文本",
+	}, turnTrace{TurnID: "turn_playback_truth", TraceID: "trace_playback_truth", AcceptedAt: time.Now()}, turnExecutionOptions{
+		Runtime:   runtime,
+		Responder: responder,
+		SessionID: "sess_playback_truth",
+		EmitResponseStart: func(turnTrace, string, []string, voice.TurnResponse) error {
+			return nil
+		},
+		OnTextDeltaCollected: func(_ turnTrace, aggregatedText string) {
+			if runtime.session.Snapshot().OutputState == session.OutputStateSpeaking {
+				speakingTexts = append(speakingTexts, aggregatedText)
+			}
+		},
+		StartResponseAudio: func(_ turnTrace, _ string, audioStart voice.ResponseAudioStart, _ string, _ *turnOutputOutcomeFuture) error {
+			if _, err := audioStart.Stream.Next(context.Background()); err != nil {
+				return err
+			}
+			_, err := runtime.session.SetOutputState(session.OutputStateSpeaking)
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeTurnResponse failed: %v", err)
+	}
+	if len(speakingTexts) == 0 {
+		t.Fatal("expected playback text updates after early audio start")
+	}
+	if got := speakingTexts[len(speakingTexts)-1]; got != "先回答一点，后面再补全。" {
+		t.Fatalf("expected latest playback text to include later deltas, got %q", got)
+	}
+}

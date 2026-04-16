@@ -383,5 +383,10 @@
   - `ResponseAudioStart.Text` is now the runtime fallback for audio-first startup when no text delta has been consumed yet
   - when audio wins that race, `response.start` should still be allowed to advertise `text,audio` if the planner already knows the first clause text
   - clause metadata is runtime-internal for now; do not widen the public realtime schema until embedded-client needs actually require clause-level protocol exposure
+- The next playback-truth refinement on top of that slice is now landed:
+  - on the native realtime early-audio path, the runtime-owned turn context is now established before speaking starts instead of waiting only for final response settlement
+  - while output is already `speaking`, later streamed text deltas may extend the active delivered-text inside `SessionOrchestrator`
+  - interruption truncation and `voice.previous.*` resume context should now track early streamed speech more closely instead of lagging behind late text deltas
+  - the remaining follow-up gap is now more specifically segment-level playback truth, not whether the early-audio path has any runtime-owned playback text at all
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

@@ -33,14 +33,15 @@ func (c *collectedTurnText) Joined() string {
 }
 
 type turnExecutionOptions struct {
-	Runtime            *connectionRuntime
-	Responder          voice.Responder
-	Logger             *slog.Logger
-	SessionID          string
-	ResponseID         string
-	EmitResponseStart  func(trace turnTrace, responseID string, modalities []string, response voice.TurnResponse) error
-	EmitResponseDelta  func(responseID string, delta voice.ResponseDelta) error
-	StartResponseAudio func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error
+	Runtime              *connectionRuntime
+	Responder            voice.Responder
+	Logger               *slog.Logger
+	SessionID            string
+	ResponseID           string
+	EmitResponseStart    func(trace turnTrace, responseID string, modalities []string, response voice.TurnResponse) error
+	EmitResponseDelta    func(responseID string, delta voice.ResponseDelta) error
+	OnTextDeltaCollected func(trace turnTrace, aggregatedText string)
+	StartResponseAudio   func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error
 }
 
 type turnExecutionResult struct {
@@ -90,6 +91,9 @@ func executeTurnResponse(ctx context.Context, request voice.TurnRequest, trace t
 
 	var collector collectedTurnText
 	collector.AddAll(deltas)
+	if opts.OnTextDeltaCollected != nil && strings.TrimSpace(collector.Joined()) != "" {
+		opts.OnTextDeltaCollected(trace, collector.Joined())
+	}
 	return turnExecutionResult{
 		Trace:          trace,
 		Response:       response,
@@ -203,6 +207,9 @@ func executeOrchestratedTurnResponse(
 				cancel()
 				return turnExecutionResult{}, err
 			}
+			if delta.Kind == voice.ResponseDeltaKindText && opts.OnTextDeltaCollected != nil {
+				opts.OnTextDeltaCollected(trace, collector.Joined())
+			}
 		case startResult := <-audioChRef:
 			audioChRef = nil
 			if startResult.err != nil {
@@ -264,6 +271,9 @@ func executeOrchestratedTurnResponse(
 					}
 				}
 				collector.AddAll(deltas)
+				if opts.OnTextDeltaCollected != nil && strings.TrimSpace(collector.Joined()) != "" {
+					opts.OnTextDeltaCollected(trace, collector.Joined())
+				}
 				sentResponseStart = true
 			}
 		}
@@ -352,6 +362,9 @@ func executeStreamingTurnResponse(
 				cancel()
 				return turnExecutionResult{}, err
 			}
+			if delta.Kind == voice.ResponseDeltaKindText && opts.OnTextDeltaCollected != nil {
+				opts.OnTextDeltaCollected(trace, collector.Joined())
+			}
 		case result := <-responseChRef:
 			responseChRef = nil
 			if result.err != nil {
@@ -380,6 +393,9 @@ func executeStreamingTurnResponse(
 					}
 				}
 				collector.AddAll(deltas)
+				if opts.OnTextDeltaCollected != nil && strings.TrimSpace(collector.Joined()) != "" {
+					opts.OnTextDeltaCollected(trace, collector.Joined())
+				}
 				sentResponseStart = true
 			}
 		}

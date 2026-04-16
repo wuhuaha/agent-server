@@ -1010,8 +1010,12 @@ func (h *realtimeWSHandler) recordPlaybackAckCompleted(runtime *connectionRuntim
 func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) error {
 	request := buildTurnRequest(turn, runtime, trace, text, previewTranscription)
 	logPreviousPlaybackContext(h.logger, turn.Snapshot.SessionID, trace, request)
+	provisionalInputText := strings.TrimSpace(request.Text)
+	if provisionalInputText == "" && request.PreviewTranscription != nil {
+		provisionalInputText = strings.TrimSpace(request.PreviewTranscription.Text)
+	}
 	if runtime.voiceSession != nil {
-		runtime.voiceSession.PrepareTurn(request, strings.TrimSpace(text), "")
+		runtime.voiceSession.PrepareTurn(request, provisionalInputText, "")
 	}
 	result, err := executeTurnResponse(ctx, request, trace, turnExecutionOptions{
 		Runtime:   runtime,
@@ -1042,6 +1046,14 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 		},
 		EmitResponseDelta: func(responseID string, delta voice.ResponseDelta) error {
 			return h.emitResponseDelta(runtime, turn.Snapshot.SessionID, responseID, delta)
+		},
+		OnTextDeltaCollected: func(trace turnTrace, aggregatedText string) {
+			if runtime.voiceSession == nil || strings.TrimSpace(aggregatedText) == "" {
+				return
+			}
+			if snapshot := runtime.session.Snapshot(); snapshot.OutputState == session.OutputStateSpeaking {
+				runtime.voiceSession.UpdatePlayback(aggregatedText, 0)
+			}
 		},
 		StartResponseAudio: func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error {
 			speaking, err := runtime.session.SetOutputState(session.OutputStateSpeaking)
