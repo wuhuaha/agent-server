@@ -18,25 +18,34 @@ func TestSpeechPlannerSegmentsStableClausesAndFinalTail(t *testing.T) {
 		TargetChunkRunes: 10,
 	})
 
-	segments := planner.ObserveTextDelta("先把客厅灯打开，")
-	if len(segments) != 1 || segments[0] != "先把客厅灯打开，" {
-		t.Fatalf("unexpected first planned segments: %+v", segments)
+	clauses := planner.ObserveTextDeltaClauses("先把客厅灯打开，")
+	if len(clauses) != 1 || clauses[0].Text != "先把客厅灯打开，" {
+		t.Fatalf("unexpected first planned clauses: %+v", clauses)
+	}
+	if clauses[0].BoundaryKind != SpeechClauseBoundarySoftContinue || !clauses[0].CanStartBeforeFinalized {
+		t.Fatalf("expected first clause to be an early soft-continue clause, got %+v", clauses[0])
 	}
 
-	segments = planner.ObserveTextDelta("再把窗帘关上")
-	if len(segments) != 0 {
-		t.Fatalf("expected second partial to stay buffered, got %+v", segments)
+	clauses = planner.ObserveTextDeltaClauses("再把窗帘关上")
+	if len(clauses) != 0 {
+		t.Fatalf("expected second partial to stay buffered, got %+v", clauses)
 	}
 
-	segments = planner.FinalizeText("先把客厅灯打开，再把窗帘关上。最后播点轻音乐。")
-	if len(segments) != 2 {
-		t.Fatalf("expected final tail to split into two segments, got %+v", segments)
+	clauses = planner.FinalizeTextClauses("先把客厅灯打开，再把窗帘关上。最后播点轻音乐。")
+	if len(clauses) != 2 {
+		t.Fatalf("expected final tail to split into two clauses, got %+v", clauses)
 	}
-	if segments[0] != "再把窗帘关上。" {
-		t.Fatalf("unexpected first final segment %q", segments[0])
+	if clauses[0].Text != "再把窗帘关上。" {
+		t.Fatalf("unexpected first final clause %q", clauses[0].Text)
 	}
-	if segments[1] != "最后播点轻音乐。" {
-		t.Fatalf("unexpected second final segment %q", segments[1])
+	if clauses[0].BoundaryKind != SpeechClauseBoundaryStrongStop || clauses[0].CanStartBeforeFinalized {
+		t.Fatalf("expected first final clause to be a finalized strong stop, got %+v", clauses[0])
+	}
+	if clauses[1].Text != "最后播点轻音乐。" {
+		t.Fatalf("unexpected second final clause %q", clauses[1].Text)
+	}
+	if clauses[1].BoundaryKind != SpeechClauseBoundaryFinalFlush || clauses[1].ProsodyHint != SpeechClauseProsodyFinalFall {
+		t.Fatalf("expected final clause to carry final-fall prosody, got %+v", clauses[1])
 	}
 }
 
@@ -184,6 +193,36 @@ func (s *recordingSynthesizer) Synthesize(_ context.Context, req SynthesisReques
 	}, nil
 }
 
+type blockingPlannerSynthesizer struct {
+	mu           sync.Mutex
+	started      chan string
+	releaseFirst chan struct{}
+	calls        int
+}
+
+func (s *blockingPlannerSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResult, error) {
+	s.mu.Lock()
+	s.calls++
+	callIndex := s.calls
+	s.mu.Unlock()
+	if s.started != nil {
+		s.started <- req.Text
+	}
+	if callIndex == 1 && s.releaseFirst != nil {
+		select {
+		case <-ctx.Done():
+			return SynthesisResult{}, ctx.Err()
+		case <-s.releaseFirst:
+		}
+	}
+	return SynthesisResult{
+		AudioPCM:     make([]byte, 1280),
+		SampleRateHz: 16000,
+		Channels:     1,
+		Codec:        "pcm16le",
+	}, nil
+}
+
 func TestBootstrapResponderSpeechPlannerDoesNotDoubleSynthesizeFinalResponse(t *testing.T) {
 	synth := &recordingSynthesizer{}
 	responder := NewBootstrapResponder("pcm16le", 16000, 1).
@@ -248,13 +287,67 @@ func TestSpeechPlannerQueuedAudioStreamExposesEstimatedPlaybackDuration(t *testi
 	}
 	defer stream.Close()
 
-	aware, ok := stream.(interface{ PlaybackDuration(time.Duration) time.Duration })
+	aware, ok := stream.(interface {
+		PlaybackDuration(time.Duration) time.Duration
+	})
 	if !ok {
 		t.Fatal("expected planned stream to expose playback duration")
 	}
 	if got := aware.PlaybackDuration(20 * time.Millisecond); got <= 0 {
 		t.Fatalf("expected positive playback duration, got %s", got)
 	}
+}
+
+func TestPlannedSpeechSynthesisBufferedQueueDoesNotBlockTextDeltaFlow(t *testing.T) {
+	synth := &blockingPlannerSynthesizer{
+		started:      make(chan string, 2),
+		releaseFirst: make(chan struct{}),
+	}
+	planner := newPlannedSpeechSynthesis(context.Background(), synth, SynthesisRequest{
+		SessionID: "sess_buffered",
+		TurnID:    "turn_buffered",
+		TraceID:   "trace_buffered",
+		DeviceID:  "dev_buffered",
+		UserText:  "打开客厅灯",
+	}, SpeechPlannerConfig{
+		Enabled:          true,
+		MinChunkRunes:    2,
+		TargetChunkRunes: 6,
+	})
+	if planner == nil {
+		t.Fatal("expected planner")
+	}
+
+	planner.ObserveDelta(ResponseDelta{Kind: ResponseDeltaKindText, Text: "当然可以，"})
+	select {
+	case text := <-synth.started:
+		if text != "当然可以，" {
+			t.Fatalf("unexpected first synthesized clause %q", text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected first clause synthesis to start")
+	}
+
+	secondReturned := make(chan struct{})
+	go func() {
+		planner.ObserveDelta(ResponseDelta{Kind: ResponseDeltaKindText, Text: "我先打开客厅灯。"})
+		close(secondReturned)
+	}()
+
+	select {
+	case <-secondReturned:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected second text delta to avoid blocking behind the first clause synthesis")
+	}
+
+	close(synth.releaseFirst)
+
+	stream := planner.Finalize("当然可以，我先打开客厅灯。")
+	if stream == nil {
+		t.Fatal("expected planned audio stream after finalize")
+	}
+	defer stream.Close()
+	drainTestAudioStream(t, stream)
 }
 
 type staticTurnExecutor struct {

@@ -377,5 +377,11 @@
   - `stable_prefix`, preview `TurnArbitrationStage`, lexical completeness, endpoint hints, and takeover lexicon now act as internal escalation evidence toward `hard_interrupt`
   - short acknowledgements should remain `backchannel` even when lexically complete, while explicit takeover phrases such as `打断一下` may interrupt sooner
   - the current debug fields of record for speaking-time interruption now also include `barge_in_acoustic_ready`, `barge_in_semantic_ready`, `barge_in_turn_stage`, `barge_in_intrusion_score`, and `barge_in_takeover_score`
+- The third implementation slice of that same plan is now landed:
+  - the shared speech planner now has an internal `PlannedSpeechClause` shape with boundary kind, prosody hint, early-start eligibility, and estimated duration
+  - early clause synthesis now uses a buffered queue so later text deltas do not need to wait behind the first slow TTS startup
+  - `ResponseAudioStart.Text` is now the runtime fallback for audio-first startup when no text delta has been consumed yet
+  - when audio wins that race, `response.start` should still be allowed to advertise `text,audio` if the planner already knows the first clause text
+  - clause metadata is runtime-internal for now; do not widen the public realtime schema until embedded-client needs actually require clause-level protocol exposure
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
 - 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

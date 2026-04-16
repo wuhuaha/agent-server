@@ -899,3 +899,14 @@
   - validated with:
     - `go test ./internal/voice ./internal/gateway -run 'BargeIn|Interruption|Realtime'`
     - `go test -tags integration ./internal/gateway -run 'Backchannel|BargeIn'`
+
+- Landed step 3 of the next service-side voice optimization path:
+  - `internal/voice.SpeechPlanner` now emits structured internal clauses with boundary kind, prosody hint, launchability, and estimated duration instead of only raw string chunks
+  - planner synthesis now uses a buffered clause queue so one slow clause TTS startup does not block later text-delta handling as easily
+  - added `synthesizedPlannedClauseStream(...)` so clause synthesis stays on the same shared TTS boundary
+  - gateway turn orchestration now uses `ResponseAudioStart.Text` as the early text fallback when audio wins the race and can advertise `text,audio` at `response.start` without waiting for a consumed delta
+  - documented the durable boundary in `docs/adr/0038-clause-aware-output-orchestration-starts-audio-before-final-turn-settlement.md` and refreshed `docs/architecture/overview.md` / `plan.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/gateway -run 'SpeechPlanner|Planner|TurnFlow|ExecuteTurnResponse|ASRResponder'`
+    - `go test ./internal/voice ./internal/gateway ./internal/session`
+    - `go test -tags integration ./internal/gateway -run 'Realtime|StreamingResponder'`

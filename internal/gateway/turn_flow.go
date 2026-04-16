@@ -33,13 +33,13 @@ func (c *collectedTurnText) Joined() string {
 }
 
 type turnExecutionOptions struct {
-	Runtime           *connectionRuntime
-	Responder         voice.Responder
-	Logger            *slog.Logger
-	SessionID         string
-	ResponseID        string
-	EmitResponseStart func(trace turnTrace, responseID string, modalities []string, response voice.TurnResponse) error
-	EmitResponseDelta func(responseID string, delta voice.ResponseDelta) error
+	Runtime            *connectionRuntime
+	Responder          voice.Responder
+	Logger             *slog.Logger
+	SessionID          string
+	ResponseID         string
+	EmitResponseStart  func(trace turnTrace, responseID string, modalities []string, response voice.TurnResponse) error
+	EmitResponseDelta  func(responseID string, delta voice.ResponseDelta) error
 	StartResponseAudio func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error
 }
 
@@ -214,10 +214,7 @@ func executeOrchestratedTurnResponse(
 				continue
 			}
 			if !sentResponseStart {
-				modalities := []string{"audio"}
-				if seenAnyDelta {
-					modalities = append([]string{"text"}, modalities...)
-				}
+				modalities := modalitiesForAudioStart(startResult.start, seenAnyDelta)
 				trace = markTurnResponseStart(opts.Runtime, opts.Logger, opts.SessionID, trace, responseID, modalities, response)
 				if opts.EmitResponseStart != nil {
 					if err := opts.EmitResponseStart(trace, responseID, modalities, response); err != nil {
@@ -229,7 +226,7 @@ func executeOrchestratedTurnResponse(
 			}
 			start := wrapResponseAudioStart(startResult.start, cancel)
 			completion = newTurnOutputOutcomeFuture()
-			if err := opts.StartResponseAudio(trace, responseID, start, collector.Joined(), completion); err != nil {
+			if err := opts.StartResponseAudio(trace, responseID, start, aggregatedTextForAudioStart(collector, startResult.start), completion); err != nil {
 				cancel()
 				return turnExecutionResult{}, err
 			}
@@ -478,4 +475,19 @@ func (s *cancelOnCloseAudioStream) release() {
 			s.cancel()
 		}
 	})
+}
+
+func modalitiesForAudioStart(start voice.ResponseAudioStart, seenAnyDelta bool) []string {
+	modalities := []string{"audio"}
+	if seenAnyDelta || strings.TrimSpace(start.Text) != "" {
+		modalities = append([]string{"text"}, modalities...)
+	}
+	return modalities
+}
+
+func aggregatedTextForAudioStart(collector collectedTurnText, start voice.ResponseAudioStart) string {
+	if joined := collector.Joined(); strings.TrimSpace(joined) != "" {
+		return joined
+	}
+	return strings.TrimSpace(start.Text)
 }

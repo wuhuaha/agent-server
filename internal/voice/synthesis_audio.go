@@ -37,6 +37,15 @@ func synthesizedAudioStream(ctx context.Context, synthesizer Synthesizer, req Sy
 	return bufferedSynthesisAudio(synthesizer, ctx, req)
 }
 
+func synthesizedPlannedClauseStream(ctx context.Context, synthesizer Synthesizer, baseReq SynthesisRequest, clause PlannedSpeechClause) AudioStream {
+	if synthesizer == nil {
+		return nil
+	}
+	req := baseReq
+	req.Text = clause.Text
+	return synthesizedAudioStream(ctx, synthesizer, req)
+}
+
 func bufferedSynthesisAudio(synthesizer Synthesizer, ctx context.Context, req SynthesisRequest) AudioStream {
 	result, err := synthesizer.Synthesize(ctx, req)
 	if err != nil || len(result.AudioPCM) == 0 {

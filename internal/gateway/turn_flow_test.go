@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ type fakeTurnResponseFuture struct {
 	stream        voice.AudioStream
 	finalStream   voice.AudioStream
 	text          string
+	audioText     string
 }
 
 func (f fakeTurnResponseFuture) Wait(ctx context.Context) (voice.TurnResponse, error) {
@@ -49,10 +51,17 @@ func (f fakeTurnResponseFuture) WaitAudioStart(ctx context.Context) (voice.Respo
 	}
 	return voice.ResponseAudioStart{
 		Stream:      f.stream,
-		Text:        f.text,
+		Text:        audioStartTextForTest(f),
 		Incremental: true,
 		Source:      voice.ResponseAudioStartSourceSpeechPlanner,
 	}, true, nil
+}
+
+func audioStartTextForTest(f fakeTurnResponseFuture) string {
+	if strings.TrimSpace(f.audioText) != "" {
+		return f.audioText
+	}
+	return f.text
 }
 
 func TestExecuteTurnResponseStartsAudioBeforeFinalResponseSettles(t *testing.T) {
@@ -113,5 +122,53 @@ func TestExecuteTurnResponseStartsAudioBeforeFinalResponseSettles(t *testing.T) 
 	}
 	if firstAudioAt.Sub(startedAt) >= 70*time.Millisecond {
 		t.Fatalf("expected audio to start well before final response settle, got %s", firstAudioAt.Sub(startedAt))
+	}
+}
+
+func TestExecuteTurnResponseUsesAudioStartTextWhenAudioWinsRace(t *testing.T) {
+	audioChunk := []byte{9, 8, 7, 6}
+	responder := orchestratingResponderFunc(func(context.Context, voice.TurnRequest, voice.ResponseDeltaSink) (voice.TurnResponseFuture, error) {
+		return fakeTurnResponseFuture{
+			audioAfter:    5 * time.Millisecond,
+			responseAfter: 60 * time.Millisecond,
+			stream:        voice.NewStaticAudioStream([][]byte{audioChunk}),
+			finalStream:   voice.NewStaticAudioStream([][]byte{audioChunk}),
+			text:          "先回答一点，后面再补全。",
+			audioText:     "先回答一点，",
+		}, nil
+	})
+
+	runtime := newConnectionRuntime(nil, nil, session.NewRealtimeSession(), responder)
+	var (
+		startModalities []string
+		startText       string
+	)
+	_, err := executeTurnResponse(context.Background(), voice.TurnRequest{
+		SessionID: "sess_audio_first",
+		TurnID:    "turn_audio_first",
+		TraceID:   "trace_audio_first",
+		Text:      "测试音频先起播",
+	}, turnTrace{TurnID: "turn_audio_first", TraceID: "trace_audio_first", AcceptedAt: time.Now()}, turnExecutionOptions{
+		Runtime:   runtime,
+		Responder: responder,
+		SessionID: "sess_audio_first",
+		EmitResponseStart: func(_ turnTrace, _ string, modalities []string, _ voice.TurnResponse) error {
+			startModalities = append([]string(nil), modalities...)
+			return nil
+		},
+		StartResponseAudio: func(_ turnTrace, _ string, audioStart voice.ResponseAudioStart, aggregatedText string, _ *turnOutputOutcomeFuture) error {
+			startText = aggregatedText
+			_, err := audioStart.Stream.Next(context.Background())
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeTurnResponse failed: %v", err)
+	}
+	if got := strings.Join(startModalities, ","); got != "text,audio" {
+		t.Fatalf("expected response.start modalities text,audio, got %q", got)
+	}
+	if startText != "先回答一点，" {
+		t.Fatalf("expected audio-first aggregated text fallback, got %q", startText)
 	}
 }
