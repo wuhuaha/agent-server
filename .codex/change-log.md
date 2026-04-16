@@ -14,6 +14,16 @@
   - added `docs/architecture/voice-architecture-execution-roadmap-zh-2026-04-16.md`, which turns the blueprint into phased execution slices, file-level task lists, validation commands, and milestone acceptance criteria
   - added `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`, which defines a concrete capability-gated client collaboration proposal for preview events, accepted-turn signaling, and playback-truth telemetry without breaking the current v0 baseline
   - updated `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, `docs/architecture/overview.md`, and `plan.md` so both deliverables are discoverable from the main architecture/protocol entrypoints
+- Deepened the client-collaboration proposal into implementation-ready protocol material for embedded teams:
+  - expanded `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md` with schema mapping, mermaid sequence diagrams, accepted-turn interpretation rules, and an RTOS client state machine
+  - added `schemas/realtime/voice-collaboration-v0-draft.schema.json` as the draft additive schema for preview-aware and playback-truth-aware events without replacing the stable realtime envelope schema
+  - updated the stable protocol docs to point embedded implementers at the new draft schema alongside the collaboration proposal
+- Landed the first public native-realtime collaboration slice and the matching embedded implementation guide:
+  - added `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md` with embedded field tables, error codes, retry strategy, ACK timing, and an implementation checklist
+  - `GET /v1/realtime` now advertises `voice_collaboration.preview_events` and `voice_collaboration.playback_ack`
+  - `session.start.payload.capabilities` now supports `preview_events` and `playback_ack.mode`
+  - native realtime can now emit capability-gated `input.speech.start`, `input.preview`, `input.endpoint`, and `audio.out.meta`, and it accepts `audio.out.started`, `audio.out.mark`, `audio.out.cleared`, and `audio.out.completed`
+  - updated the stable realtime envelope and session-start schemas plus protocol docs, and added gateway unit/integration coverage for the new discovery and negotiated event paths
 
 ## 2026-04-15
 

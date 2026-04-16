@@ -1,5 +1,13 @@
 # Issues And Resolutions
 
+## 2026-04-16
+
+### Playback ACK Runtime Reset Initially Replaced A Locked Struct And Caused `sync: unlock of unlocked mutex`
+
+- Problem: while landing the first native-realtime playback ACK slice, `clearPlaybackAckState()` reset the entire `playbackAckState` struct after taking its mutex. Because the deferred unlock then targeted the new zero-value mutex instead of the one that had actually been locked, the first negotiated `session.start` path in integration tests crashed with `fatal error: sync: unlock of unlocked mutex`.
+- Resolution: kept the mutex instance stable and changed reset logic to clear the tracked playback-ack fields in place instead of replacing the whole struct. Re-ran gateway unit and integration tests afterward.
+- Status: resolved.
+
 ## 2026-04-15
 
 ### Realtime Voice Still Lacked True Full Duplex Because The Session Core Remains Single-Track

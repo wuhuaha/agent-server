@@ -581,3 +581,109 @@
 - 这轮把“正式蓝图”进一步拆成了两份真正可执行、可协作文档：
   - 一份指导服务端与 worker 的工程推进顺序
   - 一份指导嵌入式与 reference client 的并行协议开发
+
+
+## Round 014｜2026-04-16｜把 client 协作协议提案下沉到 schema/时序图/状态机
+
+### 用户诉求
+
+- 在上一轮的 client 协作协议提案基础上，继续下沉一层。
+- 补充：
+  - schema 草案
+  - 时序图
+  - RTOS client 状态机
+- 目标是让嵌入式同事可以直接按文档实现。
+
+### 本轮工作方式
+
+- 回读已有协作协议提案与当前稳定 v0 协议文档，保持兼容边界清晰。
+- 不直接升级稳定公共合同，而是补一份 draft schema 与实现导向的文档细化。
+- 明确 accepted-turn、preview、playback fact 三者的边界，避免 client 被设计成第二编排层。
+
+### 本轮核心结论
+
+- 嵌入式实现最需要的不是更多抽象，而是三样具体材料：
+  - payload shape 草案
+  - 时序图
+  - client 本地状态机
+- accepted-turn 的实现规则进一步固定为：
+  - `accept_reason` 是主信号
+  - `input.preview / input.endpoint` 只表示观察与候选，不表示 accepted turn
+- playback 协作的实现规则也进一步固定为：
+  - `audio.out.started / mark / cleared / completed` 是事实回传
+  - 不承载 `duck_only / hard_interrupt` 等策略语义
+- 通过新增 `schemas/realtime/voice-collaboration-v0-draft.schema.json`，当前 proposal 已经足够让嵌入式同事并行编码，而不需要等待稳定 schema 正式毕业。
+
+### 本轮正式沉淀
+
+- `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`（增强）
+- `schemas/realtime/voice-collaboration-v0-draft.schema.json`（新增）
+
+### 与主线的关系
+
+- 这一轮把“协议提案”继续往“实现材料”推进了一步。
+- 现在嵌入式同事已经有：
+  - 事件定义
+  - payload 草案
+  - 时序图
+  - client 状态机
+  可以直接开始并行开发。
+
+
+## Round 015｜2026-04-16｜把协作协议继续下沉到 embedded 实施手册，并开始落服务端
+
+### 用户诉求
+
+- 把 draft schema 继续下沉为：
+  - embedded client 字段表
+  - 错误码 / 重试策略
+  - ACK 时机表
+- 同时，不只停留在提案层，而是直接开始按这份协议方案修改服务端。
+
+### 本轮工作方式
+
+- 以 additive、capability-gated 为前提，不推翻当前 v0 基线。
+- 先选最小、安全、能开始联调的第一实现切片：
+  - discovery 暴露 `voice_collaboration`
+  - `session.start.capabilities` 支持协商 `preview_events` 与 `playback_ack.mode`
+  - native realtime 路径先公开 preview-aware 事件
+  - playback ACK 先接入为“事实回传入口 + 可观测日志”
+- 同步把稳定 schema、RTOS 文档、session 文档与 embedded 实施材料一起补齐，避免协议只存在于聊天里。
+
+### 本轮核心结论
+
+- embedded 侧现在真正需要的不只是 proposal，而是一份能直接照着写固件的 implementation guide，因此新增了更具体的字段表、错误码、重试与 ACK 时机文档。
+- 协议落地的第一实现切片不需要一步到位做成完整 playback-truth runtime，只要先把下面这几件事做实，就已经能开始并行联调：
+  - discovery 暴露 `voice_collaboration.preview_events / playback_ack`
+  - `session.start` 可以显式声明 `preview_events=true` 与 `playback_ack.mode=segment_mark_v1`
+  - native realtime 在协商成功后发出：
+    - `input.speech.start`
+    - `input.preview`
+    - `input.endpoint`
+    - `audio.out.meta`
+  - native realtime 接收：
+    - `audio.out.started`
+    - `audio.out.mark`
+    - `audio.out.cleared`
+    - `audio.out.completed`
+- 当前对 playback ACK 的策略被刻意收敛为“先接入口，再深化语义”：
+  - 先把 client 播放事实接进来并记录
+  - 下一阶段再让 heard-text / resume / resume-from-anchor 更强地依赖这些事实，而不是立即把现有播放完成路径全部重构掉
+
+### 本轮正式沉淀
+
+- `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`（新增）
+- `docs/protocols/realtime-session-v0.md`（增强）
+- `docs/protocols/rtos-device-ws-v0.md`（增强）
+- `schemas/realtime/session-envelope.schema.json`（增强）
+- `schemas/realtime/device-session-start.schema.json`（增强）
+
+### 与主线的关系
+
+- 这一轮把“client 协作协议”从提案真正推进到“可以联调”的阶段：
+  - 嵌入式同事拿到 implementation guide 就能直接开始写 client
+  - 服务端也已经开始把 preview-aware / playback-truth-aware 的第一批钩子公开出来
+- 这让后续主线能够更自然地进入：
+  - 端到端联调
+  - 更精准的 playback truth
+  - 更自然的 interruption / heard-text / resume

@@ -24,6 +24,8 @@ For browser or H5 direct bring-up against the same native profile, the service a
 Client collaboration note:
 
 - for a concrete capability-gated proposal that embedded clients can implement in parallel, see `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+- for the embedded implementation tables, retry strategy, and ACK timing guidance, see `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`
+- the draft schema for those additive collaboration events lives at `schemas/realtime/voice-collaboration-v0-draft.schema.json`
 
 ## Goals
 
@@ -46,9 +48,11 @@ Current discovery note:
 - `turn_mode` is currently advertised as `client_wakeup_client_commit`
 - this means the device starts the session after local wakeup or explicit action, then ends each user audio turn with `audio.in.commit`
 - discovery may now also publish a `server_endpoint` object that marks shared server endpointing as a main-path candidate
+- discovery may now also publish a `voice_collaboration` object that advertises preview-aware events and playback ACK support
 - if that candidate object reports `enabled=true`, the server may auto-accept a spoken turn after shared preview, silence, and lexical-hold detection, but devices may still keep explicit `audio.in.commit` for compatibility
-- the public event names do not change during this candidate stage; the server still reports accepted turns through `session.update`, `response.start`, `response.chunk`, and binary audio downlink
-- preview speech-start, partial-update, and endpoint-candidate observations are not separate public RTOS events in v0
+- the collaboration events remain additive and capability-gated: the device must both read discovery and opt in through `session.start.payload.capabilities`
+- when negotiated, preview speech-start, partial-update, and endpoint-candidate observations may be sent as `input.speech.start`, `input.preview`, and `input.endpoint`
+- playback-truth-aware devices may also receive `audio.out.meta` and send back `audio.out.started`, `audio.out.mark`, `audio.out.cleared`, and `audio.out.completed`
 
 ## Connection
 
@@ -94,6 +98,11 @@ The client may keep the socket open before wakeup. No audio is sent while idle.
 
 When the local wake word or explicit user action fires, the client sends `session.start`.
 
+Current capability note:
+
+- devices that support preview-aware collaboration may additionally declare `capabilities.preview_events=true`
+- devices that support playback-truth-aware collaboration may additionally declare `capabilities.playback_ack.mode=segment_mark_v1`
+
 ### 3. Audio Uplink
 
 The client streams binary audio frames immediately after `session.start`. For `pcm16le`, each binary frame carries raw PCM bytes. For `opus`, each binary frame carries one encoded packet or packet bundle and the server normalizes it before ASR.
@@ -115,9 +124,20 @@ Server-endpoint candidate path:
 The server may emit:
 
 - `session.update`
+- `input.speech.start` when preview-aware collaboration is negotiated
+- `input.preview` when preview-aware collaboration is negotiated
+- `input.endpoint` when preview-aware collaboration is negotiated
 - `response.start`
 - `response.chunk`
+- `audio.out.meta` when playback ACK collaboration is negotiated
 - binary audio frames
+
+The device may additionally emit during local playback:
+
+- `audio.out.started`
+- `audio.out.mark`
+- `audio.out.cleared`
+- `audio.out.completed`
 
 ### 6. Session End
 
@@ -188,11 +208,20 @@ Minimum payload:
       "text_input": false,
       "image_input": false,
       "half_duplex": true,
-      "local_wake_word": true
+      "local_wake_word": true,
+      "preview_events": true,
+      "playback_ack": {
+        "mode": "segment_mark_v1"
+      }
     }
   }
 }
 ```
+
+Compatibility note:
+
+- `preview_events` and `playback_ack` are optional capability-gated extensions
+- devices must send them only after discovery reports the corresponding `voice_collaboration` support
 
 ### `audio.in.commit`
 

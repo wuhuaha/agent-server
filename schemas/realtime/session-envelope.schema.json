@@ -19,9 +19,17 @@
         "audio.in.commit",
         "text.in",
         "image.in",
+        "input.speech.start",
+        "input.preview",
+        "input.endpoint",
         "response.start",
         "response.chunk",
+        "audio.out.meta",
         "audio.out.chunk",
+        "audio.out.started",
+        "audio.out.mark",
+        "audio.out.cleared",
+        "audio.out.completed",
         "session.end",
         "error"
       ]
@@ -39,7 +47,7 @@
     },
     "payload": {
       "type": "object",
-      "description": "Event-specific payload. response.chunk currently carries text or structured tool deltas via fields such as response_id, delta_type, text, tool_call_id, tool_name, tool_status, tool_input, and tool_output."
+      "description": "Event-specific payload. response.chunk carries text or structured tool deltas, input.* events carry preview-aware speech observations, and audio.out.* control events carry playback metadata or client playback facts."
     },
     "auth": {
       "type": "object"
@@ -53,6 +61,136 @@
   },
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "input.speech.start"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "preview_id",
+              "audio_offset_ms",
+              "source"
+            ],
+            "properties": {
+              "preview_id": {
+                "type": "string"
+              },
+              "audio_offset_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "server_preview"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "input.preview"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "preview_id",
+              "text",
+              "is_final",
+              "audio_offset_ms"
+            ],
+            "properties": {
+              "preview_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "stable_prefix": {
+                "type": "string"
+              },
+              "is_final": {
+                "type": "boolean"
+              },
+              "stability": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "audio_offset_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "input.endpoint"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "preview_id",
+              "candidate",
+              "reason",
+              "audio_offset_ms"
+            ],
+            "properties": {
+              "preview_id": {
+                "type": "string"
+              },
+              "candidate": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "audio_offset_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {
@@ -184,6 +322,54 @@
       "if": {
         "properties": {
           "type": {
+            "const": "audio.out.meta"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id",
+              "playback_id",
+              "segment_id",
+              "expected_duration_ms",
+              "is_last_segment"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "playback_id": {
+                "type": "string"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "expected_duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "is_last_segment": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
             "const": "response.chunk"
           }
         },
@@ -227,6 +413,154 @@
                 "type": "string"
               },
               "tool_output": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "audio.out.started"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id",
+              "playback_id",
+              "segment_id"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "playback_id": {
+                "type": "string"
+              },
+              "segment_id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "audio.out.mark"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id",
+              "playback_id",
+              "segment_id"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "playback_id": {
+                "type": "string"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "played_duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "audio.out.cleared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id",
+              "playback_id",
+              "cleared_after_segment_id",
+              "reason"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "playback_id": {
+                "type": "string"
+              },
+              "cleared_after_segment_id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "audio.out.completed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "response_id",
+              "playback_id"
+            ],
+            "properties": {
+              "response_id": {
+                "type": "string"
+              },
+              "playback_id": {
                 "type": "string"
               }
             },

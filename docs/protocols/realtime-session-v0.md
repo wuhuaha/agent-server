@@ -9,6 +9,8 @@ This document defines the transport-neutral semantic model. The first concrete R
 Client collaboration note:
 
 - for a concrete capability-gated proposal that embedded clients can implement in parallel, see `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+- for the field tables, retry policy, and ACK timing guidance that embedded teams can implement directly, see `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`
+- the draft schema for those additive collaboration events lives at `schemas/realtime/voice-collaboration-v0-draft.schema.json`
 
 ## Session States
 
@@ -77,9 +79,17 @@ Current compatibility derivation:
 - `audio.in.commit`
 - `text.in`
 - `image.in`
+- `input.speech.start`
+- `input.preview`
+- `input.endpoint`
 - `response.start`
 - `response.chunk`
+- `audio.out.meta`
 - `audio.out.chunk`
+- `audio.out.started`
+- `audio.out.mark`
+- `audio.out.cleared`
+- `audio.out.completed`
 - `session.end`
 - `error`
 
@@ -93,9 +103,17 @@ Current compatibility derivation:
 - `audio.in.commit`: indicates end of the current user turn, not necessarily end of session. It remains the baseline v0 compatibility boundary for audio input, although a runtime that advertises `server_endpoint.enabled=true` may accept the turn earlier without waiting for it.
 - `text.in`: sends text input on the same session when typing fallback is available.
 - `image.in`: sends an image reference or attachment metadata on the same session.
+- `input.speech.start`: optional server -> client observational event that indicates the shared preview path has detected speech start for the current preview window.
+- `input.preview`: optional server -> client observational partial-update event for preview-aware clients.
+- `input.endpoint`: optional server -> client observational endpoint-candidate event for preview-aware clients.
 - `response.start`: begins a server response turn.
 - `response.chunk`: streams partial text or structured deltas such as `text`, `tool_call`, or `tool_result`.
+- `audio.out.meta`: optional server -> client playback-metadata event that establishes the IDs used by later playback ACK facts.
 - `audio.out.chunk`: semantic name for outbound server audio chunks.
+- `audio.out.started`: optional client -> server fact that local playback for the referenced segment actually started.
+- `audio.out.mark`: optional client -> server progress fact for a referenced playback segment.
+- `audio.out.cleared`: optional client -> server fact that queued audio after a segment was cleared locally.
+- `audio.out.completed`: optional client -> server fact that referenced playback fully completed locally.
 - `session.end`: closes the session from either side and always includes a reason.
 - `error`: reports recoverable or terminal protocol errors.
 
@@ -129,17 +147,19 @@ Current turn-taking mode advertised by discovery is `client_wakeup_client_commit
 Current discovery compatibility note:
 
 - discovery may additionally expose a structured `server_endpoint` object
+- discovery may additionally expose a structured `voice_collaboration` object for preview-aware and playback-truth-aware collaboration
 - that object advertises whether shared server endpointing is now a main-path candidate on the current runtime
 - even when `server_endpoint.enabled=true`, explicit `audio.in.commit` remains a supported compatibility path in v0
-- the public event names and envelope do not change for this candidate stage
-- preview speech-start, partial-update, or endpoint-candidate observations remain runtime-internal in v0 unless a future tracing contract exposes them explicitly
+- the optional collaboration events remain capability-gated: servers advertise them via discovery and clients opt into them through `session.start.payload.capabilities`
+- preview observations still remain observational only; `accept_reason` stays the accepted-turn signal
 
 When `server_endpoint.enabled=true`:
 
 - the server may accept a spoken turn after shared preview plus silence plus lexical-hold logic without waiting for `audio.in.commit`
 - that acceptance is still reported through the existing `session.update` plus `response.start` flow
 - the accepted-turn `session.update` may include `accept_reason=server_endpoint`
-- clients must not assume that every preview or endpoint candidate is published as a separate public event in v0
+- if `voice_collaboration.preview_events.enabled=true` and the client also negotiated `preview_events=true`, the server may additionally emit `input.speech.start`, `input.preview`, and `input.endpoint`
+- clients must not treat those preview events as accepted-turn confirmation
 
 ## First Transport Mapping
 
@@ -152,7 +172,7 @@ When `server_endpoint.enabled=true`:
 Current implementation note:
 
 - on the native realtime main path, shared runtime orchestration may now start audio from an internal early-output stream before the final `TurnResponse` envelope has fully settled
-- this does not add a new public event family; the existing `response.start` plus streamed deltas plus binary audio remain the public surface
+- on the native realtime main path, capability-gated `audio.out.meta` plus client playback ACK events may now coexist with the existing `response.start` plus streamed deltas plus binary audio surface
 
 Current optional tracing fields:
 

@@ -108,6 +108,23 @@
         },
         "local_wake_word": {
           "type": "boolean"
+        },
+        "preview_events": {
+          "type": "boolean",
+          "description": "When true, the client opts into capability-gated preview-aware server events such as input.speech.start, input.preview, and input.endpoint."
+        },
+        "playback_ack": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "segment_mark_v1"
+              ]
+            }
+          },
+          "additionalProperties": true,
+          "description": "Optional capability declaration for client -> server playback fact events such as audio.out.started, audio.out.mark, audio.out.cleared, and audio.out.completed."
         }
       },
       "additionalProperties": true

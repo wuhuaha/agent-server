@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-server.local/schemas/realtime/voice-collaboration-v0-draft.schema.json",
+  "title": "Realtime Voice Collaboration Draft v0",
+  "description": "Draft additive schema for preview-aware and playback-truth-aware realtime collaboration. This schema complements the stable realtime session envelope schema and does not replace it.",
+  "type": "object",
+  "definitions": {
+    "sessionId": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "discoveryVoiceCollaboration": {
+      "type": "object",
+      "properties": {
+        "preview_events": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "mode"
+          ],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "speech_start": { "type": "boolean" },
+            "partial": { "type": "boolean" },
+            "endpoint_candidate": { "type": "boolean" },
+            "mode": {
+              "type": "string",
+              "enum": ["preview_v1"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "playback_ack": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "mode"
+          ],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "started": { "type": "boolean" },
+            "mark": { "type": "boolean" },
+            "cleared": { "type": "boolean" },
+            "completed": { "type": "boolean" },
+            "mode": {
+              "type": "string",
+              "enum": ["segment_mark_v1"]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "sessionStartPreviewCapability": {
+      "type": "boolean"
+    },
+    "sessionStartPlaybackAckCapability": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["segment_mark_v1"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "baseEnvelope": {
+      "type": "object",
+      "required": ["type", "seq", "ts", "payload"],
+      "properties": {
+        "type": { "type": "string" },
+        "session_id": { "$ref": "#/definitions/sessionId" },
+        "seq": { "$ref": "#/definitions/seq" },
+        "ts": { "$ref": "#/definitions/ts" },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "inputSpeechStartEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "input.speech.start" },
+            "payload": {
+              "type": "object",
+              "required": ["preview_id", "audio_offset_ms", "source"],
+              "properties": {
+                "preview_id": { "type": "string" },
+                "audio_offset_ms": { "type": "integer", "minimum": 0 },
+                "source": { "type": "string", "enum": ["server_preview"] }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "inputPreviewEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "input.preview" },
+            "payload": {
+              "type": "object",
+              "required": ["preview_id", "text", "is_final", "audio_offset_ms"],
+              "properties": {
+                "preview_id": { "type": "string" },
+                "text": { "type": "string" },
+                "stable_prefix": { "type": "string" },
+                "is_final": { "type": "boolean" },
+                "stability": { "type": "number", "minimum": 0, "maximum": 1 },
+                "audio_offset_ms": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "inputEndpointEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "input.endpoint" },
+            "payload": {
+              "type": "object",
+              "required": ["preview_id", "candidate", "reason", "audio_offset_ms"],
+              "properties": {
+                "preview_id": { "type": "string" },
+                "candidate": { "type": "boolean" },
+                "reason": { "type": "string" },
+                "audio_offset_ms": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "audioOutMetaEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "audio.out.meta" },
+            "payload": {
+              "type": "object",
+              "required": ["response_id", "playback_id", "segment_id", "expected_duration_ms", "is_last_segment"],
+              "properties": {
+                "response_id": { "type": "string" },
+                "playback_id": { "type": "string" },
+                "segment_id": { "type": "string" },
+                "text": { "type": "string" },
+                "expected_duration_ms": { "type": "integer", "minimum": 0 },
+                "is_last_segment": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "audioOutStartedEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "audio.out.started" },
+            "payload": {
+              "type": "object",
+              "required": ["response_id", "playback_id", "segment_id"],
+              "properties": {
+                "response_id": { "type": "string" },
+                "playback_id": { "type": "string" },
+                "segment_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "audioOutMarkEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "audio.out.mark" },
+            "payload": {
+              "type": "object",
+              "required": ["response_id", "playback_id", "segment_id"],
+              "properties": {
+                "response_id": { "type": "string" },
+                "playback_id": { "type": "string" },
+                "segment_id": { "type": "string" },
+                "played_duration_ms": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "audioOutClearedEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "audio.out.cleared" },
+            "payload": {
+              "type": "object",
+              "required": ["response_id", "playback_id", "cleared_after_segment_id", "reason"],
+              "properties": {
+                "response_id": { "type": "string" },
+                "playback_id": { "type": "string" },
+                "cleared_after_segment_id": { "type": "string" },
+                "reason": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "audioOutCompletedEnvelope": {
+      "allOf": [
+        { "$ref": "#/definitions/baseEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "audio.out.completed" },
+            "payload": {
+              "type": "object",
+              "required": ["response_id", "playback_id"],
+              "properties": {
+                "response_id": { "type": "string" },
+                "playback_id": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

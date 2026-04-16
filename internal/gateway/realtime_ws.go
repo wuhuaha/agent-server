@@ -56,10 +56,12 @@ type sessionStartSession struct {
 }
 
 type sessionStartCapabilities struct {
-	TextInput     bool `json:"text_input"`
-	ImageInput    bool `json:"image_input"`
-	HalfDuplex    bool `json:"half_duplex"`
-	LocalWakeWord bool `json:"local_wake_word"`
+	TextInput     bool                               `json:"text_input"`
+	ImageInput    bool                               `json:"image_input"`
+	HalfDuplex    bool                               `json:"half_duplex"`
+	LocalWakeWord bool                               `json:"local_wake_word"`
+	PreviewEvents bool                               `json:"preview_events,omitempty"`
+	PlaybackAck   *sessionStartPlaybackAckCapability `json:"playback_ack,omitempty"`
 }
 
 type commitPayload struct {
@@ -343,6 +345,9 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 			"endpoint_reason", observation.Preview.EndpointReason,
 		)
 	}
+	if err := h.emitPreviewObservationEvents(runtime, snapshot, observation); err != nil {
+		return err
+	}
 	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
 		runtime.clearInputPreview()
 		turn, err := runtime.session.CommitTurn()
@@ -410,6 +415,9 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 				"audio_bytes", observation.Preview.AudioBytes,
 				"endpoint_reason", observation.Preview.EndpointReason,
 			)
+		}
+		if err := h.emitPreviewObservationEvents(runtime, previous, observation); err != nil {
+			return err
 		}
 		if observation.SpeechStartedObserved || observation.EndpointCandidateObserved {
 			if previewing, stateErr := runtime.session.SetInputState(session.InputStatePreviewing); stateErr == nil {
@@ -528,6 +536,9 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 						"endpoint_reason", observation.Preview.EndpointReason,
 					)
 				}
+				if err := h.emitPreviewObservationEvents(runtime, current, observation); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -564,6 +575,14 @@ func (h *realtimeWSHandler) handleControl(ctx context.Context, runtime *connecti
 		return h.handleClientEnd(runtime, envelope)
 	case events.TypeSessionUpdate:
 		return h.handleSessionUpdate(runtime, envelope)
+	case events.TypeAudioOutStarted:
+		return h.handleAudioOutStarted(runtime, envelope)
+	case events.TypeAudioOutMark:
+		return h.handleAudioOutMark(runtime, envelope)
+	case events.TypeAudioOutCleared:
+		return h.handleAudioOutCleared(runtime, envelope)
+	case events.TypeAudioOutCompleted:
+		return h.handleAudioOutCompleted(runtime, envelope)
 	default:
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
 			Code:        "unsupported_event",
@@ -620,6 +639,8 @@ func (h *realtimeWSHandler) handleSessionStart(runtime *connectionRuntime, envel
 		})
 	}
 	runtime.inputNormalizer = inputNormalizer
+	runtime.collaboration = negotiateVoiceCollaboration(h.profile, payload.Capabilities)
+	runtime.clearPlaybackAckState()
 
 	if err := applyReadDeadline(runtime, snapshot, h.profile); err != nil {
 		return err
@@ -823,6 +844,138 @@ func (h *realtimeWSHandler) handleSessionUpdate(runtime *connectionRuntime, enve
 	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(snapshot, "", ""))
 }
 
+func (h *realtimeWSHandler) handleAudioOutStarted(runtime *connectionRuntime, envelope controlEnvelope) error {
+	var payload audioOutStartedPayload
+	if err := decodePayload(envelope.Payload, &payload); err != nil {
+		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
+			Code:        "invalid_audio_out_started",
+			Message:     err.Error(),
+			Recoverable: true,
+		})
+	}
+	return h.recordPlaybackAckStarted(runtime, payload)
+}
+
+func (h *realtimeWSHandler) handleAudioOutMark(runtime *connectionRuntime, envelope controlEnvelope) error {
+	var payload audioOutMarkPayload
+	if err := decodePayload(envelope.Payload, &payload); err != nil {
+		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
+			Code:        "invalid_audio_out_mark",
+			Message:     err.Error(),
+			Recoverable: true,
+		})
+	}
+	return h.recordPlaybackAckMark(runtime, payload)
+}
+
+func (h *realtimeWSHandler) handleAudioOutCleared(runtime *connectionRuntime, envelope controlEnvelope) error {
+	var payload audioOutClearedPayload
+	if err := decodePayload(envelope.Payload, &payload); err != nil {
+		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
+			Code:        "invalid_audio_out_cleared",
+			Message:     err.Error(),
+			Recoverable: true,
+		})
+	}
+	return h.recordPlaybackAckCleared(runtime, payload)
+}
+
+func (h *realtimeWSHandler) handleAudioOutCompleted(runtime *connectionRuntime, envelope controlEnvelope) error {
+	var payload audioOutCompletedPayload
+	if err := decodePayload(envelope.Payload, &payload); err != nil {
+		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
+			Code:        "invalid_audio_out_completed",
+			Message:     err.Error(),
+			Recoverable: true,
+		})
+	}
+	return h.recordPlaybackAckCompleted(runtime, payload)
+}
+
+func (h *realtimeWSHandler) recordPlaybackAckStarted(runtime *connectionRuntime, payload audioOutStartedPayload) error {
+	if runtime.session.Snapshot().SessionID == "" || !runtime.collaboration.PlaybackAckEnabled() {
+		return nil
+	}
+	meta := runtime.playbackAckMeta()
+	if !validatePlaybackAckIdentity(meta, strings.TrimSpace(payload.ResponseID), strings.TrimSpace(payload.PlaybackID)) {
+		h.logger.Warn("gateway playback ack started ignored because identity mismatched",
+			"session_id", runtime.session.Snapshot().SessionID,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", payload.ResponseID,
+			"playback_id", payload.PlaybackID,
+			"expected_response_id", meta.ResponseID,
+			"expected_playback_id", meta.PlaybackID,
+		)
+		return nil
+	}
+	runtime.recordPlaybackStarted(time.Now().UTC())
+	logPlaybackAckInfo(h.logger, "gateway playback ack started", runtime, payload)
+	return nil
+}
+
+func (h *realtimeWSHandler) recordPlaybackAckMark(runtime *connectionRuntime, payload audioOutMarkPayload) error {
+	if runtime.session.Snapshot().SessionID == "" || !runtime.collaboration.PlaybackAckEnabled() {
+		return nil
+	}
+	meta := runtime.playbackAckMeta()
+	if !validatePlaybackAckIdentity(meta, strings.TrimSpace(payload.ResponseID), strings.TrimSpace(payload.PlaybackID)) {
+		h.logger.Warn("gateway playback ack mark ignored because identity mismatched",
+			"session_id", runtime.session.Snapshot().SessionID,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", payload.ResponseID,
+			"playback_id", payload.PlaybackID,
+			"expected_response_id", meta.ResponseID,
+			"expected_playback_id", meta.PlaybackID,
+		)
+		return nil
+	}
+	runtime.recordPlaybackMark(time.Now().UTC(), payload.PlayedDurationMs)
+	logPlaybackAckInfo(h.logger, "gateway playback ack mark", runtime, payload)
+	return nil
+}
+
+func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime, payload audioOutClearedPayload) error {
+	if runtime.session.Snapshot().SessionID == "" || !runtime.collaboration.PlaybackAckEnabled() {
+		return nil
+	}
+	meta := runtime.playbackAckMeta()
+	if !validatePlaybackAckIdentity(meta, strings.TrimSpace(payload.ResponseID), strings.TrimSpace(payload.PlaybackID)) {
+		h.logger.Warn("gateway playback ack cleared ignored because identity mismatched",
+			"session_id", runtime.session.Snapshot().SessionID,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", payload.ResponseID,
+			"playback_id", payload.PlaybackID,
+			"expected_response_id", meta.ResponseID,
+			"expected_playback_id", meta.PlaybackID,
+		)
+		return nil
+	}
+	runtime.recordPlaybackCleared(time.Now().UTC(), payload.Reason)
+	logPlaybackAckInfo(h.logger, "gateway playback ack cleared", runtime, payload)
+	return nil
+}
+
+func (h *realtimeWSHandler) recordPlaybackAckCompleted(runtime *connectionRuntime, payload audioOutCompletedPayload) error {
+	if runtime.session.Snapshot().SessionID == "" || !runtime.collaboration.PlaybackAckEnabled() {
+		return nil
+	}
+	meta := runtime.playbackAckMeta()
+	if !validatePlaybackAckIdentity(meta, strings.TrimSpace(payload.ResponseID), strings.TrimSpace(payload.PlaybackID)) {
+		h.logger.Warn("gateway playback ack completed ignored because identity mismatched",
+			"session_id", runtime.session.Snapshot().SessionID,
+			"remote_addr", runtime.remoteAddr,
+			"response_id", payload.ResponseID,
+			"playback_id", payload.PlaybackID,
+			"expected_response_id", meta.ResponseID,
+			"expected_playback_id", meta.PlaybackID,
+		)
+		return nil
+	}
+	runtime.recordPlaybackCompleted(time.Now().UTC())
+	logPlaybackAckInfo(h.logger, "gateway playback ack completed", runtime, payload)
+	return nil
+}
+
 func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string) error {
 	request := buildTurnRequest(turn, runtime, trace, text)
 	if runtime.voiceSession != nil {
@@ -858,7 +1011,7 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 		EmitResponseDelta: func(responseID string, delta voice.ResponseDelta) error {
 			return h.emitResponseDelta(runtime, turn.Snapshot.SessionID, responseID, delta)
 		},
-		StartResponseAudio: func(trace turnTrace, _ string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error {
+		StartResponseAudio: func(trace turnTrace, responseID string, audioStart voice.ResponseAudioStart, aggregatedText string, completion *turnOutputOutcomeFuture) error {
 			speaking, err := runtime.session.SetOutputState(session.OutputStateSpeaking)
 			if err != nil {
 				return err
@@ -886,7 +1039,7 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 				"remote_addr", runtime.remoteAddr,
 				"audio_start_source", string(audioStart.Source),
 			)
-			h.startAudioStream(ctx, runtime, turn.Snapshot.SessionID, trace, audioStart.Stream, completion)
+			h.startAudioStream(ctx, runtime, turn.Snapshot.SessionID, trace, newAudioPlaybackMeta(responseID, aggregatedText, plannedPlaybackDurationForAudioStream(audioStart.Stream, outputFrameInterval)), audioStart.Stream, completion)
 			return nil
 		},
 	})
@@ -911,7 +1064,7 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 	if result.Response.AudioStreamTransferred {
 		return nil
 	}
-	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.Response, deliveredText)
+	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.ResponseID, result.Response, deliveredText)
 }
 
 func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, trace turnTrace, text string) voice.TurnRequest {
@@ -964,7 +1117,7 @@ func responseModalities(deltas []voice.ResponseDelta, response voice.TurnRespons
 	return modalities
 }
 
-func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, trace turnTrace, response voice.TurnResponse, deliveredText string) error {
+func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *connectionRuntime, snapshot session.Snapshot, trace turnTrace, responseID string, response voice.TurnResponse, deliveredText string) error {
 	return finalizeTurnLifecycle(trace, response, deliveredText, turnFinalizeHooks{
 		Completion: turnCompletionHooks{
 			Runtime:   runtime,
@@ -1002,7 +1155,7 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 			return nil
 		},
 		StartAudioStream: func(trace turnTrace, audioStream voice.AudioStream, response voice.TurnResponse, _ string) error {
-			h.startAudioStream(ctx, runtime, snapshot.SessionID, trace, audioStream, resolvedTurnOutputOutcome(turnOutputOutcome{
+			h.startAudioStream(ctx, runtime, snapshot.SessionID, trace, newAudioPlaybackMeta(responseID, deliveredText, plannedPlaybackDurationForResponse(response, outputFrameInterval)), audioStream, resolvedTurnOutputOutcome(turnOutputOutcome{
 				EndSession: response.EndSession,
 				EndReason:  response.EndReason,
 				EndMessage: response.EndMessage,
@@ -1017,17 +1170,40 @@ func (h *realtimeWSHandler) startAudioStream(
 	runtime *connectionRuntime,
 	sessionID string,
 	trace turnTrace,
+	meta audioPlaybackMeta,
 	audioStream voice.AudioStream,
 	completion *turnOutputOutcomeFuture,
 ) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	stream := runtime.installOutput(cancel, completion)
 	audioStream = newPCM16EffectAudioStream(audioStream, &stream.effects)
+	runtime.installPlaybackAckMeta(meta)
 
 	go func() {
 		defer close(stream.done)
 		defer runtime.clearOutput(stream)
+		defer runtime.clearPlaybackAckState()
 		defer func() { _ = audioStream.Close() }()
+
+		if runtime.collaboration.PlaybackAckEnabled() {
+			if err := runtime.peer.WriteEvent(events.TypeAudioOutMeta, sessionID, audioOutMetaPayload{
+				ResponseID:         meta.ResponseID,
+				PlaybackID:         meta.PlaybackID,
+				SegmentID:          meta.SegmentID,
+				Text:               meta.Text,
+				ExpectedDurationMs: audioDurationMs(meta.ExpectedDuration),
+				IsLastSegment:      meta.IsLastSegment,
+			}); err != nil {
+				logTurnTraceError(h.logger, "gateway audio.out.meta write failed", sessionID, trace, err,
+					"remote_addr", runtime.remoteAddr,
+					"response_id", meta.ResponseID,
+					"playback_id", meta.PlaybackID,
+					"segment_id", meta.SegmentID,
+					"ws_stage", "audio_out_meta",
+				)
+				return
+			}
+		}
 
 		ticker := time.NewTicker(outputFrameInterval)
 		defer ticker.Stop()
@@ -1153,6 +1329,9 @@ func (h *realtimeWSHandler) validateStartPayload(payload sessionStartPayload) er
 	if payload.Session.Mode == "" {
 		return errors.New("session.mode is required")
 	}
+	if err := validatePlaybackAckMode(payload.Capabilities.playbackAckMode()); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1174,6 +1353,8 @@ func (h *realtimeWSHandler) endSession(runtime *connectionRuntime, reason sessio
 	runtime.session.Reset()
 	runtime.inputNormalizer = nil
 	runtime.clearInputPreview()
+	runtime.clearPlaybackAckState()
+	runtime.collaboration = collaborationNegotiation{}
 	runtime.turnTrace.Clear()
 	return applyReadDeadline(runtime, runtime.session.Snapshot(), h.profile)
 }

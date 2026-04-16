@@ -77,6 +77,30 @@ func TestRealtimeDiscoveryIncludesWireProfile(t *testing.T) {
 	if got := serverEndpoint["main_path_candidate"]; got != true {
 		t.Fatalf("expected server endpoint candidate flag true, got %v", got)
 	}
+	voiceCollaboration, ok := body["voice_collaboration"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected voice_collaboration object, got %#v", body["voice_collaboration"])
+	}
+	previewEvents, ok := voiceCollaboration["preview_events"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected preview_events object, got %#v", voiceCollaboration["preview_events"])
+	}
+	if got := previewEvents["enabled"]; got != true {
+		t.Fatalf("expected preview_events enabled true, got %v", got)
+	}
+	if got := previewEvents["mode"]; got != "preview_v1" {
+		t.Fatalf("expected preview_events mode preview_v1, got %v", got)
+	}
+	playbackAck, ok := voiceCollaboration["playback_ack"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected playback_ack object, got %#v", voiceCollaboration["playback_ack"])
+	}
+	if got := playbackAck["enabled"]; got != true {
+		t.Fatalf("expected playback_ack enabled true, got %v", got)
+	}
+	if got := playbackAck["mode"]; got != "segment_mark_v1" {
+		t.Fatalf("expected playback_ack mode segment_mark_v1, got %v", got)
+	}
 	notes, ok := body["notes"].([]any)
 	if !ok || len(notes) == 0 {
 		t.Fatalf("expected discovery notes, got %#v", body["notes"])

@@ -1296,6 +1296,182 @@ func TestRealtimeWSServerEndpointPreviewKeepsConnectionOpenForClientEnd(t *testi
 	t.Fatal("expected connection to stay open until client session.end")
 }
 
+func TestRealtimeWSEmitsNegotiatedPreviewEvents(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			return voice.TurnResponse{InputText: req.Text, Text: "ok"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &fixedPartialPreviewSession{partial: "打开客厅灯"}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	_ = startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"preview_events":  true,
+	})
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	var (
+		sawSpeechStart bool
+		sawPreview     bool
+		previewID      string
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		event := readNextJSONEvent(t, conn, 500*time.Millisecond)
+		switch event.Type {
+		case "input.speech.start":
+			sawSpeechStart = true
+			previewID = stringValue(event.Payload["preview_id"])
+			if previewID == "" {
+				t.Fatal("expected preview_id on input.speech.start")
+			}
+			if got := intValue(event.Payload["audio_offset_ms"]); got <= 0 {
+				t.Fatalf("expected positive audio_offset_ms on input.speech.start, got %d", got)
+			}
+		case "input.preview":
+			sawPreview = true
+			if got := stringValue(event.Payload["text"]); got != "打开客厅灯" {
+				t.Fatalf("expected preview text 打开客厅灯, got %q", got)
+			}
+			if got := stringValue(event.Payload["preview_id"]); got == "" {
+				t.Fatal("expected preview_id on input.preview")
+			} else if previewID != "" && got != previewID {
+				t.Fatalf("expected matching preview_id %q, got %q", previewID, got)
+			}
+			if got := intValue(event.Payload["audio_offset_ms"]); got <= 0 {
+				t.Fatalf("expected positive audio_offset_ms on input.preview, got %d", got)
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+		if sawSpeechStart && sawPreview {
+			return
+		}
+	}
+
+	t.Fatalf("expected negotiated preview events, saw speech_start=%v preview=%v", sawSpeechStart, sawPreview)
+}
+
+func TestRealtimeWSNegotiatedPlaybackAckMetaAndClientFacts(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		if strings.TrimSpace(req.Text) != "play" {
+			return voice.TurnResponse{Text: "unexpected"}, nil
+		}
+		return voice.TurnResponse{
+			Text:        "好的，开始播放。",
+			AudioChunks: repeatAudioChunks(make([]byte, 640), 3),
+		}, nil
+	})
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"playback_ack": map[string]any{
+			"mode": "segment_mark_v1",
+		},
+	})
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "play"})
+
+	var meta audioOutMetaPayload
+	sawMeta := false
+	sawActive := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "audio.out.meta":
+			sawMeta = true
+			meta = audioOutMetaPayload{
+				ResponseID:         stringValue(event.Payload["response_id"]),
+				PlaybackID:         stringValue(event.Payload["playback_id"]),
+				SegmentID:          stringValue(event.Payload["segment_id"]),
+				Text:               stringValue(event.Payload["text"]),
+				ExpectedDurationMs: intValue(event.Payload["expected_duration_ms"]),
+			}
+			if meta.ResponseID == "" || meta.PlaybackID == "" || meta.SegmentID == "" {
+				t.Fatalf("expected populated audio.out.meta ids, got %#v", event.Payload)
+			}
+			if meta.ExpectedDurationMs <= 0 {
+				t.Fatalf("expected positive expected_duration_ms, got %#v", event.Payload)
+			}
+			writeControlEvent(t, conn, "audio.out.started", sessionID, 3, map[string]any{
+				"response_id": meta.ResponseID,
+				"playback_id": meta.PlaybackID,
+				"segment_id":  meta.SegmentID,
+			})
+			writeControlEvent(t, conn, "audio.out.mark", sessionID, 4, map[string]any{
+				"response_id":        meta.ResponseID,
+				"playback_id":        meta.PlaybackID,
+				"segment_id":         meta.SegmentID,
+				"played_duration_ms": 40,
+			})
+		case "session.update":
+			if sawMeta && stringValue(event.Payload["state"]) == "active" {
+				writeControlEvent(t, conn, "audio.out.completed", sessionID, 5, map[string]any{
+					"response_id": meta.ResponseID,
+					"playback_id": meta.PlaybackID,
+				})
+				sawActive = true
+				goto done
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+done:
+	if !sawMeta {
+		t.Fatal("expected audio.out.meta when playback_ack is negotiated")
+	}
+	if !sawActive {
+		t.Fatal("expected session to return to active after playback")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	logs := logBuffer.String()
+	for _, want := range []string{
+		`"msg":"gateway playback ack started"`,
+		`"msg":"gateway playback ack mark"`,
+		`"msg":"gateway playback ack completed"`,
+		`"response_id":"` + meta.ResponseID + `"`,
+		`"playback_id":"` + meta.PlaybackID + `"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected logs to contain %s, got:\n%s", want, logs)
+		}
+	}
+}
+
 func testRealtimeProfile() RealtimeProfile {
 	return RealtimeProfile{WSPath: "/v1/realtime/ws", ProtocolVersion: "rtos-ws-v0", Subprotocol: "agent-server.realtime.v0", VoiceProvider: "bootstrap", TTSProvider: "none", AuthMode: "disabled", TurnMode: "client_wakeup_client_commit", IdleTimeoutMs: 15000, MaxSessionMs: 300000, MaxFrameBytes: 4096, InputCodec: "pcm16le", InputSampleRate: 16000, InputChannels: 1, OutputCodec: "pcm16le", OutputSampleRate: 16000, OutputChannels: 1, AllowOpus: false, AllowTextInput: true, AllowImageInput: false}
 }
@@ -1327,6 +1503,16 @@ func openRealtimeWSWithServerLog(t *testing.T, profile RealtimeProfile, responde
 
 func startTestSession(t *testing.T, conn *websocket.Conn, profile RealtimeProfile) string {
 	t.Helper()
+	return startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+	})
+}
+
+func startTestSessionWithCapabilities(t *testing.T, conn *websocket.Conn, profile RealtimeProfile, capabilities map[string]any) string {
+	t.Helper()
 
 	sessionID := "sess_test"
 	writeControlEvent(t, conn, "session.start", sessionID, 1, map[string]any{
@@ -1334,7 +1520,7 @@ func startTestSession(t *testing.T, conn *websocket.Conn, profile RealtimeProfil
 		"device":           map[string]any{"device_id": "rtos-mock-001", "client_type": "rtos-mock", "firmware_version": "test"},
 		"audio":            map[string]any{"codec": profile.InputCodec, "sample_rate_hz": profile.InputSampleRate, "channels": profile.InputChannels},
 		"session":          map[string]any{"mode": "voice", "wake_reason": "test", "client_can_end": true, "server_can_end": true},
-		"capabilities":     map[string]any{"text_input": true, "image_input": false, "half_duplex": false, "local_wake_word": false},
+		"capabilities":     capabilities,
 	})
 
 	event := readNextJSONEvent(t, conn, 2*time.Second)
@@ -1404,6 +1590,19 @@ func stringValue(value any) string {
 		return rendered
 	}
 	return ""
+}
+
+func intValue(value any) int {
+	switch rendered := value.(type) {
+	case float64:
+		return int(rendered)
+	case int:
+		return rendered
+	case int64:
+		return int(rendered)
+	default:
+		return 0
+	}
 }
 
 func repeatAudioChunks(chunk []byte, count int) [][]byte {

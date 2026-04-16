@@ -22,14 +22,16 @@ type outputStream struct {
 }
 
 type connectionRuntime struct {
-	conn            *websocket.Conn
-	peer            *wsPeer
-	session         *session.RealtimeSession
-	inputNormalizer voice.InputNormalizer
-	voiceSession    *voice.SessionOrchestrator
-	turnTrace       turnTraceState
-	previewTrace    inputPreviewTraceState
-	remoteAddr      string
+	conn             *websocket.Conn
+	peer             *wsPeer
+	session          *session.RealtimeSession
+	inputNormalizer  voice.InputNormalizer
+	voiceSession     *voice.SessionOrchestrator
+	turnTrace        turnTraceState
+	previewTrace     inputPreviewTraceState
+	collaboration    collaborationNegotiation
+	playbackAckState playbackAckState
+	remoteAddr       string
 
 	outputMu         sync.Mutex
 	output           *outputStream
