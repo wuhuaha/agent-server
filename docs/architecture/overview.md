@@ -44,7 +44,9 @@ The shared TTS boundary now also covers one local open-source GPU deployment pat
 
 TTS is part of this shared voice-runtime output layer rather than a browser-only, RTOS-only, or channel-specific feature. Once the runtime has produced final user-facing text, the same synthesized audio path can be reused by native RTOS devices, browser debug pages, desktop clients, and future channel adapters that need spoken output.
 
-The voice runtime now also normalizes structured speech-understanding metadata before handing a turn to `internal/agent`. ASR providers may expose different fields, but the shared runtime path only sees normalized metadata keys such as language, emotion, speaker, endpoint reason, audio events, and partial hypotheses.
+The voice runtime now also normalizes structured speech-understanding metadata before handing a turn to `internal/agent`. ASR providers may expose different fields, but the shared runtime path only sees normalized metadata keys such as language, emotion, speaker, endpoint reason, audio events, partial hypotheses, and punctuation-derived hints.
+
+The shared agent prompt path may consume those normalized speech hints for reply shaping and clarification quality, but adapters still must not reason about provider-specific ASR payloads themselves.
 
 The current baseline observability path also lives here: ASR and TTS requests now carry the same internal `turn_id` and `trace_id`, so transcriber logs, runtime logs, TTS setup logs, and playback-complete logs can all be correlated under one turn without widening the device-facing protocols.
 

@@ -456,3 +456,8 @@
   - preview arbitration now carries slot summaries: `slot_domain`, `slot_intent`, `slot_status`, `slot_actionability`, `slot_missing`, `slot_ambiguous`, and `slot_clarify_needed`
   - `clarify_needed` and `act_candidate` can promote preview into `draft_allowed`, while `wait_more` can pull a premature draft back to a more conservative state
   - this slot layer is still advisory and does not directly manufacture final accept
+
+- The first FunASR metadata-consumption slice is now landed:
+  - `speech.emotion`, `speech.audio_events`, final-text punctuation hints, and endpoint hints now flow into the shared agent prompt path through a built-in `voice_input_context` section
+  - punctuation-derived hints now include at least `speech.text_terminal_punctuation` and `speech.text_clause_count`
+  - this keeps FunASR enrichment runtime-owned and provider-neutral instead of teaching gateways or adapters model-specific behavior

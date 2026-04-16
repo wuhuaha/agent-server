@@ -746,3 +746,13 @@
   - these summaries merge back into `TurnArbitration` as advisory signals
   - `clarify_needed` and `act_candidate` may promote `draft_allowed`, while `wait_more` may suppress a premature draft
 - Status: resolved for the first MVP slot-completeness slice. Richer entity catalog grounding and canonical-value normalization are still follow-up work.
+
+
+### FunASR Punctuation Emotion And Audio Events Were Present But Still Not Consumed By The Shared Runtime
+
+- Problem: the worker and shared transcription result already exposed `emotion`, `audio_events`, and final text, but those signals still stopped at raw metadata. The shared agent runtime did not systematically consume them, so they had little effect on reply style, clarify policy, or final-turn understanding quality.
+- Resolution: landed the first runtime consumption slice:
+  - `internal/voice.buildTranscriptionMetadata(...)` now derives punctuation-facing hints such as `speech.text_terminal_punctuation` and `speech.text_clause_count`
+  - the built-in prompt-section provider now emits a `voice_input_context` section that converts `speech.emotion`, `speech.audio_events`, punctuation hints, and endpoint hints into weak but actionable reply-shaping context
+  - the consumption path stays provider-neutral and runtime-owned; gateways still do not interpret FunASR-specific outputs themselves
+- Status: resolved for the first metadata-consumption MVP. Future work can extend this into TTS style control and richer interruption-side audio-event use.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -115,6 +116,10 @@ func (BuiltinPromptSectionProvider) ListPromptSections(_ context.Context, reques
 		{
 			Name:    "voice_playback_context",
 			Content: renderPreviousPlaybackContextPrompt(request.Metadata),
+		},
+		{
+			Name:    "voice_input_context",
+			Content: renderSpeechInputContextPrompt(request.Metadata),
 		},
 	}, nil
 }
@@ -263,6 +268,84 @@ func renderPreviousPlaybackContextPrompt(metadata map[string]string) string {
 	}
 	lines = append(lines, "- 如果用户的新问题已经切换主题，直接回答新问题，不要机械续播旧内容。")
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func renderSpeechInputContextPrompt(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	emotion := strings.TrimSpace(metadata["speech.emotion"])
+	endpointReason := strings.TrimSpace(metadata["speech.endpoint_reason"])
+	terminalPunctuation := strings.TrimSpace(metadata["speech.text_terminal_punctuation"])
+	clauseCount := strings.TrimSpace(metadata["speech.text_clause_count"])
+	audioEvents := decodeSpeechMetadataList(metadata["speech.audio_events"])
+
+	lines := make([]string, 0, 6)
+	if emotion != "" && !speechEmotionLooksNeutral(emotion) {
+		lines = append(lines, fmt.Sprintf("- 用户当前语气/情绪弱信号：%s。可据此微调回复语气、长度与是否先确认安抚，但不要机械复述情绪标签。", emotion))
+	}
+	if len(audioEvents) > 0 {
+		lines = append(lines, fmt.Sprintf("- 当前音频事件/环境线索：%s。若存在噪声、背景音、笑声等干扰，优先保持回复更短更稳，必要时适度澄清。", strings.Join(audioEvents, "、")))
+	}
+	if terminalPunctuation != "" {
+		lines = append(lines, fmt.Sprintf("- ASR 终止标点弱信号：%s。它可作为问句或收束边界的参考，但不要单独依赖。", humanizeSpeechTerminalPunctuation(terminalPunctuation)))
+	}
+	if clauseCount != "" && clauseCount != "0" {
+		lines = append(lines, fmt.Sprintf("- 当前识别文本的意群数估计：%s。若用户语音明显分成多意群，优先按已说完的主意图作答，不要无意义复述全部断句。", clauseCount))
+	}
+	if endpointReason != "" {
+		lines = append(lines, fmt.Sprintf("- 当前语音收尾线索：%s。它只是运行时背景证据，不要在回复里暴露内部标签。", endpointReason))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append(lines, "- 上述语音线索都只是弱信号；若文本语义与上下文更明确，优先服从文本语义。")
+	return strings.TrimSpace("当前这轮用户语音输入的附加理解线索：\n" + strings.Join(lines, "\n"))
+}
+
+func decodeSpeechMetadataList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil
+	}
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func speechEmotionLooksNeutral(emotion string) bool {
+	switch strings.ToLower(strings.TrimSpace(emotion)) {
+	case "", "neutral", "normal", "calm", "speech":
+		return true
+	default:
+		return false
+	}
+}
+
+func humanizeSpeechTerminalPunctuation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "question_mark":
+		return "问句收尾"
+	case "ellipsis":
+		return "省略/迟疑收尾"
+	case "soft_pause":
+		return "轻停顿收尾"
+	case "strong_stop":
+		return "完整句号或感叹号收尾"
+	default:
+		return value
+	}
 }
 
 func chineseWeekday(day time.Weekday) string {

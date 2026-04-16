@@ -22,7 +22,7 @@ func turnMetadataWithTranscription(base map[string]string, result TranscriptionR
 }
 
 func buildTranscriptionMetadata(result TranscriptionResult) map[string]string {
-	metadata := make(map[string]string, 12)
+	metadata := make(map[string]string, 16)
 	put := func(key, value string) {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
 			metadata[key] = trimmed
@@ -43,6 +43,12 @@ func buildTranscriptionMetadata(result TranscriptionResult) map[string]string {
 	if result.ElapsedMs > 0 {
 		metadata["speech.elapsed_ms"] = strconv.Itoa(result.ElapsedMs)
 	}
+	if punctuation := detectSpeechTerminalPunctuation(result.Text); punctuation != "" {
+		metadata["speech.text_terminal_punctuation"] = punctuation
+	}
+	if clauseCount := estimateSpeechClauseCount(result.Text, result.Segments); clauseCount > 0 {
+		metadata["speech.text_clause_count"] = strconv.Itoa(clauseCount)
+	}
 	if encoded := encodeSpeechStringList(result.AudioEvents); encoded != "" {
 		metadata["speech.audio_events"] = encoded
 	}
@@ -57,6 +63,62 @@ func buildTranscriptionMetadata(result TranscriptionResult) map[string]string {
 		return nil
 	}
 	return metadata
+}
+
+func detectSpeechTerminalPunctuation(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(text, "?"), strings.HasSuffix(text, "？"):
+		return "question_mark"
+	case strings.HasSuffix(text, "..."), strings.HasSuffix(text, "……"), strings.HasSuffix(text, "…"):
+		return "ellipsis"
+	case strings.HasSuffix(text, "."), strings.HasSuffix(text, "。"), strings.HasSuffix(text, "!"), strings.HasSuffix(text, "！"):
+		return "strong_stop"
+	case strings.HasSuffix(text, ","), strings.HasSuffix(text, "，"), strings.HasSuffix(text, ";"), strings.HasSuffix(text, "；"):
+		return "soft_pause"
+	default:
+		return ""
+	}
+}
+
+func estimateSpeechClauseCount(text string, segments []string) int {
+	if count := len(nonEmptySpeechStrings(segments)); count > 0 {
+		return count
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	count := 1
+	for _, r := range text {
+		switch r {
+		case '。', '.', '！', '!', '？', '?', '；', ';':
+			count++
+		}
+	}
+	if count < 1 {
+		return 1
+	}
+	return count
+}
+
+func nonEmptySpeechStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func encodeSpeechStringList(values []string) string {

@@ -259,8 +259,8 @@ func TestASRResponderInjectsStructuredSpeechMetadataIntoTurnInput(t *testing.T) 
 	executor := &capturingTurnExecutor{}
 	responder := NewASRResponder(
 		fakeTranscriber{result: TranscriptionResult{
-			Text:           "打开客厅灯",
-			Segments:       []string{"打开客厅灯"},
+			Text:           "打开客厅灯。",
+			Segments:       []string{"打开客厅灯。"},
 			DurationMs:     1500,
 			ElapsedMs:      320,
 			Model:          "SenseVoiceSmall",
@@ -297,10 +297,10 @@ func TestASRResponderInjectsStructuredSpeechMetadataIntoTurnInput(t *testing.T) 
 	if err != nil {
 		t.Fatalf("respond failed: %v", err)
 	}
-	if response.Text != "handled: 打开客厅灯" {
+	if response.Text != "handled: 打开客厅灯。" {
 		t.Fatalf("unexpected response text %q", response.Text)
 	}
-	if response.InputText != "打开客厅灯" {
+	if response.InputText != "打开客厅灯。" {
 		t.Fatalf("expected input text to echo transcript, got %q", response.InputText)
 	}
 	if len(executor.inputs) != 1 {
@@ -330,6 +330,12 @@ func TestASRResponderInjectsStructuredSpeechMetadataIntoTurnInput(t *testing.T) 
 	}
 	if got := input.Metadata["speech.transcriber_mode"]; got == "" {
 		t.Fatal("expected speech.transcriber_mode metadata")
+	}
+	if got := input.Metadata["speech.text_terminal_punctuation"]; got != "strong_stop" {
+		t.Fatalf("unexpected terminal punctuation metadata %q", got)
+	}
+	if got := input.Metadata["speech.text_clause_count"]; got != "1" {
+		t.Fatalf("unexpected text clause count metadata %q", got)
 	}
 	if got := input.Metadata["speech.partial_count"]; got != "2" {
 		t.Fatalf("unexpected partial count metadata %q", got)

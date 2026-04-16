@@ -991,3 +991,9 @@
   - preview arbitration may now promote `draft_allowed` on `clarify_needed` / `act_candidate`, or pull a premature draft back toward `wait_more` when the slot parser marks the tail as incomplete
   - `ASRResponder` prewarm metadata now includes slot-parser summaries so the shared runtime can reuse them in later speculative work
   - validated with `go test ./internal/voice ./internal/app -run 'Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`
+
+- Landed step 3 of the tiered voice-intelligence implementation path:
+  - transcription metadata now derives punctuation-facing hints such as `speech.text_terminal_punctuation` and `speech.text_clause_count` from final ASR text
+  - the shared agent-runtime prompt path now consumes `speech.emotion`, `speech.audio_events`, punctuation hints, and endpoint hints through a new built-in `voice_input_context` prompt section
+  - this keeps FunASR punctuation / emotion / audio-events runtime-owned and provider-neutral instead of leaking model-specific behavior into gateways
+  - validated with `go test ./internal/voice ./internal/agent ./internal/app -run 'Speech|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector|Prompt'`

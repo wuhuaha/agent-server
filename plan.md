@@ -641,6 +641,10 @@ Recorded follow-through:
   - architecture/protocol follow-through: `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, and ADR `0029`
   - validation: targeted Go tests for `/v1/realtime` and `/v1/info`, plus desktop-client protocol/runner unit tests
 
+- `2026-04-17 Step3 FunASR Metadata Consumption MVP`
+  - final ASR metadata now derives punctuation hints and feeds `emotion` / `audio_events` / punctuation / endpoint signals into the shared prompt path
+  - validation: `go test ./internal/voice ./internal/agent ./internal/app -run 'Speech|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector|Prompt'`
+
 - `2026-04-17 Step2 Semantic Slot Parser MVP`
   - added a shared `SemanticSlotParser` lane inside `internal/voice`
   - preview arbitration now carries slot/domain summaries and may distinguish `act_candidate`, `clarify_needed`, and `wait_more`

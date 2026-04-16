@@ -1267,3 +1267,38 @@
 
 - 这一轮把“语句是否完成”扩展成了“语义是否足够可处理”。
 - 对智能家居 / 桌面助理场景尤其重要，因为很多体验问题并不是句子没说完，而是槽位没齐、应该澄清、或者尾部参数还在补充。
+
+
+## Round 025｜2026-04-17｜Step3 落地：FunASR 标点/情绪/audio_events 进入 runtime 消费
+
+### 用户诉求
+
+- 在 `semantic judge` 与 `slot completeness` 两步完成后，继续直接实现第三步：
+  - 把 FunASR 的标点、情绪、音频事件真正接入 runtime orchestration 与元数据消费
+
+### 本轮实现内容
+
+- `internal/voice.buildTranscriptionMetadata(...)` 现在会从最终 ASR 文本里进一步导出：
+  - `speech.text_terminal_punctuation`
+  - `speech.text_clause_count`
+- `internal/agent` 的内置 prompt-section provider 新增 `voice_input_context`：
+  - 消费 `speech.emotion`
+  - 消费 `speech.audio_events`
+  - 消费标点提示和 endpoint hint
+  - 将它们转成“弱信号、可用于调节回复长度/语气/澄清倾向”的共享 prompt 上下文
+- 这样做的边界仍然保持一致：
+  - FunASR 模型细节不暴露给 gateway
+  - gateway 不直接根据情绪或 audio_events 自己做业务决策
+  - 这些增强能力先作为 shared runtime 的理解与风格辅助信息进入主链
+
+### 验证
+
+- `go test ./internal/voice ./internal/agent ./internal/app -run 'Speech|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector|Prompt'`
+
+### 与主线的关系
+
+- 这一步让 FunASR 不再只是“识别出一段字”，而是真正把多信号语音理解能力接进了 shared runtime。
+- 对当前阶段最直接的收益是：
+  - LLM 可感知用户当前语气与环境噪声弱信号
+  - 标点恢复结果开始变成可解释、可复用的运行时上下文
+  - 后续若继续做 TTS 情感风格或 interruption 音频事件抑制，已经有了统一 metadata 基座
