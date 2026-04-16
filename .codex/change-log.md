@@ -972,3 +972,15 @@
     - `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
   - validated with:
     - `go test ./internal/agent ./internal/voice ./internal/gateway ./internal/session`
+
+- Added a new research baseline for the next voice-intelligence stage without changing runtime code paths yet:
+  - added `docs/architecture/voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md`, consolidating the repository reality with official OpenAI, Google, Amazon, Apple, FunASR, Qwen, GLM, DeepSeek, MiniCPM, MiMo, Gemini, and Gemma sources
+  - added `docs/adr/0042-voice-runtime-adopts-tiered-llm-and-funasr-enrichment-strategy.md` to record the durable decision that realtime voice stays cascade-based but evolves toward tiered LLM responsibilities plus runtime-owned FunASR metadata
+  - refreshed `docs/architecture/overview.md`, `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`, `plan.md`, and `.codex/project-memory.md` so the next implementation slices stay focused on separate semantic-judge / slot-parser / main-dialogue roles rather than collapsing everything into one model or one prompt
+
+- Landed step 1 of the tiered voice-intelligence implementation path:
+  - `voice.llm_semantic_judge` now owns an independent runtime model config instead of reusing the main dialogue `agent` config path
+  - added dedicated provider/base_url/api_key/model/temperature/max_tokens wiring under `internal/app/config_voice.go`
+  - semantic-judge runtime wiring now builds from the voice-owned config and supports both `deepseek_chat` and generic `openai_compat` endpoints
+  - added validation coverage so `deepseek_chat` still requires a key while local OpenAI-compatible judge endpoints may run without one
+  - validated with `go test ./internal/app ./internal/voice -run 'Semantic|BuildResponder|TurnDetector|ConfigValidate'`

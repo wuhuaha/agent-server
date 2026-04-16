@@ -641,6 +641,24 @@ Recorded follow-through:
   - architecture/protocol follow-through: `docs/architecture/overview.md`, `docs/architecture/runtime-configuration.md`, `docs/protocols/realtime-session-v0.md`, `docs/protocols/rtos-device-ws-v0.md`, and ADR `0029`
   - validation: targeted Go tests for `/v1/realtime` and `/v1/info`, plus desktop-client protocol/runner unit tests
 
+- `2026-04-17 Step1 Semantic Judge Independent Model Config`
+  - the realtime semantic-judge lane now owns its own voice-side model configuration instead of reusing the main dialogue LLM config
+  - current supported semantic-judge endpoint modes are `deepseek_chat` and `openai_compat`
+  - validation: `go test ./internal/app ./internal/voice -run 'Semantic|BuildResponder|TurnDetector|ConfigValidate'`
+
+- `2026-04-17 Tiered LLM + FunASR Enrichment Strategy Research`
+  - recorded the next architecture-level conclusion for spoken intelligence under the current server-side runtime path:
+    - realtime control should not collapse into one large dialogue model
+    - the service should evolve toward three LLM responsibility lanes: semantic judge, slot/domain parser, and main dialogue
+    - `slot completeness` should become a structured runtime object that can drive `draft_allowed`, `clarify_needed`, and `act_candidate` decisions
+    - FunASR punctuation, emotion, and audio-events should be consumed as runtime-owned orchestration metadata rather than left as unused side outputs
+  - documented the decision in `docs/architecture/voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md` and ADR `0042`
+  - research-backed local-first model recommendation of record:
+    - `paraformer-zh-streaming` + `fsmn-vad` + `SenseVoiceSmall` + `ct-punc` on the speech side
+    - `Qwen3-1.7B` for semantic judging
+    - `Qwen3-4B/8B` for slot/domain parsing
+    - `Qwen3-14B/32B` for the main dialogue lane
+
 - `2026-04-14 FunASR Model Selection Research`
   - recorded the current repository truth: the main local FunASR path still uses one `SenseVoiceSmall` ASR worker plus heuristic or external endpoint signals instead of a modular FunASR stack
   - compared official model options across ASR, online streaming, VAD, punctuation, KWS, speaker, emotion, and CosyVoice TTS

@@ -19,6 +19,7 @@ type VoiceConfig struct {
 	BargeInMinAudioMs              int
 	BargeInHoldAudioMs             int
 	LLMSemanticJudgeEnabled        bool
+	LLMSemanticJudgeLLM            VoiceLLMProviderConfig
 	LLMSemanticJudgeTimeoutMs      int
 	LLMSemanticJudgeMinRunes       int
 	LLMSemanticJudgeMinStableForMs int
@@ -44,7 +45,28 @@ type IflytekRTASRProviderConfig struct {
 	FrameIntervalMs int
 }
 
+type VoiceLLMProviderConfig struct {
+	Provider    string
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Temperature float64
+	MaxTokens   int
+}
+
 func loadVoiceConfig() VoiceConfig {
+	semanticJudgeProvider := getenv("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_PROVIDER", "")
+	semanticJudgeBaseURL := getenv("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_BASE_URL", getenv("AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
+	semanticJudgeAPIKey := getenv("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_API_KEY", getenv("AGENT_SERVER_AGENT_DEEPSEEK_API_KEY", getenv("DEEPSEEK_API_KEY", "")))
+	semanticJudgeModel := getenv("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_MODEL", getenv("AGENT_SERVER_AGENT_DEEPSEEK_MODEL", "deepseek-chat"))
+	if strings.TrimSpace(semanticJudgeProvider) == "" {
+		switch strings.ToLower(strings.TrimSpace(getenv("AGENT_SERVER_AGENT_LLM_PROVIDER", "auto"))) {
+		case "", "auto", "deepseek", "deepseek_chat":
+			if strings.TrimSpace(semanticJudgeAPIKey) != "" || strings.TrimSpace(getenv("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_BASE_URL", "")) != "" {
+				semanticJudgeProvider = "deepseek_chat"
+			}
+		}
+	}
 	return VoiceConfig{
 		Provider:                       getenv("AGENT_SERVER_VOICE_PROVIDER", "bootstrap"),
 		ASRURL:                         getenv("AGENT_SERVER_VOICE_ASR_URL", "http://127.0.0.1:8091/v1/asr/transcribe"),
@@ -59,6 +81,14 @@ func loadVoiceConfig() VoiceConfig {
 		BargeInMinAudioMs:              getenvInt("AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS", 120),
 		BargeInHoldAudioMs:             getenvInt("AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS", 240),
 		LLMSemanticJudgeEnabled:        getenvBool("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ENABLED", true),
+		LLMSemanticJudgeLLM: VoiceLLMProviderConfig{
+			Provider:    semanticJudgeProvider,
+			BaseURL:     semanticJudgeBaseURL,
+			APIKey:      semanticJudgeAPIKey,
+			Model:       semanticJudgeModel,
+			Temperature: getenvFloat64("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_TEMPERATURE", 0.1),
+			MaxTokens:   getenvInt("AGENT_SERVER_VOICE_SEMANTIC_JUDGE_MAX_TOKENS", 128),
+		},
 		LLMSemanticJudgeTimeoutMs:      getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_TIMEOUT_MS", 220),
 		LLMSemanticJudgeMinRunes:       getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_RUNES", 2),
 		LLMSemanticJudgeMinStableForMs: getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_STABLE_FOR_MS", 120),
@@ -117,6 +147,13 @@ func applyVoiceDefaults(cfg *Config) {
 	if cfg.Voice.BargeInHoldAudioMs <= 0 {
 		cfg.Voice.BargeInHoldAudioMs = 240
 	}
+	cfg.Voice.LLMSemanticJudgeLLM.Provider = normalizeVoiceLLMProvider(cfg.Voice.LLMSemanticJudgeLLM.Provider)
+	if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.BaseURL) == "" && cfg.Voice.LLMSemanticJudgeLLM.Provider == "deepseek_chat" {
+		cfg.Voice.LLMSemanticJudgeLLM.BaseURL = "https://api.deepseek.com"
+	}
+	if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.Model) == "" && cfg.Voice.LLMSemanticJudgeLLM.Provider == "deepseek_chat" {
+		cfg.Voice.LLMSemanticJudgeLLM.Model = "deepseek-chat"
+	}
 	if cfg.Voice.LLMSemanticJudgeTimeoutMs <= 0 {
 		cfg.Voice.LLMSemanticJudgeTimeoutMs = 220
 	}
@@ -157,6 +194,21 @@ func validateVoiceConfig(cfg Config) error {
 	if cfg.Voice.ServerEndpointEnabled && !voiceProviderSupportsStreamingPreview(cfg.Voice.Provider) {
 		problems = append(problems, "voice.server_endpoint_enabled requires a streaming preview-capable transcriber")
 	}
+	if cfg.Voice.LLMSemanticJudgeEnabled {
+		switch cfg.Voice.LLMSemanticJudgeLLM.Provider {
+		case "", "disabled":
+		case "deepseek_chat":
+			if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.APIKey) == "" {
+				problems = append(problems, "voice.llm_semantic_judge api key is required when semantic judge provider is deepseek_chat")
+			}
+		case "openai_compat":
+			if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.BaseURL) == "" {
+				problems = append(problems, "voice.llm_semantic_judge base_url is required when semantic judge provider is openai_compat")
+			}
+		default:
+			problems = append(problems, "voice.llm_semantic_judge provider must be disabled, deepseek_chat, or openai_compat")
+		}
+	}
 	if len(problems) == 0 {
 		return nil
 	}
@@ -169,5 +221,18 @@ func voiceProviderSupportsStreamingPreview(provider string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeVoiceLLMProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "none", "disabled", "off":
+		return ""
+	case "deepseek", "deepseek_chat":
+		return "deepseek_chat"
+	case "openai", "openai_compat", "local_openai":
+		return "openai_compat"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
 	}
 }

@@ -1122,3 +1122,104 @@
   - 为更早起播、更多 preview-driven runtime 行为继续铺底
   - 避免“为了追求快而牺牲自然度”
   - 给下一阶段更激进的 early plan / early act 留出更稳的行为边界
+
+
+## Round 022｜2026-04-17｜分层 LLM 与 FunASR 增强策略研究
+
+### 用户诉求
+
+- 系统性研究并落盘以下四个方向：
+  1. 是否应该使用多个不同尺寸的 LLM 处理服务侧不同阶段任务
+  2. 如何在现有 `semantic judge` 上继续补 `slot completeness`
+  3. FunASR 是否需要引入标点、情绪分类等增强模型，并分别用于哪些阶段
+  4. 当前有哪些最新、效果优秀且适合本项目不同阶段的模型，包括 Qwen、GLM、DeepSeek、MiniCPM、MiMo、Gemini 等
+- 要求先规划，再逐项深入研究，并把结果写入文档而不是只停留在聊天里。
+
+### 本轮研究方法
+
+- 先复核当前仓库现实：
+  - 当前 `semantic judge` 已接入，但仍复用主 Agent LLM 配置
+  - `slot completeness` 尚未真正进入 runtime
+  - FunASR worker 已支持 `online_model` / `final_vad_model` / `final_punc_model` / `kws_enabled`，且语音结果已能承载 `emotion` / `audio_events`
+- 再结合一手资料做横向研究：
+  - OpenAI `semantic_vad`
+  - Google endpointing / Live API
+  - Amazon adaptive endpointing / natural turn-taking
+  - Apple ChipChat、多信号 LLM device-directed speech detection、ASR contextualization
+  - FunASR / SenseVoice 官方仓库
+  - Qwen、GLM、DeepSeek、MiniCPM、MiMo、Gemini / Gemma 官方模型资料
+
+### 本轮核心结论
+
+- 当前项目最不该做的是“让一个大模型通吃 realtime 判断 + slot 解析 + 最终回复”。
+- 最合适的方向是：
+  - `Tier 0` 声学 / heuristic 底座保实时安全
+  - `Tier 1` 小模型 LLM 做 utterance/interruption semantic judge
+  - `Tier 2` 中模型做 `domain + intent + slot completeness + clarify_needed`
+  - `Tier 3` 大模型做主对话、工具调用和最终回复
+- `slot completeness` 应被视为“动作可执行性对象”，而不是简单的“抽到槽位没有”。
+- FunASR 的 `final_punc_model`、`emotion`、`audio_events` 都值得引入主路径编排，但第一阶段应优先作为 runtime-owned metadata 使用，而不是直接变成 adapter 规则。
+- 模型选型上，当前最适合本项目的本地主线是：
+  - preview ASR：`paraformer-zh-streaming`
+  - final VAD：`fsmn-vad`
+  - final ASR：`SenseVoiceSmall`（稳妥主线）并与 `Fun-ASR-Nano-2512` 做效果 AB
+  - final punctuation：`ct-punc`
+  - `Tier 1`：`Qwen3-1.7B`
+  - `Tier 2`：`Qwen3-4B` 或 `Qwen3-8B`
+  - `Tier 3`：`Qwen3-14B` 起步，资源足够时上 `Qwen3-32B`
+- 对 Google 侧需要特别澄清：截至本轮研究，官方开发文档没有公开确认名为 `Gemini 4` 的开发模型页；当前官方可见主线是 `Gemini 2.5`、`Gemini 3.1 Live` 与开源 `Gemma 4`。
+
+### 本轮正式沉淀
+
+- `docs/architecture/voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md`
+- `docs/adr/0042-voice-runtime-adopts-tiered-llm-and-funasr-enrichment-strategy.md`
+- `docs/architecture/overview.md`
+- `.codex/project-memory.md`
+
+### 与主线的关系
+
+- 这一轮仍然属于“研究先行”，不是立即扩大代码改动面。
+- 它为后续实现给出了更清晰的优先顺序：
+  1. 拆出独立的实时小模型 `semantic judge` 配置
+  2. 引入 `SemanticSlotParser` 与 `slot completeness`
+  3. 把 FunASR 标点 / 情绪 / 音频事件真正消费到 runtime orchestration
+- 这也再次确认：当前项目仍应坚持 server-side runtime 主导的 cascade 路线，而不是为追新而过早切回 end-to-end omni 主路径。
+
+
+## Round 023｜2026-04-17｜Step1 落地：语义裁判独立模型配置
+
+### 用户诉求
+
+- 不只停留在研究层，而是继续按既定顺序直接实现：
+  1. 拆出独立的 `semantic judge` 模型配置
+  2. 再补 `slot completeness`
+  3. 再把 FunASR 标点 / 情绪 / 音频事件接入 runtime 消费
+
+### 本轮实现边界
+
+- 先完成第 1 步，不把 `SemanticTurnJudge` 继续绑在主对话 LLM 上。
+- 保持 `internal/voice` 作为语义裁判的拥有者，gateway 不直接接管模型配置与调用。
+
+### 本轮实现内容
+
+- 在 `internal/app/config_voice.go` 中为 `voice.llm_semantic_judge` 新增独立配置：
+  - `provider`
+  - `base_url`
+  - `api_key`
+  - `model`
+  - `temperature`
+  - `max_tokens`
+- `buildVoiceSemanticJudge(...)` 现在只从 `cfg.Voice` 读取语义裁判模型配置，不再直接读取 `cfg.Agent.DeepSeek`。
+- 当前支持两类 endpoint：
+  - `deepseek_chat`
+  - `openai_compat`
+- 为了兼容已有环境变量，语义裁判配置在未显式设置时，仍允许从既有 DeepSeek 环境变量推导默认值；但运行时 wiring 已经完成了 voice-owned 解耦。
+
+### 验证
+
+- `go test ./internal/app ./internal/voice -run 'Semantic|BuildResponder|TurnDetector|ConfigValidate'`
+
+### 与主线的关系
+
+- 这是分层语音智能主线的第一个真正代码切片。
+- 它把“主回复 LLM”和“实时语义裁判 LLM”从配置 ownership 上拆开，为后续 `SemanticSlotParser` 和不同尺寸模型分工打下了实际基础。

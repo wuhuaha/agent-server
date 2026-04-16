@@ -291,39 +291,55 @@ func buildSpeechPlannerConfig(cfg Config) voice.SpeechPlannerConfig {
 	}
 }
 
+func buildVoiceChatModel(cfg VoiceLLMProviderConfig, timeout time.Duration) (agent.ChatModel, string, bool) {
+	provider := normalizeVoiceLLMProvider(cfg.Provider)
+	switch provider {
+	case "", "disabled":
+		return nil, "", false
+	case "deepseek_chat", "openai_compat":
+		model := agent.NewDeepSeekChatModel(agent.DeepSeekChatModelConfig{
+			BaseURL:     cfg.BaseURL,
+			APIKey:      cfg.APIKey,
+			Model:       cfg.Model,
+			Temperature: cfg.Temperature,
+			MaxTokens:   cfg.MaxTokens,
+			Timeout:     timeout,
+		})
+		return model, provider, true
+	default:
+		return nil, provider, false
+	}
+}
+
 func buildVoiceSemanticJudge(cfg Config, logger *slog.Logger) (voice.SemanticTurnJudge, time.Duration, int, time.Duration) {
 	timeout := time.Duration(cfg.Voice.LLMSemanticJudgeTimeoutMs) * time.Millisecond
 	minStableFor := time.Duration(cfg.Voice.LLMSemanticJudgeMinStableForMs) * time.Millisecond
 	if !cfg.Voice.LLMSemanticJudgeEnabled {
 		return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 	}
-	switch strings.ToLower(strings.TrimSpace(effectiveLLMProvider(cfg.Agent))) {
-	case "deepseek", "deepseek_chat":
-		if strings.TrimSpace(cfg.Agent.DeepSeek.APIKey) == "" {
-			logger.Warn("voice llm semantic judge requested but llm api key is empty; falling back to heuristic-only turn logic")
-			return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	model, provider, ok := buildVoiceChatModel(cfg.Voice.LLMSemanticJudgeLLM, timeout)
+	if !ok || model == nil {
+		if provider == "" {
+			logger.Info("voice llm semantic judge disabled because no dedicated semantic judge provider is configured")
+		} else {
+			logger.Warn("voice llm semantic judge disabled because provider is unsupported", "provider", provider)
 		}
-		model := agent.NewDeepSeekChatModel(agent.DeepSeekChatModelConfig{
-			BaseURL:     cfg.Agent.DeepSeek.BaseURL,
-			APIKey:      cfg.Agent.DeepSeek.APIKey,
-			Model:       cfg.Agent.DeepSeek.Model,
-			Temperature: 0.1,
-			MaxTokens:   128,
-			Timeout:     timeout,
-		})
-		logger.Info(
-			"voice llm semantic judge configured",
-			"provider", "deepseek_chat",
-			"model", cfg.Agent.DeepSeek.Model,
-			"timeout_ms", cfg.Voice.LLMSemanticJudgeTimeoutMs,
-			"min_runes", cfg.Voice.LLMSemanticJudgeMinRunes,
-			"min_stable_for_ms", cfg.Voice.LLMSemanticJudgeMinStableForMs,
-		)
-		return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
-	default:
-		logger.Info("voice llm semantic judge disabled because no llm chat model is available", "provider", effectiveLLMProvider(cfg.Agent))
 		return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 	}
+	if provider == "deepseek_chat" && strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.APIKey) == "" {
+		logger.Warn("voice llm semantic judge requested but semantic judge api key is empty; falling back to heuristic-only turn logic")
+		return nil, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	}
+	logger.Info(
+		"voice llm semantic judge configured",
+		"provider", provider,
+		"model", cfg.Voice.LLMSemanticJudgeLLM.Model,
+		"base_url", cfg.Voice.LLMSemanticJudgeLLM.BaseURL,
+		"timeout_ms", cfg.Voice.LLMSemanticJudgeTimeoutMs,
+		"min_runes", cfg.Voice.LLMSemanticJudgeMinRunes,
+		"min_stable_for_ms", cfg.Voice.LLMSemanticJudgeMinStableForMs,
+	)
+	return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 }
 
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {

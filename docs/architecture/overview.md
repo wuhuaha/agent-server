@@ -137,6 +137,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - One voice-runtime-owned playback-truth bridge into the next shared turn context so interruption or resume-aware agent behavior can reuse `heard_text`, `missed_text`, and `resume_anchor` without teaching gateways how to reason about playback facts.
 - One runtime-owned hook layer for memory and tool orchestration.
 - One provider-selected LLM runtime behind shared `ChatModel`, `StreamingChatModel`, and `TurnExecutor` interfaces so model providers do not leak into device or channel adapters.
+- One tiered voice-intelligence path inside `internal/voice` so small semantic-judge models, medium slot/domain parsers, and larger dialogue models can evolve independently without giving realtime transport adapters policy ownership.
 - One additive observability path that keeps `turn_id` and `trace_id` in gateway phase logs, runtime logs, voice-provider logs, and archived runner artifacts without changing the public websocket event shapes again.
 - One runtime-skill path for domain behavior so smart-home semantics can be injected as prompt fragments plus tools without turning `internal/agent` into a pile of hardcoded vertical rules.
 - One channel-runtime bridge so external messaging adapters normalize input, hand it to the shared runtime, and deliver results back without learning provider-specific APIs.
@@ -180,6 +181,7 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [语音架构执行路线图（2026-04-16）](voice-architecture-execution-roadmap-zh-2026-04-16.md)
 - [端到端时延预算与主观体感映射（2026-04-16）](latency-budget-and-subjective-feel-zh-2026-04-16.md)
 - [播放事实回传与 heard-text 真相链（2026-04-16）](playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md)
+- [分层 LLM + FunASR 增强策略研究（2026-04-17）](voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md)
 - [当前项目“流畅、自然、全双工”语音交互能力评估（2026-04-10）](full-duplex-voice-assessment-zh-2026-04-10.md)
 - [本地 / 开源优先的全双工语音改造任务清单（2026-04-10）](local-open-source-full-duplex-roadmap-zh-2026-04-10.md)
 - [本地 CosyVoice GPU TTS 接入说明](local-cosyvoice-gpu-tts.md)

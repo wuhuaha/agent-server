@@ -89,18 +89,15 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			SpeechPlannerMinChunkRunes:     7,
 			SpeechPlannerTargetChunkRunes:  20,
 			LLMSemanticJudgeEnabled:        true,
+			LLMSemanticJudgeLLM: VoiceLLMProviderConfig{
+				Provider: "openai_compat",
+				BaseURL:  "http://127.0.0.1:8012/v1",
+				Model:    "Qwen/Qwen3-1.7B",
+			},
 			LLMSemanticJudgeTimeoutMs:      180,
 			LLMSemanticJudgeMinRunes:       3,
 			LLMSemanticJudgeMinStableForMs: 140,
 			EmitPlaceholderAudio:           true,
-		},
-		Agent: AgentConfig{
-			LLMProvider: "deepseek_chat",
-			DeepSeek: DeepSeekChatConfig{
-				BaseURL: "http://127.0.0.1:8012/v1",
-				APIKey:  "local-llm",
-				Model:   "Qwen/Qwen3-4B-Instruct-2507",
-			},
 		},
 	})
 

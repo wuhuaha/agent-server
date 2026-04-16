@@ -424,3 +424,29 @@
   - merge 回 `InputPreview.Arbitration`
   - 改善 `draft_allowed` 和 barge-in policy
   - 不直接单独制造最终 accept
+
+- A durable architecture decision is now recorded for the next voice-intelligence stage:
+  - keep the shared voice path cascade-based and server-runtime-owned
+  - preserve `Tier 0` acoustic / heuristic controls as the realtime safety floor
+  - evolve `SemanticTurnJudge` into an explicitly small, fast advisory layer for utterance/interruption semantics
+  - add a separate structured `SemanticSlotParser` layer for domain / intent / slot completeness / clarify-needed decisions
+  - keep the main dialogue LLM separate from both realtime judge layers
+  - treat FunASR punctuation, emotion, and audio-event outputs as runtime-owned metadata for orchestration, style, and debugging rather than as new adapter-owned policy
+- The current research-backed model path of record for the local Chinese voice-agent mainline is:
+  - preview ASR: `paraformer-zh-streaming`
+  - preview/final VAD: `fsmn-vad`
+  - final ASR baseline: `SenseVoiceSmall`, with `Fun-ASR-Nano-2512` as an effect-first AB candidate
+  - final punctuation: `ct-punc`
+  - semantic judge local first choice: `Qwen3-1.7B`
+  - slot/domain parser local first choice: `Qwen3-4B` (or `Qwen3-8B` with more GPU headroom)
+  - main dialogue local first choice: `Qwen3-14B`, with `Qwen3-32B` as the higher-quality local step-up
+- When discussing Google model choices in this repository, prefer the officially visible names confirmed on 2026-04-17:
+  - managed models: `Gemini 2.5 Pro`, `Gemini 2.5 Flash`, `Gemini 3.1 Flash Live Preview`
+  - open models: `Gemma 4`
+  - do not write `Gemini 4` as if it were a confirmed public developer model unless official Google documentation later exposes it.
+
+- The first code-level split of tiered voice intelligence is now landed:
+  - `voice.llm_semantic_judge` no longer reuses `cfg.Agent` directly
+  - semantic-judge model selection now lives under `cfg.Voice` with dedicated provider/base_url/api_key/model/temperature/max_tokens settings
+  - the current supported semantic-judge endpoint modes are `deepseek_chat` and `openai_compat`
+  - local OpenAI-compatible judge workers may omit a real API key, while `deepseek_chat` still requires one

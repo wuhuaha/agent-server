@@ -302,6 +302,40 @@ func TestConfigValidateRejectsExplicitDeepSeekWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsSemanticJudgeOpenAICompatWithoutAPIKey(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:                "funasr_http",
+			LLMSemanticJudgeEnabled: true,
+			LLMSemanticJudgeLLM: VoiceLLMProviderConfig{
+				Provider: "openai_compat",
+				BaseURL:  "http://127.0.0.1:8012/v1",
+				Model:    "Qwen/Qwen3-1.7B",
+			},
+		},
+	}.Validate()
+	if err != nil {
+		t.Fatalf("expected openai-compatible semantic judge config to validate, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsSemanticJudgeDeepSeekWithoutAPIKey(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:                "funasr_http",
+			LLMSemanticJudgeEnabled: true,
+			LLMSemanticJudgeLLM: VoiceLLMProviderConfig{
+				Provider: "deepseek_chat",
+				BaseURL:  "https://api.deepseek.com",
+				Model:    "deepseek-chat",
+			},
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice.llm_semantic_judge api key is required") {
+		t.Fatalf("expected semantic judge api key validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsXiaozhiWithoutPCM16LERealtimeOutput(t *testing.T) {
 	err := Config{
 		Xiaozhi: XiaozhiCompatConfig{

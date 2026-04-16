@@ -726,3 +726,13 @@
 - Problem: the service already had a local LLM for reply generation, but the crucial spoken-interaction policies — utterance completeness, backchannel-vs-takeover, and interruption escalation — still relied almost entirely on lexical heuristics, token lists, and threshold scores. That left the project short of the intended "intelligent" realtime behavior.
 - Resolution: introduced a runtime-owned `SemanticTurnJudge` inside `internal/voice`, backed by the provider-neutral `agent.ChatModel` interface. Mature preview candidates may now be judged asynchronously for structured semantic signals such as `complete`, `correction`, `backchannel`, and `takeover`, and those signals now advise preview promotion and barge-in policy while the heuristic acoustic/timing floor remains in place.
 - Status: resolved for the first advisory-LMM slice; later work should add slot completeness, richer context, and disagreement evals.
+
+
+### Voice Semantic Intelligence Still Reused The Main Dialogue LLM Configuration
+
+- Problem: the first `SemanticTurnJudge` slice originally reused the main agent LLM configuration. That prevented the service from independently selecting a faster small model for realtime semantic judging and a separate mid-size model for slot/domain parsing.
+- Resolution: the first split is now landed:
+  - `voice.llm_semantic_judge` owns an independent provider/base_url/api_key/model config under `internal/app/config_voice.go`
+  - runtime wiring now builds the semantic judge from the voice-owned config instead of reading `cfg.Agent` directly
+  - `deepseek_chat` and generic `openai_compat` judge endpoints are both supported on the same provider-neutral `agent.ChatModel` boundary
+- Status: resolved for semantic-judge configuration. Follow-up work remains open for `SemanticSlotParser` and richer FunASR metadata consumption.
