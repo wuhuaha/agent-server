@@ -327,7 +327,14 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 	}
 	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
 		state.audioTurnOpen = false
-		runtime.clearInputPreview()
+		previewTrace, previewResult, previewResultOK, previewErr := runtime.consumeInputPreview(ctx)
+		if previewErr != nil {
+			h.logger.Warn("gateway input preview finalize failed",
+				"session_id", snapshot.SessionID,
+				"preview_id", previewTrace.PreviewID,
+				"error", previewErr,
+			)
+		}
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
 			return err
@@ -345,9 +352,16 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 			"turn_index", turn.Snapshot.Turns,
 			"endpoint_reason", observation.Preview.EndpointReason,
 		}
-		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, now)
+		if previewResultOK && previewErr == nil {
+			attrs = appendPreviewTranscriptionLogAttrs(attrs, &previewResult)
+		}
+		attrs = appendInputPreviewTraceLogAttrs(attrs, previewTrace, now)
 		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace, attrs...)
-		if err := h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, ""); err != nil {
+		var previewTranscription *voice.TranscriptionResult
+		if previewResultOK && previewErr == nil {
+			previewTranscription = &previewResult
+		}
+		if err := h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, "", previewTranscription); err != nil {
 			return err
 		}
 		return nil
@@ -466,7 +480,10 @@ func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connection
 		if snapshot.SessionID == "" || snapshot.AudioBytes == 0 || snapshot.State != session.StateActive {
 			return nil
 		}
-		runtime.clearInputPreview()
+		_, previewResult, previewResultOK, previewErr := runtime.consumeInputPreview(ctx)
+		if previewErr != nil {
+			h.logger.Warn("gateway input preview finalize failed", "session_id", state.sessionID, "error", previewErr)
+		}
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
 			return h.emitServerError(peer, state.sessionID, "commit_failed", err.Error())
@@ -475,15 +492,23 @@ func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connection
 			return err
 		}
 		trace := runtime.turnTrace.Begin(turn.Snapshot.SessionID, "listen_stop")
-		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace,
+		attrs := []any{
 			"input_type", "audio",
 			"audio_bytes", len(turn.AudioPCM),
 			"input_codec", turn.Snapshot.InputCodec,
 			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 			"input_channels", turn.Snapshot.InputChannels,
 			"turn_index", turn.Snapshot.Turns,
-		)
-		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, "")
+		}
+		if previewResultOK && previewErr == nil {
+			attrs = appendPreviewTranscriptionLogAttrs(attrs, &previewResult)
+		}
+		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace, attrs...)
+		var previewTranscription *voice.TranscriptionResult
+		if previewResultOK && previewErr == nil {
+			previewTranscription = &previewResult
+		}
+		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, "", previewTranscription)
 	case "detect":
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
@@ -515,7 +540,7 @@ func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connection
 			"text_len", len(text),
 			"turn_index", turn.Snapshot.Turns,
 		)
-		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, text)
+		return h.emitTurnResponse(ctx, runtime, peer, state, turn, trace, text, nil)
 	default:
 		return nil
 	}
@@ -633,8 +658,9 @@ func (h *xiaozhiWSHandler) ensureSessionStarted(runtime *connectionRuntime, stat
 	return started, nil
 }
 
-func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, turn session.CommittedTurn, trace turnTrace, text string) error {
-	request := buildTurnRequest(turn, runtime, trace, text)
+func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, turn session.CommittedTurn, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) error {
+	request := buildTurnRequest(turn, runtime, trace, text, previewTranscription)
+	logPreviousPlaybackContext(h.logger, state.sessionID, trace, request)
 	result, err := executeTurnResponse(ctx, request, trace, turnExecutionOptions{
 		Runtime:   runtime,
 		Responder: h.responder,

@@ -91,6 +91,7 @@ func (s *timedInputPreviewSession) Close() error {
 
 type fixedPartialPreviewSession struct {
 	partial    string
+	stable     string
 	audioBytes int
 }
 
@@ -98,6 +99,7 @@ func (s *fixedPartialPreviewSession) PushAudio(_ context.Context, chunk []byte) 
 	s.audioBytes += len(chunk)
 	return voice.InputPreview{
 		PartialText:   s.partial,
+		StablePrefix:  s.stable,
 		AudioBytes:    s.audioBytes,
 		SpeechStarted: s.audioBytes > 0,
 	}, nil
@@ -106,6 +108,7 @@ func (s *fixedPartialPreviewSession) PushAudio(_ context.Context, chunk []byte) 
 func (s *fixedPartialPreviewSession) Poll(time.Time) voice.InputPreview {
 	return voice.InputPreview{
 		PartialText:   s.partial,
+		StablePrefix:  s.stable,
 		AudioBytes:    s.audioBytes,
 		SpeechStarted: s.audioBytes > 0,
 	}
@@ -113,6 +116,15 @@ func (s *fixedPartialPreviewSession) Poll(time.Time) voice.InputPreview {
 
 func (s *fixedPartialPreviewSession) Close() error {
 	return nil
+}
+
+type finalizingTimedInputPreviewSession struct {
+	timedInputPreviewSession
+	result voice.TranscriptionResult
+}
+
+func (s *finalizingTimedInputPreviewSession) Finish(context.Context) (voice.TranscriptionResult, error) {
+	return s.result, nil
 }
 
 type ctxBoundAudioStream struct {
@@ -1230,6 +1242,114 @@ func TestRealtimeWSServerEndpointPreviewAutoCommitsWithoutClientCommit(t *testin
 	t.Fatal("expected auto-committed response without explicit audio.in.commit")
 }
 
+func TestRealtimeWSAudioCommitCarriesFinalizedPreviewTranscription(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 1500
+	profile.MaxSessionMs = 5000
+
+	var captured voice.TurnRequest
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			captured = req
+			return voice.TurnResponse{InputText: "快路径转写", Text: "ok"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &finalizingTimedInputPreviewSession{
+				timedInputPreviewSession: timedInputPreviewSession{threshold: 10 * time.Second},
+				result: voice.TranscriptionResult{
+					Text:           "快路径转写",
+					EndpointReason: "preview_finish",
+					Mode:           "preview_finalize_fast_path",
+				},
+			}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+	writeControlEvent(t, conn, "audio.in.commit", sessionID, 2, map[string]any{"reason": "end_of_speech"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		if event.Type == "response.chunk" {
+			break
+		}
+	}
+
+	if captured.PreviewTranscription == nil {
+		t.Fatalf("expected preview transcription on committed request, got %+v", captured)
+	}
+	if got := captured.PreviewTranscription.Text; got != "快路径转写" {
+		t.Fatalf("expected preview transcription text, got %q", got)
+	}
+	if got := captured.PreviewTranscription.Mode; got != "preview_finalize_fast_path" {
+		t.Fatalf("expected preview fast-path mode, got %q", got)
+	}
+}
+
+func TestRealtimeWSServerEndpointAutoCommitCarriesFinalizedPreviewTranscription(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.ServerEndpointEnabled = true
+	profile.IdleTimeoutMs = 1500
+	profile.MaxSessionMs = 5000
+
+	var captured voice.TurnRequest
+	responder := previewResponder{
+		respond: func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+			captured = req
+			return voice.TurnResponse{InputText: "自动提交快路径", Text: "auto endpoint response"}, nil
+		},
+		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
+			return &finalizingTimedInputPreviewSession{
+				timedInputPreviewSession: timedInputPreviewSession{threshold: 60 * time.Millisecond},
+				result: voice.TranscriptionResult{
+					Text:           "自动提交快路径",
+					EndpointReason: "server_endpoint_preview_finish",
+					Mode:           "preview_finalize_fast_path",
+				},
+			}, nil
+		},
+	}
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	_ = startTestSession(t, conn, profile)
+	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, 1280)); err != nil {
+		t.Fatalf("write binary frame failed: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		if event.Type == "response.chunk" {
+			break
+		}
+	}
+
+	if captured.PreviewTranscription == nil {
+		t.Fatalf("expected preview transcription on auto-committed request, got %+v", captured)
+	}
+	if got := captured.PreviewTranscription.Text; got != "自动提交快路径" {
+		t.Fatalf("expected auto-commit preview transcription text, got %q", got)
+	}
+}
+
 func TestRealtimeWSServerEndpointPreviewKeepsConnectionOpenForClientEnd(t *testing.T) {
 	profile := testRealtimeProfile()
 	profile.ServerEndpointEnabled = true
@@ -1307,7 +1427,7 @@ func TestRealtimeWSEmitsNegotiatedPreviewEvents(t *testing.T) {
 			return voice.TurnResponse{InputText: req.Text, Text: "ok"}, nil
 		},
 		startPreview: func(_ context.Context, _ voice.InputPreviewRequest) (voice.InputPreviewSession, error) {
-			return &fixedPartialPreviewSession{partial: "打开客厅灯"}, nil
+			return &fixedPartialPreviewSession{partial: "打开客厅灯", stable: "打开客厅"}, nil
 		},
 	}
 
@@ -1347,6 +1467,12 @@ func TestRealtimeWSEmitsNegotiatedPreviewEvents(t *testing.T) {
 			sawPreview = true
 			if got := stringValue(event.Payload["text"]); got != "打开客厅灯" {
 				t.Fatalf("expected preview text 打开客厅灯, got %q", got)
+			}
+			if got := stringValue(event.Payload["stable_prefix"]); got != "打开客厅" {
+				t.Fatalf("expected preview stable_prefix 打开客厅, got %q", got)
+			}
+			if got := floatValue(event.Payload["stability"]); got < 0.79 || got > 0.81 {
+				t.Fatalf("expected preview stability about 0.8, got %v", got)
 			}
 			if got := stringValue(event.Payload["preview_id"]); got == "" {
 				t.Fatal("expected preview_id on input.preview")
@@ -1401,10 +1527,20 @@ func TestRealtimeWSNegotiatedPlaybackAckMetaAndClientFacts(t *testing.T) {
 	var meta audioOutMetaPayload
 	sawMeta := false
 	sawActive := false
+	audioChunks := 0
+	sentCompleted := false
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
 		if messageType == websocket.BinaryMessage {
+			audioChunks++
+			if sawMeta && !sentCompleted && audioChunks >= 3 {
+				writeControlEvent(t, conn, "audio.out.completed", sessionID, 5, map[string]any{
+					"response_id": meta.ResponseID,
+					"playback_id": meta.PlaybackID,
+				})
+				sentCompleted = true
+			}
 			continue
 		}
 		event := decodeJSONEvent(t, payload)
@@ -1436,11 +1572,7 @@ func TestRealtimeWSNegotiatedPlaybackAckMetaAndClientFacts(t *testing.T) {
 				"played_duration_ms": 40,
 			})
 		case "session.update":
-			if sawMeta && stringValue(event.Payload["state"]) == "active" {
-				writeControlEvent(t, conn, "audio.out.completed", sessionID, 5, map[string]any{
-					"response_id": meta.ResponseID,
-					"playback_id": meta.PlaybackID,
-				})
+			if sentCompleted && stringValue(event.Payload["state"]) == "active" {
 				sawActive = true
 				goto done
 			}
@@ -1465,6 +1597,105 @@ done:
 		`"msg":"gateway playback ack completed"`,
 		`"response_id":"` + meta.ResponseID + `"`,
 		`"playback_id":"` + meta.PlaybackID + `"`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("expected logs to contain %s, got:\n%s", want, logs)
+		}
+	}
+}
+
+func TestRealtimeWSPlaybackAckClearedInterruptsCurrentOutput(t *testing.T) {
+	profile := testRealtimeProfile()
+	profile.IdleTimeoutMs = 5000
+	profile.MaxSessionMs = 10000
+	var logBuffer bytes.Buffer
+	profile.Logger = slog.New(slog.NewJSONHandler(&logBuffer, nil))
+
+	responder := responderFunc(func(_ context.Context, req voice.TurnRequest) (voice.TurnResponse, error) {
+		if strings.TrimSpace(req.Text) != "play" {
+			return voice.TurnResponse{Text: "unexpected"}, nil
+		}
+		return voice.TurnResponse{
+			Text:        "好的，开始播放一段比较长的响应。",
+			AudioChunks: repeatAudioChunks(make([]byte, 640), 20),
+		}, nil
+	})
+
+	conn := openRealtimeWS(t, profile, responder)
+	defer conn.Close()
+
+	sessionID := startTestSessionWithCapabilities(t, conn, profile, map[string]any{
+		"text_input":      true,
+		"image_input":     false,
+		"half_duplex":     false,
+		"local_wake_word": false,
+		"playback_ack": map[string]any{
+			"mode": "segment_mark_v1",
+		},
+	})
+	writeControlEvent(t, conn, "text.in", sessionID, 2, map[string]any{"text": "play"})
+
+	var (
+		meta        audioOutMetaPayload
+		sawMeta     bool
+		sawActive   bool
+		audioChunks int
+	)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messageType, payload := readWSMessage(t, conn, 500*time.Millisecond)
+		if messageType == websocket.BinaryMessage {
+			audioChunks++
+			if sawMeta && audioChunks == 1 {
+				writeControlEvent(t, conn, "audio.out.started", sessionID, 3, map[string]any{
+					"response_id": meta.ResponseID,
+					"playback_id": meta.PlaybackID,
+					"segment_id":  meta.SegmentID,
+				})
+				writeControlEvent(t, conn, "audio.out.cleared", sessionID, 4, map[string]any{
+					"response_id":              meta.ResponseID,
+					"playback_id":              meta.PlaybackID,
+					"cleared_after_segment_id": meta.SegmentID,
+					"reason":                   "barge_in_clear",
+				})
+			}
+			continue
+		}
+		event := decodeJSONEvent(t, payload)
+		switch event.Type {
+		case "audio.out.meta":
+			sawMeta = true
+			meta = audioOutMetaPayload{
+				ResponseID: stringValue(event.Payload["response_id"]),
+				PlaybackID: stringValue(event.Payload["playback_id"]),
+				SegmentID:  stringValue(event.Payload["segment_id"]),
+			}
+		case "session.update":
+			if sawMeta && stringValue(event.Payload["state"]) == "active" {
+				sawActive = true
+				goto done
+			}
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event.Payload)
+		}
+	}
+
+done:
+	if !sawMeta {
+		t.Fatal("expected audio.out.meta before playback clear")
+	}
+	if !sawActive {
+		t.Fatal("expected audio.out.cleared to drive return-to-active")
+	}
+	if audioChunks >= 20 {
+		t.Fatalf("expected cleared playback to stop early, got %d chunks", audioChunks)
+	}
+
+	logs := logBuffer.String()
+	for _, want := range []string{
+		`"msg":"gateway playback ack cleared"`,
+		`"reason":"barge_in_clear"`,
+		`"msg":"gateway turn interrupted"`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected logs to contain %s, got:\n%s", want, logs)
@@ -1600,6 +1831,21 @@ func intValue(value any) int {
 		return rendered
 	case int64:
 		return int(rendered)
+	default:
+		return 0
+	}
+}
+
+func floatValue(value any) float64 {
+	switch rendered := value.(type) {
+	case float64:
+		return rendered
+	case float32:
+		return float64(rendered)
+	case int:
+		return float64(rendered)
+	case int64:
+		return float64(rendered)
 	default:
 		return 0
 	}

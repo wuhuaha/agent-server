@@ -104,7 +104,7 @@ Current compatibility derivation:
 - `text.in`: sends text input on the same session when typing fallback is available.
 - `image.in`: sends an image reference or attachment metadata on the same session.
 - `input.speech.start`: optional server -> client observational event that indicates the shared preview path has detected speech start for the current preview window.
-- `input.preview`: optional server -> client observational partial-update event for preview-aware clients.
+- `input.preview`: optional server -> client observational partial-update event for preview-aware clients. When present, `stable_prefix` is an observational converged-prefix hint and `stability` is an advisory ratio derived from that prefix; neither changes accepted-turn semantics.
 - `input.endpoint`: optional server -> client observational endpoint-candidate event for preview-aware clients.
 - `response.start`: begins a server response turn.
 - `response.chunk`: streams partial text or structured deltas such as `text`, `tool_call`, or `tool_result`.
@@ -160,6 +160,7 @@ When `server_endpoint.enabled=true`:
 - the accepted-turn `session.update` may include `accept_reason=server_endpoint`
 - if `voice_collaboration.preview_events.enabled=true` and the client also negotiated `preview_events=true`, the server may additionally emit `input.speech.start`, `input.preview`, and `input.endpoint`
 - clients must not treat those preview events as accepted-turn confirmation
+- servers may internally use preview stability evidence to prewarm runtime work, but that does not create a new public early-accept contract
 
 ## First Transport Mapping
 
@@ -173,6 +174,7 @@ Current implementation note:
 
 - on the native realtime main path, shared runtime orchestration may now start audio from an internal early-output stream before the final `TurnResponse` envelope has fully settled
 - on the native realtime main path, capability-gated `audio.out.meta` plus client playback ACK events may now coexist with the existing `response.start` plus streamed deltas plus binary audio surface
+- when `playback_ack` has been negotiated on the native realtime path, the server may delay the final return-to-active transition until it sees `audio.out.completed` or `audio.out.cleared`, or until a short fallback timeout expires
 
 Current optional tracing fields:
 

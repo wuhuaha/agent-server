@@ -117,9 +117,17 @@
               "properties": {
                 "preview_id": { "type": "string" },
                 "text": { "type": "string" },
-                "stable_prefix": { "type": "string" },
+                "stable_prefix": {
+                  "type": "string",
+                  "description": "Observational converged-prefix hint for the current preview text. This is not accepted-turn confirmation."
+                },
                 "is_final": { "type": "boolean" },
-                "stability": { "type": "number", "minimum": 0, "maximum": 1 },
+                "stability": {
+                  "type": "number",
+                  "description": "Advisory 0..1 stability hint derived from preview text versus stable_prefix.",
+                  "minimum": 0,
+                  "maximum": 1
+                },
                 "audio_offset_ms": { "type": "integer", "minimum": 0 }
               },
               "additionalProperties": false

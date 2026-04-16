@@ -97,6 +97,8 @@
 - 端侧负责“执行与回报事实”，不负责“解释与裁决策略”
 - preview 事件表达的是观察与候选，不是 turn accepted
 - playback ack 表达的是事实，不是策略判断
+- 当 `playback_ack` 已协商时，服务端可以据此延后 playback 收尾与 `state=active` 的回落时机，让 heard-text / interruption / resume 更接近端侧真实播放边界
+- `audio.out.cleared` 尤其重要：它既是“后续内容未被播放”的事实，也可能成为服务端停止当前输出与写回 truncation 边界的依据
 
 ## 3. 当前兼容基线
 
@@ -305,11 +307,14 @@ client 端实现时应遵循：
 - 可显示为灰字 / 中间态字幕
 - 后续同 `preview_id` 更新应覆盖旧 preview，而不是当成最终 transcript 累加
 - 不能把它当成 authoritative final transcript
+- 不能因为 `stable_prefix` 或 `stability` 较高，就把它本地提升为 accepted-turn
 
 ### Server 要求
 
 - 同一 `preview_id` 持续更新
 - `stable_prefix` 应尽量表示已收敛前缀
+- `stability` 应仅作为观察性提示，不应替代 accepted-turn 语义
+- 服务端可在内部利用同一稳定前缀信号做 prewarm，但这仍不改变公开协议上“preview 只是观察事件”的结论
 - 若未协商 `preview_events` 则不发送
 
 ## 6.3 服务端 -> 客户端：`input.endpoint`（建议）

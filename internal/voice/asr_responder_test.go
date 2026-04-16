@@ -30,6 +30,16 @@ type fakeStreamingTranscriber struct {
 	chunks [][]byte
 }
 
+type countingTranscriber struct {
+	result TranscriptionResult
+	calls  int
+}
+
+func (f *countingTranscriber) Transcribe(context.Context, TranscriptionRequest) (TranscriptionResult, error) {
+	f.calls++
+	return f.result, nil
+}
+
 func (f *fakeStreamingTranscriber) Transcribe(context.Context, TranscriptionRequest) (TranscriptionResult, error) {
 	if f.err != nil {
 		return TranscriptionResult{}, f.err
@@ -111,6 +121,20 @@ type capturingTurnExecutor struct {
 func (e *capturingTurnExecutor) ExecuteTurn(_ context.Context, input agent.TurnInput) (agent.TurnOutput, error) {
 	e.inputs = append(e.inputs, input)
 	return agent.TurnOutput{Text: "handled: " + input.UserText}, nil
+}
+
+type capturingPrewarmExecutor struct {
+	calls chan agent.TurnInput
+}
+
+func (e *capturingPrewarmExecutor) ExecuteTurn(_ context.Context, input agent.TurnInput) (agent.TurnOutput, error) {
+	return agent.TurnOutput{Text: "handled: " + input.UserText}, nil
+}
+
+func (e *capturingPrewarmExecutor) PrewarmTurn(_ context.Context, input agent.TurnInput) {
+	if e.calls != nil {
+		e.calls <- input
+	}
 }
 
 func TestASRResponderForAudio(t *testing.T) {
@@ -261,6 +285,123 @@ func TestASRResponderInjectsStructuredSpeechMetadataIntoTurnInput(t *testing.T) 
 	}
 }
 
+func TestASRInputPreviewSessionCanFinishIntoFinalTranscription(t *testing.T) {
+	streaming := &fakeStreamingTranscriber{
+		result: TranscriptionResult{
+			Text:           "打开客厅灯",
+			EndpointReason: "server_silence_timeout",
+			Mode:           "stream_preview_batch",
+		},
+	}
+	responder := NewASRResponder(streaming, "auto", "pcm16le", 16000, 1, false)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_preview_finish",
+		DeviceID:     "rtos-001",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 3200)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+
+	finalizer, ok := preview.(FinalizingInputPreviewSession)
+	if !ok {
+		t.Fatalf("expected preview session to support finalization, got %T", preview)
+	}
+	result, err := finalizer.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	if got := result.Text; got != "打开客厅灯" {
+		t.Fatalf("expected finalized text, got %q", got)
+	}
+}
+
+func TestASRResponderPrefersPreviewTranscriptionFastPath(t *testing.T) {
+	transcriber := &countingTranscriber{result: TranscriptionResult{Text: "慢路径文本"}}
+	executor := &capturingTurnExecutor{}
+	responder := NewASRResponder(transcriber, "auto", "pcm16le", 16000, 1, false).WithTurnExecutor(executor)
+
+	response, err := responder.Respond(context.Background(), TurnRequest{
+		SessionID:       "sess_fast_preview",
+		DeviceID:        "rtos-001",
+		ClientType:      "rtos",
+		AudioPCM:        make([]byte, 3200),
+		AudioBytes:      3200,
+		InputFrames:     5,
+		InputCodec:      "pcm16le",
+		InputSampleRate: 16000,
+		InputChannels:   1,
+		PreviewTranscription: &TranscriptionResult{
+			Text:           "快路径文本",
+			EndpointReason: "server_endpoint_preview_finish",
+			Mode:           "preview_finalize_fast_path",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Respond failed: %v", err)
+	}
+	if got := response.InputText; got != "快路径文本" {
+		t.Fatalf("expected preview fast-path text, got %q", got)
+	}
+	if transcriber.calls != 0 {
+		t.Fatalf("expected transcriber to be skipped, got %d calls", transcriber.calls)
+	}
+	if len(executor.inputs) != 1 {
+		t.Fatalf("expected one executor input, got %d", len(executor.inputs))
+	}
+	if got := executor.inputs[0].UserText; got != "快路径文本" {
+		t.Fatalf("expected executor to receive fast-path text, got %q", got)
+	}
+	if got := executor.inputs[0].Metadata["speech.transcriber_mode"]; got != "preview_finalize_fast_path" {
+		t.Fatalf("expected preview mode metadata, got %q", got)
+	}
+}
+
+func TestASRResponderPreviewSessionTriggersPrewarmOnStableCompletePrefix(t *testing.T) {
+	executor := &capturingPrewarmExecutor{calls: make(chan agent.TurnInput, 1)}
+	responder := NewASRResponder(previewStreamingTranscriber{text: "明天周几"}, "auto", "pcm16le", 16000, 1, false).
+		WithTurnExecutor(executor)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_prewarm",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 3200)); err != nil {
+		t.Fatalf("first PushAudio failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 3200)); err != nil {
+		t.Fatalf("second PushAudio failed: %v", err)
+	}
+
+	select {
+	case input := <-executor.calls:
+		if got := input.UserText; got != "明天周几" {
+			t.Fatalf("expected prewarm text 明天周几, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.stable_prefix"]; got != "明天周几" {
+			t.Fatalf("expected stable prefix metadata, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.utterance_complete"]; got != "true" {
+			t.Fatalf("expected utterance_complete metadata, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected preview prewarm call")
+	}
+}
+
 func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {
 	executor := &capturingTurnExecutor{}
 	streaming := &fakeStreamingTranscriber{result: TranscriptionResult{
@@ -318,10 +459,10 @@ func TestASRResponderSpeechPlannerDoesNotDoubleSynthesizeFinalResponse(t *testin
 	).WithTurnExecutor(staticTurnExecutor{text: "好的。"}).
 		WithSynthesizer(synth).
 		WithSpeechPlannerConfig(SpeechPlannerConfig{
-		Enabled:          true,
-		MinChunkRunes:    2,
-		TargetChunkRunes: 6,
-	})
+			Enabled:          true,
+			MinChunkRunes:    2,
+			TargetChunkRunes: 6,
+		})
 
 	response, err := responder.RespondStream(context.Background(), TurnRequest{
 		SessionID:       "sess_asr_planner_once",

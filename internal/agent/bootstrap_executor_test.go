@@ -190,6 +190,53 @@ func TestBootstrapTurnExecutorMemoryCommandUsesRealMemoryStore(t *testing.T) {
 	}
 }
 
+func TestBootstrapTurnExecutorContinuesMissedPlaybackTail(t *testing.T) {
+	executor := NewBootstrapTurnExecutor()
+
+	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		UserText: "继续",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+	if got := output.Text; got != "现在把亮度调到了最舒适的模式。" {
+		t.Fatalf("expected missed tail reply, got %q", got)
+	}
+}
+
+func TestBootstrapTurnExecutorRecallsPlaybackBoundary(t *testing.T) {
+	executor := NewBootstrapTurnExecutor()
+
+	output, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		UserText: "你刚刚说到哪了",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+	if !strings.Contains(output.Text, "我刚刚说到：好的，已经为你打开客厅灯，") {
+		t.Fatalf("expected heard boundary in reply, got %q", output.Text)
+	}
+	if !strings.Contains(output.Text, "后面还没播完的是：现在把亮度调到了最舒适的模式。") {
+		t.Fatalf("expected unheard tail in reply, got %q", output.Text)
+	}
+}
+
 func TestBootstrapTurnExecutorEmitsToolDeltasForToolCommand(t *testing.T) {
 	memoryStore := &recordingMemoryStore{}
 	toolInvoker := &recordingToolInvoker{result: ToolResult{

@@ -687,3 +687,232 @@
   - 端到端联调
   - 更精准的 playback truth
   - 更自然的 interruption / heard-text / resume
+
+
+## Round 016｜2026-04-16｜把 playback_ack 真正接入 heard-text / interruption / resume 链
+
+### 用户诉求
+
+- 不再满足于 `playback_ack` 只做日志入口。
+- 继续把服务端的 playback ACK 接入：
+  - heard-text 推断
+  - interruption 持久化
+  - resume 相关衍生信息
+
+### 本轮工作方式
+
+- 回看当前 `SessionOrchestrator` 与 gateway 的播放完成路径，确认现状问题：
+  - 原来 `audio.out.started / mark / completed` 只记 gateway 日志
+  - `heard-text` 仍主要靠“服务端按发送 chunk 数推测”
+  - 自然播放完成时，服务端会在音频流发完后立刻 `CompletePlayback()`，这会让 `audio.out.completed` 对真正的 playback truth 几乎不起作用
+- 因此本轮的最小有效改造不是“再多加事件”，而是：
+  1. 把 client playback facts 喂进共享 `voice runtime`
+  2. 让 runtime 区分 heuristic 与 client-fact 两类 heard-text 来源
+  3. 让 negotiated `playback_ack` 对最终 return-to-active 时机产生真实影响
+
+### 本轮核心结论
+
+- `playback_ack` 若想真的对 interruption / heard-text / resume 有价值，至少要改变两件事：
+  1. **改变 heard-text 的来源**：client 已回报的 `started / mark / completed` 必须进入 `SessionOrchestrator`
+  2. **改变 playback 的收尾时机**：不能在最后一个音频字节发出后立刻把这轮当作“用户已听完”
+- 因此当前实现进一步固定为：
+  - 若未协商 `playback_ack`
+    - 继续走旧的 heuristic bytes 路径
+  - 若已协商 `playback_ack`
+    - `audio.out.started / mark / completed` 进入共享 runtime
+    - runtime 为 heard-text 写回增加：
+      - `source`
+      - `confidence`
+      - `precision_tier`
+      - `resume_anchor`
+      - `missed_text`
+    - native realtime 在音频流发送结束后，会短暂等待：
+      - `audio.out.completed`
+      - 或 `audio.out.cleared`
+      - 或 fallback timeout
+      再决定是否真正完成播放收尾
+- 这使得本项目终于开始从“按发送量猜用户听到多少”切向“按端侧播放事实推断用户大概率听到多少”。
+
+### 本轮正式沉淀
+
+- `internal/voice/session_orchestrator.go`
+- `internal/voice/session_orchestrator_test.go`
+- `internal/gateway/realtime_ws.go`
+- `internal/gateway/voice_collaboration.go`
+- `internal/gateway/realtime_ws_test.go`
+- `docs/protocols/realtime-session-v0.md`
+- `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
+- `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md`
+
+### 与主线的关系
+
+- 这一轮不是完整实现 resume，而是把 **resume 的地基** 落下去：
+  - 更可信的 heard-text
+  - 更有依据的 interruption 写回
+  - 可供未来 continue / recap / resume-from-anchor 使用的 metadata
+- 后续如果继续推进真实全双工，这条链路会直接影响：
+  - barge-in 自然度
+  - memory 真实性
+  - interruption 后 recap / continue 的人味
+
+
+## Round 017｜2026-04-16｜把 playback-truth 真正喂给下一轮 runtime / LLM
+
+### 用户诉求
+
+- 不停留在“playback ACK 已经能写入 memory metadata”这一层。
+- 继续沿服务侧主线推进，让上一轮 spoken reply 的实际播放结果能够影响下一轮 turn 的理解与生成。
+
+### 本轮工作方式
+
+- 回看当前实现后，确认一个新的实际缺口：
+  - `SessionOrchestrator` 已经能知道 `heard_text / missed_text / resume_anchor`
+  - 但这些信息主要停留在 memory writeback 与调试日志里
+  - 下一轮 `TurnRequest` 进入 `internal/agent` 时，并没有新鲜的“上一轮用户实际上听到了哪里”上下文
+- 因此这一轮不改公网协议，而是沿现有共享边界继续推进：
+  1. 在 `internal/voice` 内部保留最新一次 finalized playback outcome
+  2. 在下一轮共享 `TurnRequest.Metadata` 中注入 `voice.previous.*`
+  3. 让内建 LLM prompt section 在“上一轮未完整播完”时显式感知该边界
+
+### 本轮核心结论
+
+- 对实时语音体验而言，**播放真相链如果不进入下一轮 turn context，就还没有真正变成交互能力**。
+- 当前仓库最合适的做法不是立刻再造一个专门的 resume runtime contract，而是先落一层：
+  - `voice runtime` 继续拥有 playback-truth 的推导权
+  - `gateway` 只负责把 runtime-owned 的 `voice.previous.*` metadata 带进下一轮
+  - `agent runtime` 再基于这些 metadata 决定：
+    - 是继续上一句
+    - 还是重述没听到的尾部
+    - 还是直接回答新的问题
+- 这样可以在不扩公网协议的情况下，先把 interruption / continue / recap 的自然度往前推进一步。
+
+### 本轮正式沉淀
+
+- `internal/voice/session_orchestrator.go`
+- `internal/gateway/realtime_ws.go`
+- `internal/gateway/xiaozhi_ws.go`
+- `internal/agent/llm.go`
+- `internal/gateway/realtime_test.go`
+- `internal/voice/session_orchestrator_test.go`
+- `internal/agent/llm_executor_test.go`
+- `docs/architecture/overview.md`
+- `docs/adr/0033-last-playback-outcome-enters-next-turn-runtime-context.md`
+
+### 与主线的关系
+
+- 这一轮把“heard-text / missed-text”从**仅供记录的 playback truth**推进成了**下一轮交互可消费的 runtime context**。
+- 它对后续主线的意义在于：
+  - interruption 后的 continue / recap 更自然
+  - LLM 不再默认“上一轮整段都被听完了”
+  - 服务侧可以继续在不改设备协议的前提下提升语音交互的人味与连贯性
+
+
+## Round 018｜2026-04-16｜把 continue/recap 做成 runtime 行为，并打通 preview finalize 快路径
+
+### 用户诉求
+
+- 在 `voice.previous.*` 已进入下一轮 turn context 之后，不要停留在“prompt 能看见”这一级。
+- 继续直接做服务侧优化：
+  1. 把 `continue / recap / resume-from-anchor` 做成更直接的 runtime 行为
+  2. 继续压 `preview partial -> accept -> final ASR -> early think/early speak` 之间的等待
+
+### 本轮工作方式
+
+- 先把“播放事实进入下一轮”再往前推进半步：
+  - 让 `internal/agent` 直接识别 `继续 / 后面呢 / 你刚刚说到哪了 / 没听清` 这类 follow-up
+  - bootstrap 路径给出确定 fallback
+  - LLM 路径在消息层再补一层 runtime hint，而不只依赖系统 prompt 泛泛描述
+- 同时把 commit 时延最显著的一段继续下压：
+  - 不再只依赖“accepted turn 后重新 replay 全量 PCM 做 final ASR”
+  - 若 preview session 本身支持 finalize，就在 accept 时直接拿它的 final transcription
+
+### 本轮核心结论
+
+- `voice.previous.*` 如果只进入 prompt，而不进入 runtime 行为，收益还是偏软。
+- 当前项目更合适的做法是：
+  - playback truth 仍由 `internal/voice` 生产
+  - `internal/agent` 基于同一份 metadata 做有边界的 follow-up 策略
+  - gateway 不新增 resume 规则，只继续转发 runtime-owned 上下文
+- 对于时延，当前最划算的一步不是立刻让 preview partial 直接驱动 LLM，而是先把：
+  - **preview streaming ASR 的最终结果在 accept 时复用起来**
+  这样能明显减少 commit 后重复转写的时间浪费，而且架构边界很干净。
+
+### 本轮正式沉淀
+
+- `internal/agent/playback_followup.go`
+- `internal/agent/bootstrap_executor.go`
+- `internal/agent/llm_executor.go`
+- `internal/voice/contracts.go`
+- `internal/voice/session_orchestrator.go`
+- `internal/voice/asr_responder.go`
+- `internal/gateway/turn_input_preview.go`
+- `internal/gateway/realtime_ws.go`
+- `internal/gateway/xiaozhi_ws.go`
+- `docs/adr/0034-preview-finalization-feeds-turn-accept-fast-path.md`
+- `docs/architecture/overview.md`
+
+### 与主线的关系
+
+- 这一轮让两条主线都更实：
+  - `playback truth -> next turn` 不再只是 prompt 知道，而是 runtime follow-up 也知道
+  - `preview -> accept -> ASR` 不再总是走“preview 看一遍，accept 再完整跑一遍”的重复路径
+- 对后续主线的意义是：
+  - interruption 后的 `继续 / 重述 / 说到哪了` 更像真实对话
+  - commit 到首个可用文本的时间更短
+  - 再往下推进 “更早 think / 更早 speak” 时，基础链路已经更顺
+
+
+## Round 019｜2026-04-16｜让 stable prefix 进入 runtime prewarm，但不提前公开 accept 语义
+
+### 用户诉求
+
+- 继续沿服务侧主线推进，不暂停讨论，但也不要把 preview 直接升级成新的公开 accept 语义。
+- 目标是把 `preview partial -> agent think` 之间还能继续压掉的一段等待再往前推一步。
+
+### 本轮工作方式
+
+- 在已有 `preview finalize` 快路径之上，再检查下一段可压时延：
+  - accept 后虽然不再总是重复跑 ASR
+  - 但 LLM 路径仍常常在 accept 后才开始做 memory load、prompt 组装、tool 列表准备
+- 因此本轮继续坚持共享边界，不改公网协议，落一层 runtime-owned 的预热能力：
+  1. `SilenceTurnDetector` 从连续 preview delta 中提取 `stable_prefix`
+  2. 同时给出 `utterance_complete` 这种低风险的完整度提示
+  3. `ASRResponder` 仅在“稳定 + 看起来已成句 + 文本长度足够”时触发 `TurnPrewarmer`
+  4. `LLMTurnExecutor` 只在后续 accepted turn 与 prewarm 文本精确匹配时复用准备结果
+
+### 本轮核心结论
+
+- 当前阶段最合适的做法不是让 preview partial 直接变成“半接受 turn”，而是：
+  - preview 仍然只是观察信号
+  - `accept_reason` 仍然是 accepted-turn 的主公开语义
+  - 但 runtime 可以把 preview 中已经收敛的部分，当成 **可撤销的内部 prewarm 依据**
+- 这样做的收益是：
+  - 不增加端侧协议负担
+  - 不把 adapter 变成第二编排层
+  - 仍能提前准备 memory / prompt / tools，进一步压 accept 之后的思考起步时延
+- 关键约束也必须同时成立：
+  - 只做 bounded prewarm，不做不可逆提交
+  - 只在 exact-match 时复用，避免错误前推污染正式 turn
+  - `stable_prefix` 可以公开给端侧做观测，但端侧不能据此推断 turn 已被接受
+
+### 本轮正式沉淀
+
+- `internal/voice/turn_detector.go`
+- `internal/voice/asr_responder.go`
+- `internal/agent/contracts.go`
+- `internal/agent/logging_turn_executor.go`
+- `internal/agent/llm_executor.go`
+- `internal/gateway/voice_collaboration.go`
+- `internal/gateway/realtime_ws_test.go`
+- `internal/agent/llm_executor_test.go`
+- `internal/voice/asr_responder_test.go`
+- `docs/adr/0035-preview-stable-prefix-prewarms-agent-runtime.md`
+- `docs/architecture/overview.md`
+
+### 与主线的关系
+
+- 这一轮把 preview 从“仅供 UI/日志观察”推进成了“可供 runtime 做可撤销预热”的主信号之一。
+- 它对后续主线的意义在于：
+  - accepted turn 后 LLM 准备工作可以更早起步
+  - 仍然不破坏当前 capability-gated 协议边界
+  - 为后续更激进的 early draft / early plan 提供了更安全的中间层

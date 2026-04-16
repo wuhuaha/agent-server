@@ -78,6 +78,9 @@ func (e BootstrapTurnExecutor) streamBootstrapOutput(ctx context.Context, input 
 	if toolCommand, ok := parseBootstrapToolCommand(trimmedText); ok {
 		return e.executeToolCommand(ctx, input, toolCommand, sink)
 	}
+	if followUpText, ok := bootstrapPlaybackFollowUpText(trimmedText, input.Metadata); ok {
+		return emitBootstrapTextOutput(ctx, sink, trimmedText, followUpText)
+	}
 
 	output := TurnOutput{Text: "agent-server realtime bootstrap reply"}
 	switch {
@@ -102,6 +105,22 @@ func (e BootstrapTurnExecutor) streamBootstrapOutput(ctx context.Context, input 
 		output.EndMessage = "dialog finished"
 	}
 
+	return output, nil
+}
+
+func emitBootstrapTextOutput(ctx context.Context, sink TurnDeltaSink, inputText, text string) (TurnOutput, error) {
+	output := TurnOutput{Text: text}
+	if err := emitTurnDelta(ctx, sink, TurnDelta{
+		Kind: TurnDeltaKindText,
+		Text: text,
+	}); err != nil {
+		return TurnOutput{}, err
+	}
+	if shouldEndSession(inputText) {
+		output.EndSession = true
+		output.EndReason = "completed"
+		output.EndMessage = "dialog finished"
+	}
 	return output, nil
 }
 

@@ -59,6 +59,10 @@ type TurnExecutor interface {
 	ExecuteTurn(context.Context, TurnInput) (TurnOutput, error)
 }
 
+type TurnPrewarmer interface {
+	PrewarmTurn(context.Context, TurnInput)
+}
+
 type TurnDeltaSink interface {
 	EmitTurnDelta(context.Context, TurnDelta) error
 }

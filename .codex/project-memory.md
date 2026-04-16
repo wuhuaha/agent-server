@@ -171,6 +171,7 @@
 - The first public collaboration slice is now live on the native realtime websocket path: discovery exposes `voice_collaboration`, clients may negotiate `capabilities.preview_events` and `capabilities.playback_ack.mode`, and the stable public contract now optionally carries `input.speech.start`, `input.preview`, `input.endpoint`, and `audio.out.meta` plus client playback ACK events.
 - The embedded handoff should now point implementers at `docs/protocols/realtime-voice-client-implementation-guide-v0-zh-2026-04-16.md` for field tables, retry rules, and ACK timing, while the proposal doc remains the architectural rationale and state-machine reference.
 - The current playback ACK landing is intentionally first-step: native realtime accepts and logs playback facts now, but deeper heard-text / resume policy should still be a follow-up that consumes those facts more authoritatively than the current server-side playback-duration estimate.
+- The next playback-truth step is now partially landed on native realtime: when `playback_ack` is negotiated, the shared voice runtime prefers client playback facts over byte-send heuristics for heard-text derivation, persists heard-source / confidence / precision-tier / resume-anchor-style metadata, and may hold the final return-to-active until `audio.out.completed` or `audio.out.cleared` or a short fallback timeout.
 - The first `L2` endpointing slice now also stays behind the shared voice-runtime boundary: `InputPreviewer` and `InputPreviewSession` are the internal contracts for partial-ASR-backed turn preview, and websocket adapters only consume preview snapshots or commit suggestions.
 - The default first preview policy is a silence-based turn detector inside `internal/voice`. It currently suggests commit after a local silence window once enough audio and at least one partial hypothesis exist.
 - The hidden runtime switch `AGENT_SERVER_VOICE_SERVER_ENDPOINT_ENABLED` enables this internal preview mode for native realtime and `xiaozhi` websocket adapters without changing the public discovery `turn_mode`.
@@ -339,4 +340,24 @@
   - shared responders may expose `TurnResponseFuture`
   - native realtime may start planned audio before final turn settlement
   - final `TurnResponse` audio ownership is transferred internally so playback is not started twice
+- Playback truth is no longer only a memory-writeback artifact: `internal/voice.SessionOrchestrator` now retains the latest finalized playback outcome and projects it into the next shared turn as additive `voice.previous.*` metadata.
+- The ownership rule of record for that bridge is:
+  - `internal/voice` derives `heard_text`, `missed_text`, `resume_anchor`, confidence, and interruption facts
+  - gateways only forward that runtime-owned view into the next `TurnRequest`
+  - `internal/agent` may consume it for prompt shaping or later resume policy, but adapters still must not interpret playback facts themselves
+- The shared agent runtime now also has a bounded direct follow-up policy on top of that bridge:
+  - bootstrap fallback can directly answer playback-aware follow-ups such as `继续`, `后面呢`, `你刚刚说到哪了`, and `没听清`
+  - the LLM path gets an explicit runtime follow-up hint message when those intents align with `voice.previous.*`
+  - adapters still must not add their own continue/resume heuristics
+- Accepted audio turns may now reuse preview-stream final ASR through the shared runtime:
+  - `FinalizingInputPreviewSession` is the internal capability
+  - `internal/voice.SessionOrchestrator` owns preview finalization
+  - gateways only trigger finalize-or-fallback on explicit commit or server-endpoint accept
+  - `ASRResponder` prefers the preview-finalized transcription when present, otherwise falls back to the old replay-based ASR path
+- Preview stability is now a runtime-owned early-processing signal, not only a UI echo:
+  - `internal/voice.SilenceTurnDetector` derives `stable_prefix` and `utterance_complete` from streaming preview deltas
+  - preview-aware transports may surface `stable_prefix` and derived `stability`, but those fields remain observational only
+  - `internal/voice.ASRResponder` may prewarm the shared agent runtime from stable complete preview text through `agent.TurnPrewarmer`
+  - `internal/agent.LLMTurnExecutor` reuses that speculative preparation only on exact text plus metadata match, so early work stays reversible
 - The current machine-local `Qwen3-8B` cache is incomplete: `model.safetensors.index.json` expects 5 shards, but only `model-00004-of-00005.safetensors` and `model-00005-of-00005.safetensors` are present under `/home/ubuntu/kws-training/data/agent-server-cache/local-llm/Qwen3-8B`. Keep the local LLM path on `Qwen3-4B-Instruct-2507` until the missing three shards are downloaded and revalidated.
+- 后续仓库 `git commit` 信息统一使用清晰、完整的中文描述，优先直接说明本次改动的主线能力与边界，而不是使用含糊英文短语。

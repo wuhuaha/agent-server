@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 const defaultToolLoopMaxSteps = 6
@@ -18,7 +21,28 @@ type LLMTurnExecutor struct {
 	AssistantName  string
 	Persona        string
 	ExecutionMode  string
+	prewarm        *llmPrewarmState
 }
+
+type llmPrewarmState struct {
+	mu        sync.Mutex
+	bySession map[string]llmPrewarmCandidate
+}
+
+type llmPrewarmCandidate struct {
+	SessionID     string
+	DeviceID      string
+	ClientType    string
+	UserText      string
+	MetadataSig   string
+	PreparedAt    time.Time
+	SystemPrompt  string
+	MemoryContext MemoryContext
+	Tools         []ToolDefinition
+	Aliases       toolAliasSet
+}
+
+const llmPrewarmTTL = 15 * time.Second
 
 func NewLLMTurnExecutor(model ChatModel) LLMTurnExecutor {
 	return LLMTurnExecutor{
@@ -27,6 +51,7 @@ func NewLLMTurnExecutor(model ChatModel) LLMTurnExecutor {
 		ToolInvoker:    NewNoopToolInvoker(),
 		PromptSections: NewBuiltinPromptSectionProvider(),
 		Model:          model,
+		prewarm:        &llmPrewarmState{bySession: make(map[string]llmPrewarmCandidate)},
 	}
 }
 
@@ -92,12 +117,43 @@ func (e LLMTurnExecutor) ExecuteTurn(ctx context.Context, input TurnInput) (Turn
 	return output, nil
 }
 
+func (e LLMTurnExecutor) PrewarmTurn(ctx context.Context, input TurnInput) {
+	trimmedText := strings.TrimSpace(input.UserText)
+	if trimmedText == "" || e.model() == nil {
+		return
+	}
+	metadata := cloneMetadata(input.Metadata)
+	memoryContext, err := e.memoryStore().LoadTurnContext(ctx, buildMemoryQuery(input, trimmedText, metadata))
+	if err != nil {
+		return
+	}
+	candidate := llmPrewarmCandidate{
+		SessionID:     input.SessionID,
+		DeviceID:      input.DeviceID,
+		ClientType:    input.ClientType,
+		UserText:      trimmedText,
+		MetadataSig:   llmPrewarmMetadataSignature(metadata),
+		PreparedAt:    time.Now().UTC(),
+		SystemPrompt:  e.systemPrompt(ctx, input),
+		MemoryContext: cloneMemoryContext(memoryContext),
+	}
+	candidate.Tools, candidate.Aliases = e.listModelTools(ctx, input)
+	e.prewarmState().store(candidate)
+}
+
 func (e LLMTurnExecutor) StreamTurn(ctx context.Context, input TurnInput, sink TurnDeltaSink) (TurnOutput, error) {
 	trimmedText := strings.TrimSpace(input.UserText)
 	metadata := cloneMetadata(input.Metadata)
-	memoryContext, memoryErr := e.memoryStore().LoadTurnContext(ctx, buildMemoryQuery(input, trimmedText, metadata))
+	prewarmed, hasPrewarm := e.prewarmState().consumeMatch(input, trimmedText, metadata)
+	memoryContext := MemoryContext{}
+	var memoryErr error
+	if hasPrewarm {
+		memoryContext = cloneMemoryContext(prewarmed.MemoryContext)
+	} else {
+		memoryContext, memoryErr = e.memoryStore().LoadTurnContext(ctx, buildMemoryQuery(input, trimmedText, metadata))
+	}
 
-	output, err := e.streamLLMOutput(ctx, input, trimmedText, metadata, memoryContext, memoryErr, sink)
+	output, err := e.streamLLMOutput(ctx, input, trimmedText, metadata, memoryContext, memoryErr, prewarmed, hasPrewarm, sink)
 	if err != nil {
 		return TurnOutput{}, err
 	}
@@ -115,6 +171,8 @@ func (e LLMTurnExecutor) streamLLMOutput(
 	metadata map[string]string,
 	memoryContext MemoryContext,
 	memoryErr error,
+	prewarmed llmPrewarmCandidate,
+	hasPrewarm bool,
 	sink TurnDeltaSink,
 ) (TurnOutput, error) {
 	bootstrap := e.bootstrapDelegate()
@@ -128,9 +186,22 @@ func (e LLMTurnExecutor) streamLLMOutput(
 		return bootstrap.streamBootstrapOutput(ctx, input, trimmedText, memoryContext, memoryErr, sink)
 	}
 
-	systemPrompt := e.systemPrompt(ctx, input)
-	tools, aliases := e.listModelTools(ctx, input)
-	messages := initialChatMessages(systemPrompt, memoryContext, trimmedText)
+	var (
+		systemPrompt string
+		tools        []ToolDefinition
+		aliases      toolAliasSet
+	)
+	if hasPrewarm {
+		systemPrompt = prewarmed.SystemPrompt
+		memoryContext = cloneMemoryContext(prewarmed.MemoryContext)
+		memoryErr = nil
+		tools = cloneToolDefinitions(prewarmed.Tools)
+		aliases = prewarmed.Aliases.clone()
+	} else {
+		systemPrompt = e.systemPrompt(ctx, input)
+		tools, aliases = e.listModelTools(ctx, input)
+	}
+	messages := initialChatMessages(systemPrompt, memoryContext, trimmedText, metadata)
 	var outputText strings.Builder
 
 	for step := 0; step < defaultToolLoopMaxSteps; step++ {
@@ -419,7 +490,14 @@ func (e LLMTurnExecutor) promptSections() PromptSectionProvider {
 	return e.PromptSections
 }
 
-func initialChatMessages(systemPrompt string, memoryContext MemoryContext, userText string) []ChatMessage {
+func (e LLMTurnExecutor) prewarmState() *llmPrewarmState {
+	if e.prewarm != nil {
+		return e.prewarm
+	}
+	return &llmPrewarmState{bySession: make(map[string]llmPrewarmCandidate)}
+}
+
+func initialChatMessages(systemPrompt string, memoryContext MemoryContext, userText string, metadata map[string]string) []ChatMessage {
 	messages := make([]ChatMessage, 0, 3)
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	if systemPrompt == "" {
@@ -449,6 +527,7 @@ func initialChatMessages(systemPrompt string, memoryContext MemoryContext, userT
 		})
 	}
 	messages = append(messages, cloneChatMessages(memoryContext.RecentMessages)...)
+	messages = append(messages, playbackFollowUpMessages(userText, metadata)...)
 	messages = append(messages, ChatMessage{
 		Role:    "user",
 		Content: strings.TrimSpace(userText),
@@ -619,6 +698,82 @@ func cloneToolParameters(parameters map[string]any) map[string]any {
 		cloned[key] = cloneJSONLike(value)
 	}
 	return cloned
+}
+
+func (s *llmPrewarmState) store(candidate llmPrewarmCandidate) {
+	if s == nil || strings.TrimSpace(candidate.SessionID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bySession == nil {
+		s.bySession = make(map[string]llmPrewarmCandidate)
+	}
+	s.bySession[candidate.SessionID] = candidate
+}
+
+func (s *llmPrewarmState) consumeMatch(input TurnInput, trimmedText string, metadata map[string]string) (llmPrewarmCandidate, bool) {
+	if s == nil || strings.TrimSpace(input.SessionID) == "" {
+		return llmPrewarmCandidate{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate, ok := s.bySession[input.SessionID]
+	if !ok {
+		return llmPrewarmCandidate{}, false
+	}
+	delete(s.bySession, input.SessionID)
+	if time.Since(candidate.PreparedAt) > llmPrewarmTTL {
+		return llmPrewarmCandidate{}, false
+	}
+	if strings.TrimSpace(candidate.DeviceID) != strings.TrimSpace(input.DeviceID) ||
+		strings.TrimSpace(candidate.ClientType) != strings.TrimSpace(input.ClientType) ||
+		strings.TrimSpace(candidate.UserText) != strings.TrimSpace(trimmedText) ||
+		candidate.MetadataSig != llmPrewarmMetadataSignature(metadata) {
+		return llmPrewarmCandidate{}, false
+	}
+	return candidate, true
+}
+
+func llmPrewarmMetadataSignature(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(metadata))
+	for key, value := range metadata {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" || strings.HasPrefix(trimmedKey, "voice.preview.") {
+			continue
+		}
+		if trimmedValue := strings.TrimSpace(value); trimmedValue != "" {
+			keys = append(keys, trimmedKey+"="+trimmedValue)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "&")
+}
+
+func cloneMemoryContext(context MemoryContext) MemoryContext {
+	cloned := context
+	if len(context.Facts) > 0 {
+		cloned.Facts = append([]MemoryFact(nil), context.Facts...)
+	}
+	cloned.RecentMessages = cloneChatMessages(context.RecentMessages)
+	return cloned
+}
+
+func (s toolAliasSet) clone() toolAliasSet {
+	if len(s.modelToActual) == 0 {
+		return toolAliasSet{}
+	}
+	cloned := make(map[string]string, len(s.modelToActual))
+	for key, value := range s.modelToActual {
+		cloned[key] = value
+	}
+	return toolAliasSet{modelToActual: cloned}
 }
 
 func cloneJSONLike(value any) any {

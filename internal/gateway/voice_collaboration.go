@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -122,7 +123,17 @@ type playbackAckState struct {
 	clearedReason string
 	completedAt   time.Time
 	completed     bool
+	terminal      playbackAckTerminal
+	waitCh        chan struct{}
 }
+
+type playbackAckTerminal string
+
+const (
+	playbackAckTerminalNone      playbackAckTerminal = ""
+	playbackAckTerminalCleared   playbackAckTerminal = "cleared"
+	playbackAckTerminalCompleted playbackAckTerminal = "completed"
+)
 
 func (p RealtimeProfile) voiceCollaborationProfile() voiceCollaborationProfile {
 	previewEnabled := p.ServerEndpointEnabled
@@ -220,11 +231,17 @@ func (h *realtimeWSHandler) emitPreviewObservationEvents(runtime *connectionRunt
 	}
 	if observation.PartialChanged {
 		text := strings.TrimSpace(observation.Preview.PartialText)
+		stablePrefix := strings.TrimSpace(observation.Preview.StablePrefix)
+		if stablePrefix == "" {
+			stablePrefix = text
+		}
+		stability := previewTextStability(text, stablePrefix)
 		if err := runtime.peer.WriteEvent(events.TypeInputPreview, snapshot.SessionID, inputPreviewPayload{
 			PreviewID:     previewID,
 			Text:          text,
-			StablePrefix:  text,
+			StablePrefix:  stablePrefix,
 			IsFinal:       false,
+			Stability:     stability,
 			AudioOffsetMs: audioOffsetMs,
 		}); err != nil {
 			return err
@@ -243,6 +260,22 @@ func (h *realtimeWSHandler) emitPreviewObservationEvents(runtime *connectionRunt
 	return nil
 }
 
+func previewTextStability(text, stablePrefix string) *float64 {
+	textRunes := []rune(strings.TrimSpace(text))
+	if len(textRunes) == 0 {
+		return nil
+	}
+	stableRunes := []rune(strings.TrimSpace(stablePrefix))
+	value := float64(len(stableRunes)) / float64(len(textRunes))
+	if value < 0 {
+		value = 0
+	}
+	if value > 1 {
+		value = 1
+	}
+	return &value
+}
+
 func (r *connectionRuntime) installPlaybackAckMeta(meta audioPlaybackMeta) {
 	r.playbackAckState.mu.Lock()
 	defer r.playbackAckState.mu.Unlock()
@@ -253,6 +286,8 @@ func (r *connectionRuntime) installPlaybackAckMeta(meta audioPlaybackMeta) {
 	r.playbackAckState.clearedReason = ""
 	r.playbackAckState.completedAt = time.Time{}
 	r.playbackAckState.completed = false
+	r.playbackAckState.terminal = playbackAckTerminalNone
+	r.playbackAckState.waitCh = make(chan struct{})
 }
 
 func (r *connectionRuntime) clearPlaybackAckState() {
@@ -265,6 +300,8 @@ func (r *connectionRuntime) clearPlaybackAckState() {
 	r.playbackAckState.clearedReason = ""
 	r.playbackAckState.completedAt = time.Time{}
 	r.playbackAckState.completed = false
+	r.playbackAckState.terminal = playbackAckTerminalNone
+	r.playbackAckState.waitCh = nil
 }
 
 func (r *connectionRuntime) playbackAckMeta() audioPlaybackMeta {
@@ -299,6 +336,7 @@ func (r *connectionRuntime) recordPlaybackCleared(now time.Time, reason string) 
 	defer r.playbackAckState.mu.Unlock()
 	r.playbackAckState.clearedAt = now
 	r.playbackAckState.clearedReason = strings.TrimSpace(reason)
+	r.playbackAckState.finishLocked(playbackAckTerminalCleared)
 	return r.playbackAckState.meta
 }
 
@@ -307,7 +345,58 @@ func (r *connectionRuntime) recordPlaybackCompleted(now time.Time) audioPlayback
 	defer r.playbackAckState.mu.Unlock()
 	r.playbackAckState.completedAt = now
 	r.playbackAckState.completed = true
+	r.playbackAckState.finishLocked(playbackAckTerminalCompleted)
 	return r.playbackAckState.meta
+}
+
+func (s *playbackAckState) finishLocked(terminal playbackAckTerminal) {
+	if s.terminal != playbackAckTerminalNone {
+		return
+	}
+	s.terminal = terminal
+	if s.waitCh != nil {
+		close(s.waitCh)
+	}
+}
+
+func (r *connectionRuntime) waitForPlaybackAckTerminal(ctx context.Context, timeout time.Duration) (playbackAckTerminal, string, bool) {
+	r.playbackAckState.mu.Lock()
+	waitCh := r.playbackAckState.waitCh
+	terminal := r.playbackAckState.terminal
+	reason := r.playbackAckState.clearedReason
+	r.playbackAckState.mu.Unlock()
+	if terminal != playbackAckTerminalNone {
+		return terminal, reason, true
+	}
+	if waitCh == nil {
+		return playbackAckTerminalNone, "", false
+	}
+	if timeout <= 0 {
+		timeout = 600 * time.Millisecond
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return playbackAckTerminalNone, "", false
+	case <-waitCh:
+	case <-timer.C:
+		return playbackAckTerminalNone, "", false
+	}
+	r.playbackAckState.mu.Lock()
+	defer r.playbackAckState.mu.Unlock()
+	return r.playbackAckState.terminal, r.playbackAckState.clearedReason, r.playbackAckState.terminal != playbackAckTerminalNone
+}
+
+func playbackAckTerminalWaitTimeout(meta audioPlaybackMeta) time.Duration {
+	switch {
+	case meta.ExpectedDuration >= 1500*time.Millisecond:
+		return 1200 * time.Millisecond
+	case meta.ExpectedDuration >= 600*time.Millisecond:
+		return 900 * time.Millisecond
+	default:
+		return 600 * time.Millisecond
+	}
 }
 
 func validatePlaybackAckMode(mode string) error {
@@ -325,7 +414,7 @@ func validatePlaybackAckIdentity(meta audioPlaybackMeta, responseID, playbackID 
 		return false
 	}
 	if meta.ResponseID == "" || meta.PlaybackID == "" {
-		return true
+		return false
 	}
 	return meta.ResponseID == responseID && meta.PlaybackID == playbackID
 }

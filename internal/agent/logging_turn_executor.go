@@ -12,6 +12,22 @@ type LoggingTurnExecutor struct {
 	Logger *slog.Logger
 }
 
+func (e LoggingTurnExecutor) PrewarmTurn(ctx context.Context, input TurnInput) {
+	prewarmer, ok := e.Inner.(TurnPrewarmer)
+	if !ok {
+		return
+	}
+	if e.Logger != nil {
+		e.Logger.Info("agent turn prewarm started",
+			"session_id", input.SessionID,
+			"device_id", input.DeviceID,
+			"client_type", input.ClientType,
+			"user_text_len", len(strings.TrimSpace(input.UserText)),
+		)
+	}
+	prewarmer.PrewarmTurn(ctx, input)
+}
+
 func (e LoggingTurnExecutor) ExecuteTurn(ctx context.Context, input TurnInput) (TurnOutput, error) {
 	if streaming, ok := e.Inner.(StreamingTurnExecutor); ok {
 		collector := &turnDeltaCollector{}

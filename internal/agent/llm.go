@@ -112,6 +112,10 @@ func (BuiltinPromptSectionProvider) ListPromptSections(_ context.Context, reques
 			Name:    "execution_mode_policy",
 			Content: defaultAgentExecutionModePolicy(request.ExecutionMode),
 		},
+		{
+			Name:    "voice_playback_context",
+			Content: renderPreviousPlaybackContextPrompt(request.Metadata),
+		},
 	}, nil
 }
 
@@ -214,6 +218,37 @@ func defaultCurrentTimeContext() string {
 		now.Format("2006-01-02"),
 		chineseWeekday(now.Weekday()),
 	))
+}
+
+func renderPreviousPlaybackContextPrompt(metadata map[string]string) string {
+	if !metadataFlag(metadata, "voice.previous.available") {
+		return ""
+	}
+
+	heard := strings.TrimSpace(metadata["voice.previous.heard_text"])
+	missed := strings.TrimSpace(metadata["voice.previous.missed_text"])
+	anchor := strings.TrimSpace(metadata["voice.previous.resume_anchor"])
+	interrupted := metadataFlag(metadata, "voice.previous.response_interrupted")
+	truncated := metadataFlag(metadata, "voice.previous.response_truncated")
+	if heard == "" && missed == "" && !interrupted && !truncated {
+		return ""
+	}
+
+	lines := []string{"上一轮语音播报上下文："}
+	if interrupted || truncated || missed != "" {
+		lines = append(lines, "- 上一轮回复没有被用户完整听到，不要假设完整内容已经到达用户。")
+	}
+	if heard != "" {
+		lines = append(lines, fmt.Sprintf("- 用户实际已经听到的大致边界：%s", heard))
+	}
+	if missed != "" {
+		lines = append(lines, fmt.Sprintf("- 用户大概率还没听到的剩余部分：%s", missed))
+	}
+	if anchor != "" && missed != "" {
+		lines = append(lines, fmt.Sprintf("- 若用户说“继续”“后面呢”“刚刚最后一句”，优先从这个边界续接或重述：%s", anchor))
+	}
+	lines = append(lines, "- 如果用户的新问题已经切换主题，直接回答新问题，不要机械续播旧内容。")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func chineseWeekday(day time.Weekday) string {

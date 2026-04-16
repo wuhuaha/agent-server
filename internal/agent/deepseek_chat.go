@@ -193,7 +193,7 @@ func (m DeepSeekChatModel) newRequest(ctx context.Context, request ChatModelRequ
 func (m DeepSeekChatModel) buildRequest(request ChatModelRequest, stream bool) deepseekChatCompletionRequest {
 	messages := request.Messages
 	if len(messages) == 0 {
-		messages = initialChatMessages(request.SystemPrompt, request.MemoryContext, request.UserText)
+		messages = initialChatMessages(request.SystemPrompt, request.MemoryContext, request.UserText, request.Metadata)
 	}
 
 	payload := deepseekChatCompletionRequest{

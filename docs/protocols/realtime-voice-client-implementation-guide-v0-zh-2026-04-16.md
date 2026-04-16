@@ -89,15 +89,16 @@
 | --- | --- | --- | --- |
 | `preview_id` | string | 是 | preview 观察窗口 ID |
 | `text` | string | 是 | 当前 partial 文本 |
-| `stable_prefix` | string | 否 | 当前稳定前缀；初版可等于 `text` |
+| `stable_prefix` | string | 否 | 当前稳定前缀；服务端有收敛证据时应尽量填真实稳定前缀，而不是机械复制 `text` |
 | `is_final` | bool | 是 | 是否最终结果；当前阶段通常为 `false` |
-| `stability` | float | 否 | 0~1 稳定度；当前可缺省 |
+| `stability` | float | 否 | 0~1 稳定度提示；仅供显示/调试，不能替代 accepted-turn 判断 |
 | `audio_offset_ms` | int | 是 | 该 partial 对应的累计音频位置 |
 
 端侧建议动作：
 
 - 用于字幕 / 屏显 / 调试
 - 不要把它当成 accepted-turn
+- 即便 `stable_prefix` 很长或 `stability` 很高，也继续等待 `accept_reason`
 
 ### 3.4 `input.endpoint`
 
@@ -178,6 +179,11 @@
 - 本地清空未播缓冲时
 - 不要求一定意味着已 hard interrupt，但一定代表“后续内容没被播出来”
 
+当前服务端行为补充：
+
+- 若服务端仍在 `speaking`，`audio.out.cleared` 可能触发服务端立刻停止当前输出并回到 `active`
+- 因此该事件不只是“日志事实”，也会参与服务端 playback truth 收尾
+
 ### 4.4 `audio.out.completed`
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -195,6 +201,12 @@
 | `audio.out.mark` | 每 40~120 ms 或关键进度点 | 可选但建议 | 低资源设备可降频 |
 | `audio.out.cleared` | 本地缓冲被清空后立即发送 | 条件触发 | 与 interrupt / clear 动作配合 |
 | `audio.out.completed` | 最后一帧真实播放完 | 强烈建议 | 用于最终听到边界 |
+
+补充语义：
+
+- 当已协商 `playback_ack` 时，服务端可能不会在音频字节发送完的瞬间立刻回到 `session.update(state=active)`。
+- 更准确的行为是：服务端优先等待 `audio.out.completed` 或 `audio.out.cleared`，再收口本轮 playback truth；若短时间内未等到，则回退到服务端启发式完成。
+- 因此端侧若希望 turn 收尾、heard-text、resume 更自然，`audio.out.completed` 应尽量及时发送。
 
 ## 6. 错误码与重试策略
 

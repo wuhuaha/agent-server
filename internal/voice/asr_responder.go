@@ -4,12 +4,18 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"agent-server/internal/agent"
 )
 
-const defaultASRStreamingChunkMs = 40
+const (
+	defaultASRStreamingChunkMs    = 40
+	defaultPreviewPrewarmMinRunes = 4
+	defaultPreviewPrewarmTimeout  = 1500 * time.Millisecond
+)
 
 type ASRResponder struct {
 	Transcriber                   Transcriber
@@ -60,8 +66,11 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		return nil, err
 	}
 	return &asrInputPreviewSession{
-		stream:   stream,
-		detector: &detector,
+		stream:          stream,
+		detector:        &detector,
+		prewarmer:       previewTurnPrewarmer(r.Executor),
+		previewRequest:  req,
+		minPrewarmRunes: defaultPreviewPrewarmMinRunes,
 	}, nil
 }
 
@@ -129,7 +138,7 @@ func (r ASRResponder) respondWithOptionalPlanning(ctx context.Context, req TurnR
 		return TurnResponse{}, fmt.Errorf("asr transcriber is not configured")
 	}
 
-	result, err := r.transcribeAudio(ctx, req)
+	result, err := r.transcriptionForTurn(ctx, req)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -312,6 +321,13 @@ func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (Tra
 	return r.Transcriber.Transcribe(ctx, transcriptionReq)
 }
 
+func (r ASRResponder) transcriptionForTurn(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {
+	if req.PreviewTranscription != nil && strings.TrimSpace(req.PreviewTranscription.Text) != "" {
+		return *req.PreviewTranscription, nil
+	}
+	return r.transcribeAudio(ctx, req)
+}
+
 func splitPCMForStreaming(audioPCM []byte, sampleRateHz, channels, frameMs int) [][]byte {
 	if len(audioPCM) == 0 {
 		return nil
@@ -363,8 +379,15 @@ func (r ASRResponder) turnDetectionConfig() SilenceTurnDetectorConfig {
 }
 
 type asrInputPreviewSession struct {
-	stream   StreamingTranscriptionSession
-	detector *SilenceTurnDetector
+	stream          StreamingTranscriptionSession
+	detector        *SilenceTurnDetector
+	prewarmer       agent.TurnPrewarmer
+	previewRequest  InputPreviewRequest
+	minPrewarmRunes int
+	lastPrewarmText string
+	finishOnce      sync.Once
+	finishResult    TranscriptionResult
+	finishErr       error
 }
 
 func (s *asrInputPreviewSession) PushAudio(ctx context.Context, chunk []byte) (InputPreview, error) {
@@ -377,14 +400,28 @@ func (s *asrInputPreviewSession) PushAudio(ctx context.Context, chunk []byte) (I
 	if s.detector == nil {
 		return InputPreview{}, nil
 	}
-	return s.detector.Snapshot(time.Now()), nil
+	snapshot := s.detector.Snapshot(time.Now())
+	s.maybePrewarm(snapshot)
+	return snapshot, nil
 }
 
 func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
 	if s.detector == nil {
 		return InputPreview{}
 	}
-	return s.detector.Snapshot(now)
+	snapshot := s.detector.Snapshot(now)
+	s.maybePrewarm(snapshot)
+	return snapshot
+}
+
+func (s *asrInputPreviewSession) Finish(ctx context.Context) (TranscriptionResult, error) {
+	if s.stream == nil {
+		return TranscriptionResult{}, nil
+	}
+	s.finishOnce.Do(func() {
+		s.finishResult, s.finishErr = s.stream.Finish(ctx)
+	})
+	return s.finishResult, s.finishErr
 }
 
 func (s *asrInputPreviewSession) Close() error {
@@ -392,4 +429,43 @@ func (s *asrInputPreviewSession) Close() error {
 		return nil
 	}
 	return s.stream.Close()
+}
+
+func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
+	if s == nil || s.prewarmer == nil {
+		return
+	}
+	candidate := strings.TrimSpace(snapshot.StablePrefix)
+	if candidate == "" && snapshot.CommitSuggested && snapshot.UtteranceComplete {
+		candidate = strings.TrimSpace(snapshot.PartialText)
+	}
+	if candidate == "" || candidate == s.lastPrewarmText || !snapshot.UtteranceComplete {
+		return
+	}
+	if utf8.RuneCountInString(candidate) < s.minPrewarmRunes {
+		return
+	}
+	s.lastPrewarmText = candidate
+	input := agent.TurnInput{
+		SessionID:  s.previewRequest.SessionID,
+		DeviceID:   s.previewRequest.DeviceID,
+		ClientType: s.previewRequest.ClientType,
+		UserText:   candidate,
+		Metadata: map[string]string{
+			"voice.preview.prewarm":            "true",
+			"voice.preview.partial_text":       strings.TrimSpace(snapshot.PartialText),
+			"voice.preview.stable_prefix":      candidate,
+			"voice.preview.utterance_complete": "true",
+		},
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultPreviewPrewarmTimeout)
+		defer cancel()
+		s.prewarmer.PrewarmTurn(ctx, input)
+	}()
+}
+
+func previewTurnPrewarmer(executor agent.TurnExecutor) agent.TurnPrewarmer {
+	prewarmer, _ := executor.(agent.TurnPrewarmer)
+	return prewarmer
 }

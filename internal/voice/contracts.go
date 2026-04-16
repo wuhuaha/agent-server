@@ -38,19 +38,20 @@ type Runtime interface {
 }
 
 type TurnRequest struct {
-	SessionID       string
-	TurnID          string
-	TraceID         string
-	DeviceID        string
-	ClientType      string
-	Text            string
-	Metadata        map[string]string
-	AudioPCM        []byte
-	AudioBytes      int
-	InputFrames     int
-	InputCodec      string
-	InputSampleRate int
-	InputChannels   int
+	SessionID            string
+	TurnID               string
+	TraceID              string
+	DeviceID             string
+	ClientType           string
+	Text                 string
+	Metadata             map[string]string
+	PreviewTranscription *TranscriptionResult
+	AudioPCM             []byte
+	AudioBytes           int
+	InputFrames          int
+	InputCodec           string
+	InputSampleRate      int
+	InputChannels        int
 }
 
 type ResponseDelta struct {
@@ -73,9 +74,9 @@ type TurnResponse struct {
 	// orchestrated early-audio path and should not be started again from the
 	// final response envelope.
 	AudioStreamTransferred bool
-	EndSession  bool
-	EndReason   string
-	EndMessage  string
+	EndSession             bool
+	EndReason              string
+	EndMessage             string
 }
 
 type Responder interface {
@@ -186,6 +187,7 @@ type StreamingTranscriber interface {
 type InputPreviewRequest struct {
 	SessionID    string
 	DeviceID     string
+	ClientType   string
 	Codec        string
 	SampleRateHz int
 	Channels     int
@@ -193,17 +195,24 @@ type InputPreviewRequest struct {
 }
 
 type InputPreview struct {
-	PartialText     string
-	EndpointReason  string
-	AudioBytes      int
-	CommitSuggested bool
-	SpeechStarted   bool
+	PartialText       string
+	StablePrefix      string
+	EndpointReason    string
+	AudioBytes        int
+	CommitSuggested   bool
+	SpeechStarted     bool
+	UtteranceComplete bool
 }
 
 type InputPreviewSession interface {
 	PushAudio(context.Context, []byte) (InputPreview, error)
 	Poll(time.Time) InputPreview
 	Close() error
+}
+
+type FinalizingInputPreviewSession interface {
+	InputPreviewSession
+	Finish(context.Context) (TranscriptionResult, error)
 }
 
 type InputPreviewer interface {

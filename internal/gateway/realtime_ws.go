@@ -349,7 +349,14 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 		return err
 	}
 	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
-		runtime.clearInputPreview()
+		previewTrace, previewResult, previewResultOK, previewErr := runtime.consumeInputPreview(ctx)
+		if previewErr != nil {
+			h.logger.Warn("gateway input preview finalize failed",
+				"session_id", snapshot.SessionID,
+				"preview_id", previewTrace.PreviewID,
+				"error", previewErr,
+			)
+		}
 		turn, err := runtime.session.CommitTurn()
 		if err != nil {
 			return err
@@ -367,12 +374,19 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 			"turn_index", turn.Snapshot.Turns,
 			"endpoint_reason", observation.Preview.EndpointReason,
 		}
-		attrs = appendInputPreviewTraceLogAttrs(attrs, observation.Trace, now)
+		if previewResultOK && previewErr == nil {
+			attrs = appendPreviewTranscriptionLogAttrs(attrs, &previewResult)
+		}
+		attrs = appendInputPreviewTraceLogAttrs(attrs, previewTrace, now)
 		logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, trace, attrs...)
 		if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(turn.Snapshot, trace.TurnID, "server_endpoint")); err != nil {
 			return err
 		}
-		if err := h.emitTurnResponse(ctx, runtime, turn, trace, ""); err != nil {
+		var previewTranscription *voice.TranscriptionResult
+		if previewResultOK && previewErr == nil {
+			previewTranscription = &previewResult
+		}
+		if err := h.emitTurnResponse(ctx, runtime, turn, trace, "", previewTranscription); err != nil {
 			return err
 		}
 		return nil
@@ -684,8 +698,14 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 			Recoverable: true,
 		})
 	}
-	previewTrace := runtime.currentInputPreviewTrace()
-	runtime.clearInputPreview()
+	previewTrace, previewResult, previewResultOK, previewErr := runtime.consumeInputPreview(ctx)
+	if previewErr != nil {
+		h.logger.Warn("gateway input preview finalize failed",
+			"session_id", envelope.SessionID,
+			"trace_id", runtime.turnTrace.Current().TraceID,
+			"error", previewErr,
+		)
+	}
 	turn, err := runtime.session.CommitTurn()
 	if err != nil {
 		return runtime.peer.WriteEvent(events.TypeError, envelope.SessionID, errorPayload{
@@ -709,13 +729,20 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 		"input_channels", turn.Snapshot.InputChannels,
 		"turn_index", turn.Snapshot.Turns,
 	}
+	if previewResultOK && previewErr == nil {
+		attrs = appendPreviewTranscriptionLogAttrs(attrs, &previewResult)
+	}
 	attrs = appendInputPreviewTraceLogAttrs(attrs, previewTrace, time.Now().UTC())
 	logTurnTraceInfo(h.logger, "gateway turn accepted", turn.Snapshot.SessionID, turnMeta, attrs...)
 	if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, turn.Snapshot.SessionID, sessionUpdateFromSnapshot(turn.Snapshot, turnMeta.TurnID, firstNonEmpty(strings.TrimSpace(payload.Reason), "audio_commit"))); err != nil {
 		return err
 	}
 
-	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, "")
+	var previewTranscription *voice.TranscriptionResult
+	if previewResultOK && previewErr == nil {
+		previewTranscription = &previewResult
+	}
+	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, "", previewTranscription)
 }
 
 func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -781,7 +808,7 @@ func (h *realtimeWSHandler) handleText(ctx context.Context, runtime *connectionR
 		return err
 	}
 
-	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, payload.Text)
+	return h.emitTurnResponse(ctx, runtime, turn, turnMeta, payload.Text, nil)
 }
 
 func (h *realtimeWSHandler) handleClientEnd(runtime *connectionRuntime, envelope controlEnvelope) error {
@@ -909,6 +936,9 @@ func (h *realtimeWSHandler) recordPlaybackAckStarted(runtime *connectionRuntime,
 		return nil
 	}
 	runtime.recordPlaybackStarted(time.Now().UTC())
+	if runtime.voiceSession != nil {
+		runtime.voiceSession.ObservePlaybackStartedFact()
+	}
 	logPlaybackAckInfo(h.logger, "gateway playback ack started", runtime, payload)
 	return nil
 }
@@ -930,6 +960,9 @@ func (h *realtimeWSHandler) recordPlaybackAckMark(runtime *connectionRuntime, pa
 		return nil
 	}
 	runtime.recordPlaybackMark(time.Now().UTC(), payload.PlayedDurationMs)
+	if runtime.voiceSession != nil && payload.PlayedDurationMs > 0 {
+		runtime.voiceSession.ObservePlaybackMarkFact(time.Duration(payload.PlayedDurationMs) * time.Millisecond)
+	}
 	logPlaybackAckInfo(h.logger, "gateway playback ack mark", runtime, payload)
 	return nil
 }
@@ -952,6 +985,17 @@ func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime,
 	}
 	runtime.recordPlaybackCleared(time.Now().UTC(), payload.Reason)
 	logPlaybackAckInfo(h.logger, "gateway playback ack cleared", runtime, payload)
+	snapshot := runtime.session.Snapshot()
+	if snapshot.State == session.StateSpeaking {
+		return interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
+			ClearPreview: false,
+			ClearPending: false,
+			Policy:       voice.InterruptionPolicyHardInterrupt,
+			Reason:       firstNonEmpty(strings.TrimSpace(payload.Reason), "client_playback_cleared"),
+		}, nil, func(trace turnTrace, active session.Snapshot) error {
+			return runtime.peer.WriteEvent(events.TypeSessionUpdate, active.SessionID, sessionUpdateFromSnapshot(active, trace.TurnID, ""))
+		})
+	}
 	return nil
 }
 
@@ -972,12 +1016,16 @@ func (h *realtimeWSHandler) recordPlaybackAckCompleted(runtime *connectionRuntim
 		return nil
 	}
 	runtime.recordPlaybackCompleted(time.Now().UTC())
+	if runtime.voiceSession != nil {
+		runtime.voiceSession.ObservePlaybackCompletedFact()
+	}
 	logPlaybackAckInfo(h.logger, "gateway playback ack completed", runtime, payload)
 	return nil
 }
 
-func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string) error {
-	request := buildTurnRequest(turn, runtime, trace, text)
+func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) error {
+	request := buildTurnRequest(turn, runtime, trace, text, previewTranscription)
+	logPreviousPlaybackContext(h.logger, turn.Snapshot.SessionID, trace, request)
 	if runtime.voiceSession != nil {
 		runtime.voiceSession.PrepareTurn(request, strings.TrimSpace(text), "")
 	}
@@ -1023,7 +1071,9 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 				"audio_start_incremental", audioStart.Incremental,
 			)
 			if runtime.voiceSession != nil {
-				runtime.voiceSession.StartPlayback(aggregatedText, outputFrameInterval, plannedPlaybackDurationForAudioStream(audioStart.Stream, outputFrameInterval))
+				runtime.voiceSession.StartPlaybackWithOptions(aggregatedText, outputFrameInterval, plannedPlaybackDurationForAudioStream(audioStart.Stream, outputFrameInterval), voice.PlaybackStartOptions{
+					PreferClientFacts: runtime.collaboration.PlaybackAckEnabled(),
+				})
 			}
 			if err := applyReadDeadline(runtime, speaking, h.profile); err != nil {
 				return err
@@ -1067,7 +1117,7 @@ func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *conne
 	return h.finalizeTurnResponse(ctx, runtime, turn.Snapshot, result.Trace, result.ResponseID, result.Response, deliveredText)
 }
 
-func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, trace turnTrace, text string) voice.TurnRequest {
+func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) voice.TurnRequest {
 	inputCodec := turn.Snapshot.InputCodec
 	inputSampleRate := turn.Snapshot.InputSampleRate
 	inputChannels := turn.Snapshot.InputChannels
@@ -1076,21 +1126,67 @@ func buildTurnRequest(turn session.CommittedTurn, runtime *connectionRuntime, tr
 		inputSampleRate = runtime.inputNormalizer.OutputSampleRate()
 		inputChannels = runtime.inputNormalizer.OutputChannels()
 	}
+	metadata := map[string]string(nil)
+	if runtime != nil && runtime.voiceSession != nil {
+		metadata = runtime.voiceSession.LastPlaybackContextMetadata()
+	}
 
 	return voice.TurnRequest{
-		SessionID:       turn.Snapshot.SessionID,
-		TurnID:          trace.TurnID,
-		TraceID:         trace.TraceID,
-		DeviceID:        turn.Snapshot.DeviceID,
-		ClientType:      turn.Snapshot.ClientType,
-		Text:            text,
-		AudioPCM:        turn.AudioPCM,
-		AudioBytes:      turn.Snapshot.AudioBytes,
-		InputFrames:     turn.Snapshot.InputFrames,
-		InputCodec:      inputCodec,
-		InputSampleRate: inputSampleRate,
-		InputChannels:   inputChannels,
+		SessionID:            turn.Snapshot.SessionID,
+		TurnID:               trace.TurnID,
+		TraceID:              trace.TraceID,
+		DeviceID:             turn.Snapshot.DeviceID,
+		ClientType:           turn.Snapshot.ClientType,
+		Text:                 text,
+		Metadata:             metadata,
+		PreviewTranscription: clonePreviewTranscription(previewTranscription),
+		AudioPCM:             turn.AudioPCM,
+		AudioBytes:           turn.Snapshot.AudioBytes,
+		InputFrames:          turn.Snapshot.InputFrames,
+		InputCodec:           inputCodec,
+		InputSampleRate:      inputSampleRate,
+		InputChannels:        inputChannels,
 	}
+}
+
+func clonePreviewTranscription(result *voice.TranscriptionResult) *voice.TranscriptionResult {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	cloned.Segments = append([]string(nil), result.Segments...)
+	cloned.AudioEvents = append([]string(nil), result.AudioEvents...)
+	cloned.Partials = append([]string(nil), result.Partials...)
+	return &cloned
+}
+
+func appendPreviewTranscriptionLogAttrs(attrs []any, result *voice.TranscriptionResult) []any {
+	if result == nil {
+		return attrs
+	}
+	return append(attrs,
+		"preview_finalize_fast_path", true,
+		"preview_finalize_text_len", len(strings.TrimSpace(result.Text)),
+		"preview_finalize_mode", strings.TrimSpace(result.Mode),
+		"preview_finalize_endpoint_reason", strings.TrimSpace(result.EndpointReason),
+	)
+}
+
+func logPreviousPlaybackContext(logger *slog.Logger, sessionID string, trace turnTrace, request voice.TurnRequest) {
+	if logger == nil {
+		return
+	}
+	if request.Metadata["voice.previous.available"] != "true" {
+		return
+	}
+	logTurnTraceInfo(logger, "gateway turn request carries previous playback context", sessionID, trace,
+		"previous_turn_id", request.Metadata["voice.previous.turn_id"],
+		"previous_heard_boundary", request.Metadata["voice.previous.heard_boundary"],
+		"previous_heard_confidence", request.Metadata["voice.previous.heard_confidence"],
+		"previous_response_interrupted", request.Metadata["voice.previous.response_interrupted"],
+		"previous_resume_anchor", request.Metadata["voice.previous.resume_anchor"],
+		"previous_missed_text", request.Metadata["voice.previous.missed_text"],
+	)
 }
 
 func responseDeltasForEmission(response voice.TurnResponse, allowTextFallback bool) []voice.ResponseDelta {
@@ -1139,7 +1235,9 @@ func (h *realtimeWSHandler) finalizeTurnResponse(ctx context.Context, runtime *c
 		},
 		BeforeSpeaking: func(trace turnTrace) error {
 			if runtime.voiceSession != nil {
-				runtime.voiceSession.StartPlayback(deliveredText, outputFrameInterval, plannedPlaybackDurationForResponse(response, outputFrameInterval))
+				runtime.voiceSession.StartPlaybackWithOptions(deliveredText, outputFrameInterval, plannedPlaybackDurationForResponse(response, outputFrameInterval), voice.PlaybackStartOptions{
+					PreferClientFacts: runtime.collaboration.PlaybackAckEnabled(),
+				})
 			}
 			speaking := runtime.session.Snapshot()
 			if err := runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(speaking, trace.TurnID, "")); err != nil {
@@ -1247,7 +1345,7 @@ func (h *realtimeWSHandler) startAudioStream(
 				return
 			}
 			markTurnFirstAudioChunk(runtime, h.logger, sessionID, len(chunk))
-			if runtime.voiceSession != nil {
+			if runtime.voiceSession != nil && !runtime.collaboration.PlaybackAckEnabled() {
 				runtime.voiceSession.ObservePlaybackChunk()
 			}
 			select {
@@ -1268,7 +1366,19 @@ func (h *realtimeWSHandler) startAudioStream(
 			return
 		}
 		if runtime.voiceSession != nil {
-			runtime.voiceSession.CompletePlayback()
+			if runtime.collaboration.PlaybackAckEnabled() {
+				terminal, clearedReason, ok := runtime.waitForPlaybackAckTerminal(streamCtx, playbackAckTerminalWaitTimeout(meta))
+				switch {
+				case ok && terminal == playbackAckTerminalCompleted:
+					runtime.voiceSession.CompletePlaybackWithSource(voice.HeardTextSourcePlaybackCompleted)
+				case ok && terminal == playbackAckTerminalCleared:
+					runtime.voiceSession.InterruptPlaybackWithPolicy(voice.InterruptionPolicyHardInterrupt, firstNonEmpty(strings.TrimSpace(clearedReason), "client_playback_cleared"))
+				default:
+					runtime.voiceSession.CompletePlaybackWithSource(voice.HeardTextSourceHeuristicBytes)
+				}
+			} else {
+				runtime.voiceSession.CompletePlayback()
+			}
 		}
 
 		outcome, err := stream.completion.Wait(streamCtx)

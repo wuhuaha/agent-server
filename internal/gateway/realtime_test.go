@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-server/internal/session"
 	"agent-server/internal/voice"
 
 	"github.com/gorilla/websocket"
@@ -221,6 +222,56 @@ func TestTurnTraceTracksFirstOutputMilestones(t *testing.T) {
 	}
 }
 
+func TestBuildTurnRequestCarriesPreviousPlaybackOutcomeMetadata(t *testing.T) {
+	orchestrator := voice.NewSessionOrchestrator(nil)
+	delivered := "好的，已经为你打开客厅灯，现在把亮度调到了最舒适的模式。"
+	orchestrator.PrepareTurn(voice.TurnRequest{
+		SessionID:  "sess-prev",
+		TurnID:     "turn-prev",
+		DeviceID:   "dev-prev",
+		ClientType: "rtos",
+	}, "打开客厅灯并调亮一点", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 2*time.Second, voice.PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackMarkFact(600 * time.Millisecond)
+	summary := orchestrator.InterruptPlaybackWithPolicy(voice.InterruptionPolicyHardInterrupt, "client_barge_in_after_mark")
+
+	request := buildTurnRequest(session.CommittedTurn{
+		Snapshot: session.Snapshot{
+			SessionID:       "sess-next",
+			DeviceID:        "dev-prev",
+			ClientType:      "rtos",
+			InputCodec:      "pcm16le",
+			InputSampleRate: 16000,
+			InputChannels:   1,
+			AudioBytes:      3200,
+			InputFrames:     5,
+		},
+		AudioPCM: []byte{1, 2, 3},
+	}, &connectionRuntime{voiceSession: orchestrator}, turnTrace{
+		TurnID:  "turn-next",
+		TraceID: "trace-next",
+	}, "继续", nil)
+
+	if got := request.Metadata["voice.previous.available"]; got != "true" {
+		t.Fatalf("expected previous playback context on request, got %+v", request.Metadata)
+	}
+	if got := request.Metadata["voice.previous.heard_text"]; got != summary.HeardText {
+		t.Fatalf("expected previous heard text %q, got %q", summary.HeardText, got)
+	}
+	if got := request.Metadata["voice.previous.resume_anchor"]; got != summary.HeardText {
+		t.Fatalf("expected previous resume anchor %q, got %q", summary.HeardText, got)
+	}
+	if got := request.Metadata["voice.previous.missed_text"]; got == "" {
+		t.Fatalf("expected previous missed text on request, got %+v", request.Metadata)
+	}
+	if got := request.Metadata["voice.previous.interruption_policy"]; got != string(voice.InterruptionPolicyHardInterrupt) {
+		t.Fatalf("expected previous interruption policy %q, got %q", voice.InterruptionPolicyHardInterrupt, got)
+	}
+}
+
 func TestAppendWebsocketErrorLogAttrsIncludesCloseMetadata(t *testing.T) {
 	attrs := appendWebsocketErrorLogAttrs(nil, &websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "bye"})
 	rendered := map[string]any{}
@@ -233,6 +284,18 @@ func TestAppendWebsocketErrorLogAttrsIncludesCloseMetadata(t *testing.T) {
 	}
 	if rendered["ws_close_text"] != "bye" {
 		t.Fatalf("expected ws_close_text bye, got %#v", rendered["ws_close_text"])
+	}
+}
+
+func TestValidatePlaybackAckIdentityRequiresActiveMeta(t *testing.T) {
+	if validatePlaybackAckIdentity(audioPlaybackMeta{}, "resp_1", "playback_1") {
+		t.Fatal("expected empty playback meta to reject ack identity")
+	}
+	if !validatePlaybackAckIdentity(audioPlaybackMeta{ResponseID: "resp_1", PlaybackID: "playback_1"}, "resp_1", "playback_1") {
+		t.Fatal("expected matching playback meta to accept ack identity")
+	}
+	if validatePlaybackAckIdentity(audioPlaybackMeta{ResponseID: "resp_1", PlaybackID: "playback_1"}, "resp_2", "playback_1") {
+		t.Fatal("expected mismatched response id to reject ack identity")
 	}
 }
 

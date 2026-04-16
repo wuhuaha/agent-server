@@ -9,13 +9,13 @@ import (
 )
 
 type inputPreviewObservation struct {
-	Preview                  voice.InputPreview
-	Active                   bool
-	PartialChanged           bool
-	SpeechStartedObserved    bool
+	Preview                   voice.InputPreview
+	Active                    bool
+	PartialChanged            bool
+	SpeechStartedObserved     bool
 	EndpointCandidateObserved bool
-	CommitSuggested          bool
-	Trace                    inputPreviewTrace
+	CommitSuggested           bool
+	Trace                     inputPreviewTrace
 }
 
 func (r *connectionRuntime) ensureInputPreview(ctx context.Context, responder voice.Responder, snapshot session.Snapshot, language string) error {
@@ -25,6 +25,7 @@ func (r *connectionRuntime) ensureInputPreview(ctx context.Context, responder vo
 	return r.voiceSession.EnsureInputPreview(ctx, responder, voice.InputPreviewRequest{
 		SessionID:    snapshot.SessionID,
 		DeviceID:     snapshot.DeviceID,
+		ClientType:   snapshot.ClientType,
 		Codec:        snapshot.InputCodec,
 		SampleRateHz: snapshot.InputSampleRate,
 		Channels:     snapshot.InputChannels,
@@ -80,6 +81,23 @@ func (r *connectionRuntime) pollInputPreview(now time.Time) inputPreviewObservat
 
 func (r *connectionRuntime) currentInputPreviewTrace() inputPreviewTrace {
 	return r.previewTrace.Current()
+}
+
+func (r *connectionRuntime) consumeInputPreview(ctx context.Context) (inputPreviewTrace, voice.TranscriptionResult, bool, error) {
+	trace := r.previewTrace.Clear()
+	var (
+		result voice.TranscriptionResult
+		ok     bool
+		err    error
+	)
+	if r.voiceSession != nil {
+		result, ok, err = r.voiceSession.FinalizeInputPreview(ctx)
+	}
+	snapshot := r.session.Snapshot()
+	if snapshot.SessionID != "" && snapshot.InputState == session.InputStatePreviewing {
+		_, _ = r.session.SetInputState(session.InputStateActive)
+	}
+	return trace, result, ok, err
 }
 
 func (r *connectionRuntime) clearInputPreview() inputPreviewTrace {

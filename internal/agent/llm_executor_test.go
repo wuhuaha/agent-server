@@ -99,6 +99,26 @@ func (p staticPromptSectionProvider) ListPromptSections(context.Context, PromptS
 	return append([]PromptSection(nil), p.sections...), nil
 }
 
+type countingPromptSectionProvider struct {
+	sections []PromptSection
+	calls    int
+}
+
+func (p *countingPromptSectionProvider) ListPromptSections(context.Context, PromptSectionRequest) ([]PromptSection, error) {
+	p.calls++
+	return append([]PromptSection(nil), p.sections...), nil
+}
+
+type countingToolRegistry struct {
+	tools []ToolDefinition
+	calls int
+}
+
+func (r *countingToolRegistry) ListTools(context.Context, ToolCatalogRequest) ([]ToolDefinition, error) {
+	r.calls++
+	return append([]ToolDefinition(nil), r.tools...), nil
+}
+
 func TestLLMTurnExecutorUsesModelAndMemoryContext(t *testing.T) {
 	memoryStore := &recordingMemoryStore{}
 	model := &recordingChatModel{
@@ -193,6 +213,217 @@ func TestLLMTurnExecutorInjectsRecentMessagesBeforeCurrentUser(t *testing.T) {
 	}
 	if got := memoryStore.loadQueries[0].UserID; got != "alice" {
 		t.Fatalf("expected user-scoped memory query, got %q", got)
+	}
+}
+
+func TestLLMTurnExecutorInjectsPreviousPlaybackContextIntoSystemPrompt(t *testing.T) {
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "继续说明。"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(&recordingMemoryStore{})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-prev-playback",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "继续",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+			"voice.previous.heard_confidence":     "medium",
+			"voice.previous.interruption_policy":  "hard_interrupt",
+			"voice.previous.interruption_reason":  "client_barge_in_after_mark",
+			"voice.previous.heard_precision_tier": "tier1_segment_mark",
+			"voice.previous.heard_boundary":       "prefix",
+			"voice.previous.heard_ratio_pct":      "46",
+			"voice.previous.playback_completed":   "false",
+		},
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if len(model.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(model.requests))
+	}
+	prompt := model.requests[0].SystemPrompt
+	for _, want := range []string{
+		"上一轮语音播报上下文：",
+		"上一轮回复没有被用户完整听到",
+		"用户实际已经听到的大致边界：好的，已经为你打开客厅灯，",
+		"用户大概率还没听到的剩余部分：现在把亮度调到了最舒适的模式。",
+		"若用户说“继续”“后面呢”“刚刚最后一句”",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected system prompt to contain %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestLLMTurnExecutorAddsPlaybackFollowUpRuntimeHintForContinue(t *testing.T) {
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "继续说明。"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(&recordingMemoryStore{})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-follow-up",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "继续",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+		},
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if len(model.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(model.requests))
+	}
+	messages := model.requests[0].Messages
+	if len(messages) < 4 {
+		t.Fatalf("expected system + memory + runtime hint + user messages, got %+v", messages)
+	}
+	found := false
+	for _, message := range messages {
+		if message.Role != "system" {
+			continue
+		}
+		if strings.Contains(message.Content, "Runtime voice follow-up hint:") &&
+			strings.Contains(message.Content, "Continue naturally from the unheard tail") &&
+			strings.Contains(message.Content, "Unheard tail: 现在把亮度调到了最舒适的模式。") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected runtime follow-up system hint, got %+v", messages)
+	}
+}
+
+func TestLLMTurnExecutorSkipsPlaybackFollowUpHintForUnrelatedQuestion(t *testing.T) {
+	model := &recordingChatModel{
+		response: ChatModelResponse{Text: "明天是星期五。"},
+	}
+	executor := NewLLMTurnExecutor(model).WithMemoryStore(&recordingMemoryStore{})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-unrelated",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "明天周几",
+		Metadata: map[string]string{
+			"voice.previous.available":            "true",
+			"voice.previous.heard_text":           "好的，已经为你打开客厅灯，",
+			"voice.previous.missed_text":          "现在把亮度调到了最舒适的模式。",
+			"voice.previous.resume_anchor":        "好的，已经为你打开客厅灯，",
+			"voice.previous.response_interrupted": "true",
+			"voice.previous.response_truncated":   "true",
+		},
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if len(model.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(model.requests))
+	}
+	for _, message := range model.requests[0].Messages {
+		if message.Role == "system" && strings.Contains(message.Content, "Runtime voice follow-up hint:") {
+			t.Fatalf("expected unrelated question to skip runtime follow-up hint, got %+v", model.requests[0].Messages)
+		}
+	}
+}
+
+func TestLLMTurnExecutorReusesExactPreviewPrewarm(t *testing.T) {
+	memoryStore := &recordingMemoryStore{}
+	promptProvider := &countingPromptSectionProvider{sections: []PromptSection{{Name: "persona", Content: "你是测试助手。"}}}
+	toolRegistry := &countingToolRegistry{tools: []ToolDefinition{{Name: "time.now"}}}
+	model := &recordingChatModel{response: ChatModelResponse{Text: "明天是星期五。"}}
+	executor := NewLLMTurnExecutor(model).
+		WithMemoryStore(memoryStore).
+		WithPromptSectionProvider(promptProvider).
+		WithToolRegistry(toolRegistry)
+
+	executor.PrewarmTurn(context.Background(), TurnInput{
+		SessionID:  "sess-prewarm",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "明天周几",
+		Metadata: map[string]string{
+			"voice.preview.prewarm":            "true",
+			"voice.preview.stable_prefix":      "明天周几",
+			"voice.preview.utterance_complete": "true",
+		},
+	})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-prewarm",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "明天周几",
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if got := len(memoryStore.loadQueries); got != 1 {
+		t.Fatalf("expected one memory load total with prewarm reuse, got %d", got)
+	}
+	if got := promptProvider.calls; got != 1 {
+		t.Fatalf("expected one prompt-section call total with prewarm reuse, got %d", got)
+	}
+	if got := toolRegistry.calls; got != 1 {
+		t.Fatalf("expected one tool-registry call total with prewarm reuse, got %d", got)
+	}
+}
+
+func TestLLMTurnExecutorSkipsPreviewPrewarmWhenFinalTextChanges(t *testing.T) {
+	memoryStore := &recordingMemoryStore{}
+	promptProvider := &countingPromptSectionProvider{sections: []PromptSection{{Name: "persona", Content: "你是测试助手。"}}}
+	toolRegistry := &countingToolRegistry{tools: []ToolDefinition{{Name: "time.now"}}}
+	model := &recordingChatModel{response: ChatModelResponse{Text: "明天是星期五。"}}
+	executor := NewLLMTurnExecutor(model).
+		WithMemoryStore(memoryStore).
+		WithPromptSectionProvider(promptProvider).
+		WithToolRegistry(toolRegistry)
+
+	executor.PrewarmTurn(context.Background(), TurnInput{
+		SessionID:  "sess-prewarm-miss",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "明天周",
+		Metadata: map[string]string{
+			"voice.preview.prewarm":            "true",
+			"voice.preview.stable_prefix":      "明天周",
+			"voice.preview.utterance_complete": "true",
+		},
+	})
+
+	if _, err := executor.ExecuteTurn(context.Background(), TurnInput{
+		SessionID:  "sess-prewarm-miss",
+		DeviceID:   "panel-1",
+		ClientType: "rtos",
+		UserText:   "明天周几",
+	}); err != nil {
+		t.Fatalf("ExecuteTurn failed: %v", err)
+	}
+
+	if got := len(memoryStore.loadQueries); got != 2 {
+		t.Fatalf("expected prewarm miss to load memory twice, got %d", got)
+	}
+	if got := promptProvider.calls; got != 2 {
+		t.Fatalf("expected prewarm miss to call prompt sections twice, got %d", got)
+	}
+	if got := toolRegistry.calls; got != 2 {
+		t.Fatalf("expected prewarm miss to call tool registry twice, got %d", got)
 	}
 }
 

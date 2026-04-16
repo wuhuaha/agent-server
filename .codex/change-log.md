@@ -2,6 +2,11 @@
 
 ## 2026-04-16
 
+- Deepened the native realtime `playback_ack` slice from a logging-only ingress into the shared playback-truth chain:
+  - `internal/voice.SessionOrchestrator` now distinguishes heuristic heard-text from client-fact-driven heard-text, persists source / confidence / precision-tier / resume-anchor-style metadata, and derives interruption writeback from negotiated playback facts when available
+  - native realtime now feeds `audio.out.started`, `audio.out.mark`, and `audio.out.completed` into that shared runtime instead of only writing gateway logs
+  - when `playback_ack` is negotiated, native realtime may now wait for `audio.out.completed` or `audio.out.cleared` before the final return-to-active transition, with a short fallback timeout to preserve compatibility
+  - added unit and integration coverage for client-fact-driven heard-text / resume metadata and the updated playback-ack completion flow
 - Continued the research-first voice-interaction analysis thread and added two durable architecture notes:
   - `docs/architecture/latency-budget-and-subjective-feel-zh-2026-04-16.md` records a milestone-based latency-budget view that maps preview, endpoint, first-audio, audible playout, and barge-in cutoff to user-perceived responsiveness instead of treating total response time as the only KPI.
   - `docs/architecture/playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md` records the playback-truth-chain model (`generated -> delivered -> played -> heard estimate`) and why interruption, resume, and memory need adapter-reported playout facts rather than full generated text.
@@ -853,3 +858,22 @@
   - validated with:
     - `go test ./internal/gateway ./internal/voice ./internal/session`
     - `go test -tags integration ./internal/gateway -run 'Backchannel|AdaptiveBargeIn|BargeInInterruptsSpeaking|StreamingResponder|StartsAudioBeforeFinalResponseSettles'`
+- Extended playback-truth from persistence into next-turn runtime behavior without widening the wire contract:
+  - `internal/voice.SessionOrchestrator` now keeps the latest finalized playback outcome as structured runtime state
+  - `buildTurnRequest(...)` now injects additive `voice.previous.*` metadata so the next shared turn can see the prior heard boundary, missed tail, resume anchor, and interruption facts
+  - native realtime and `xiaozhi` gateways now log when they carry previous playback context into a new turn request
+  - built-in LLM prompt sections now surface incomplete prior-playback context so follow-up turns can continue, recap, or switch topics more naturally
+  - documented the boundary in `docs/architecture/overview.md`, `docs/adr/0033-last-playback-outcome-enters-next-turn-runtime-context.md`, and `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+- Pushed the next service-side voice-optimization slice in two directions without widening the public protocol:
+  - added `internal/agent/playback_followup.go` so the shared agent runtime can directly recognize playback-aware follow-ups such as `继续`, `后面呢`, `你刚刚说到哪了`, and `没听清`
+  - bootstrap execution now has deterministic continue/recap fallback from `voice.previous.*`, while the LLM path also gets an explicit runtime follow-up hint message beyond the generic system prompt
+  - added `FinalizingInputPreviewSession` and wired commit-time preview finalization through `internal/voice.SessionOrchestrator` so accepted audio turns can reuse preview-stream final ASR instead of always replaying buffered PCM from scratch
+  - native realtime and `xiaozhi` gateways now consume preview finalization on both explicit commit and server-endpoint auto-commit paths, with fallback to the old path when preview finalization is unavailable
+  - documented the boundary in `docs/adr/0034-preview-finalization-feeds-turn-accept-fast-path.md`, `docs/architecture/overview.md`, and `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+- Added the next preview-driven latency slice without widening accepted-turn semantics:
+  - `internal/voice.SilenceTurnDetector` now derives `stable_prefix` and `utterance_complete` from preview deltas instead of treating partial text as one opaque string
+  - negotiated `input.preview` events now carry the real `stable_prefix` when available plus a derived `stability` hint for UI and debug
+  - `internal/voice.ASRResponder` may call a shared `TurnPrewarmer` when preview text is stable, complete, and long enough to justify bounded speculative work
+  - `internal/agent.LLMTurnExecutor` now caches prewarmed prompt or memory or tool preparation per session and reuses it only when the later accepted text matches exactly
+  - added coverage in `internal/agent/llm_executor_test.go`, `internal/voice/asr_responder_test.go`, and `internal/gateway/realtime_ws_test.go`
+  - validated with `go test ./internal/app ./internal/agent ./internal/control ./internal/gateway ./internal/session ./internal/voice` and `go test -tags integration ./internal/gateway`

@@ -34,6 +34,7 @@ type SilenceTurnDetector struct {
 	lastAudioAt        time.Time
 	speechStarted      bool
 	latestPartial      string
+	stablePrefix       string
 	latestEndpointHint string
 	commitSuggested    bool
 	commitReason       string
@@ -81,6 +82,7 @@ func (d *SilenceTurnDetector) ObserveTranscriptionDelta(_ time.Time, delta Trans
 		d.speechStarted = true
 	case TranscriptionDeltaKindPartial, TranscriptionDeltaKindFinal:
 		if text := delta.Text; text != "" {
+			d.stablePrefix = updateStablePrefix(d.latestPartial, d.stablePrefix, text, delta.Kind == TranscriptionDeltaKindFinal)
 			d.latestPartial = text
 		}
 		d.latestEndpointHint = strings.TrimSpace(delta.EndpointReason)
@@ -91,10 +93,12 @@ func (d *SilenceTurnDetector) ObserveTranscriptionDelta(_ time.Time, delta Trans
 
 func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 	preview := InputPreview{
-		PartialText:    d.latestPartial,
-		AudioBytes:     d.audioBytes,
-		SpeechStarted:  d.speechStarted,
-		EndpointReason: "",
+		PartialText:       d.latestPartial,
+		StablePrefix:      d.stablePrefix,
+		AudioBytes:        d.audioBytes,
+		SpeechStarted:     d.speechStarted,
+		EndpointReason:    "",
+		UtteranceComplete: looksLexicallyComplete(firstNonEmpty(strings.TrimSpace(d.stablePrefix), strings.TrimSpace(d.latestPartial))),
 	}
 	if d.commitSuggested {
 		preview.CommitSuggested = true
@@ -113,6 +117,49 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 	preview.CommitSuggested = true
 	preview.EndpointReason = endpointReason
 	return preview
+}
+
+func updateStablePrefix(previousPartial, previousStable, nextPartial string, final bool) string {
+	next := strings.TrimSpace(nextPartial)
+	if next == "" {
+		return strings.TrimSpace(previousStable)
+	}
+	if final {
+		return next
+	}
+	prev := strings.TrimSpace(previousPartial)
+	stable := strings.TrimSpace(previousStable)
+	if prev == "" {
+		return stable
+	}
+	if prev == next {
+		return next
+	}
+	common := strings.TrimSpace(longestCommonPrefix(prev, next))
+	if common == "" {
+		return stable
+	}
+	if stable == "" || strings.HasPrefix(common, stable) {
+		return common
+	}
+	return stable
+}
+
+func longestCommonPrefix(a, b string) string {
+	aRunes := []rune(a)
+	bRunes := []rune(b)
+	limit := len(aRunes)
+	if len(bRunes) < limit {
+		limit = len(bRunes)
+	}
+	idx := 0
+	for idx < limit && aRunes[idx] == bRunes[idx] {
+		idx++
+	}
+	if idx == 0 {
+		return ""
+	}
+	return string(aRunes[:idx])
 }
 
 func (d *SilenceTurnDetector) audioDurationMs() int {

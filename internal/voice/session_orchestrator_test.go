@@ -229,3 +229,149 @@ func TestSessionOrchestratorPersistsBackchannelPolicyWithoutInterrupt(t *testing
 		t.Fatalf("expected full heard boundary on completed playback, got %q", got)
 	}
 }
+
+func TestSessionOrchestratorUsesClientPlaybackFactsForResumeMetadata(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-5",
+		TurnID:     "turn-5",
+		DeviceID:   "dev-5",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，已经为你打开客厅灯，现在把亮度调到了最舒适的模式。"
+	orchestrator.PrepareTurn(request, "打开客厅灯并调亮一点", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 2*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackMarkFact(600 * time.Millisecond)
+
+	summary := orchestrator.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "client_barge_in_after_mark")
+	if summary.HeardText == "" || summary.HeardText == delivered {
+		t.Fatalf("expected prefix heard text from client playback mark, got %+v", summary)
+	}
+	if summary.HeardTextBoundary != HeardTextBoundaryPrefix {
+		t.Fatalf("expected prefix boundary, got %+v", summary)
+	}
+
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected prepare + interrupt saves, got %d", got)
+	}
+	record := store.saves[1]
+	if got := record.Metadata[heardSourceMetadataKey]; got != string(HeardTextSourceSegmentMark) {
+		t.Fatalf("expected segment_mark heard source, got %q", got)
+	}
+	if got := record.Metadata[heardConfidenceMetadataKey]; got != string(HeardTextConfidenceMedium) {
+		t.Fatalf("expected medium heard confidence, got %q", got)
+	}
+	if got := record.Metadata[heardPrecisionTierMetadataKey]; got != string(HeardTextPrecisionTierTier1) {
+		t.Fatalf("expected tier1 heard precision, got %q", got)
+	}
+	if got := record.Metadata[resumeAnchorMetadataKey]; got != summary.HeardText {
+		t.Fatalf("expected resume anchor %q, got %q", summary.HeardText, got)
+	}
+	if got := record.Metadata[missedTextMetadataKey]; got == "" {
+		t.Fatalf("expected missed text metadata, got %+v", record.Metadata)
+	}
+	if got := record.Metadata[heardRatioMetadataKey]; got == "" || got == "0" || got == "100" {
+		t.Fatalf("expected partial heard ratio metadata, got %q", got)
+	}
+}
+
+func TestSessionOrchestratorCompletesPlaybackFromClientFactWithHighConfidence(t *testing.T) {
+	store := &countingMemoryStore{}
+	orchestrator := NewSessionOrchestrator(store)
+	request := TurnRequest{
+		SessionID:  "sess-6",
+		TurnID:     "turn-6",
+		DeviceID:   "dev-6",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，已经为你打开客厅灯。"
+	orchestrator.PrepareTurn(request, "打开客厅灯", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 2*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackCompletedFact()
+	orchestrator.CompletePlaybackWithSource(HeardTextSourcePlaybackCompleted)
+
+	if got := len(store.saves); got != 2 {
+		t.Fatalf("expected prepare + complete saves, got %d", got)
+	}
+	record := store.saves[1]
+	if !record.PlaybackCompleted || record.HeardText != delivered {
+		t.Fatalf("expected full completed playback record, got %+v", record)
+	}
+	if got := record.Metadata[heardSourceMetadataKey]; got != string(HeardTextSourcePlaybackCompleted) {
+		t.Fatalf("expected playback_completed heard source, got %q", got)
+	}
+	if got := record.Metadata[heardConfidenceMetadataKey]; got != string(HeardTextConfidenceHigh) {
+		t.Fatalf("expected high heard confidence, got %q", got)
+	}
+	if got := record.Metadata[heardPrecisionTierMetadataKey]; got != string(HeardTextPrecisionTierTier1) {
+		t.Fatalf("expected tier1 heard precision, got %q", got)
+	}
+}
+
+func TestSessionOrchestratorExposesLastPlaybackOutcomeForNextTurnContext(t *testing.T) {
+	orchestrator := NewSessionOrchestrator(nil)
+	request := TurnRequest{
+		SessionID:  "sess-7",
+		TurnID:     "turn-7",
+		DeviceID:   "dev-7",
+		ClientType: "rtos",
+	}
+
+	delivered := "好的，已经为你打开客厅灯，现在把亮度调到了最舒适的模式。"
+	orchestrator.PrepareTurn(request, "打开客厅灯并调亮一点", delivered)
+	orchestrator.StartPlaybackWithOptions(delivered, 200*time.Millisecond, 2*time.Second, PlaybackStartOptions{
+		PreferClientFacts: true,
+	})
+	orchestrator.ObservePlaybackStartedFact()
+	orchestrator.ObservePlaybackMarkFact(600 * time.Millisecond)
+	summary := orchestrator.InterruptPlaybackWithPolicy(InterruptionPolicyHardInterrupt, "client_barge_in_after_mark")
+
+	outcome, ok := orchestrator.LastPlaybackOutcome()
+	if !ok {
+		t.Fatal("expected last playback outcome after interruption")
+	}
+	if outcome.TurnID != request.TurnID {
+		t.Fatalf("expected turn id %q, got %q", request.TurnID, outcome.TurnID)
+	}
+	if outcome.HeardText != summary.HeardText {
+		t.Fatalf("expected heard text %q, got %q", summary.HeardText, outcome.HeardText)
+	}
+	if outcome.ResumeAnchor != summary.HeardText {
+		t.Fatalf("expected resume anchor %q, got %q", summary.HeardText, outcome.ResumeAnchor)
+	}
+	if outcome.MissedText == "" {
+		t.Fatalf("expected missed text, got %+v", outcome)
+	}
+	if !outcome.ResponseInterrupted || !outcome.ResponseTruncated {
+		t.Fatalf("expected interrupted truncated outcome, got %+v", outcome)
+	}
+	if outcome.HeardSource != HeardTextSourceSegmentMark {
+		t.Fatalf("expected segment_mark source, got %+v", outcome)
+	}
+	if outcome.HeardConfidence != HeardTextConfidenceMedium {
+		t.Fatalf("expected medium confidence, got %+v", outcome)
+	}
+
+	metadata := orchestrator.LastPlaybackContextMetadata()
+	if got := metadata["voice.previous.available"]; got != "true" {
+		t.Fatalf("expected previous context marker, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.resume_anchor"]; got != summary.HeardText {
+		t.Fatalf("expected previous resume anchor %q, got %q", summary.HeardText, got)
+	}
+	if got := metadata["voice.previous.missed_text"]; got == "" {
+		t.Fatalf("expected previous missed text metadata, got %+v", metadata)
+	}
+	if got := metadata["voice.previous.interruption_policy"]; got != string(InterruptionPolicyHardInterrupt) {
+		t.Fatalf("expected previous interruption policy %q, got %q", InterruptionPolicyHardInterrupt, got)
+	}
+}
