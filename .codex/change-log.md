@@ -1115,3 +1115,15 @@
   - 同步新增 ADR `0049` 与实现说明 `docs/architecture/task-family-aware-early-processing-gate-zh-2026-04-17.md`，并补充 `docs/architecture/overview.md`
   - validated with:
     - `go test ./internal/voice ./internal/app ./internal/gateway`
+
+- 继续把语音早处理门槛从 lexical floor 推进到更语义化的小模型裁判，同时把 slot parser prompt 从 raw-domain 默认偏置收敛为 generic/profile-aware：
+  - `SemanticTurnJudge` 现在可显式输出 `task_family` 与 `slot_readiness_hint`，shared runtime 可据此纠正 lexical floor，并区分 `wait_slot / clarify / ready / not_applicable`
+  - `shouldJudgeSemantic(...)` 现在会在 `candidate_ready` 且 `task_family` 已有足够线索时更早启动，减少查询类 preview 被错误拖慢的概率
+  - `TurnArbitration` / preview trace / prewarm metadata 现已新增 `semantic_slot_readiness` 观测字段，便于后续 replay 与门槛调优
+  - `semantic_slot_parser` shared prompt 现在明确以 `task_family` 为默认政策中心，`smart_home / desktop_assistant` 垂直提示只通过显式 profile / prompt hints 注入
+  - 新增 `internal/voice/semantic_slot_profiles.go`，并把 `voice.entity_catalog_profile` 显式接到 `NewProfileAwareSemanticSlotParser(...)`，保持 shared default generic、demo/profile opt-in
+  - 新增 ADR `0050`，并补充：
+    - `docs/architecture/semantic-judge-early-gate-hints-zh-2026-04-17.md`
+    - `docs/architecture/semantic-slot-parser-profile-aware-prompt-zh-2026-04-17.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/gateway ./internal/app`

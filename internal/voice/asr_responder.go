@@ -604,6 +604,7 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 			"voice.preview.semantic_ready":             strconv.FormatBool(snapshot.Arbitration.SemanticReady),
 			"voice.preview.semantic_complete":          strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
 			"voice.preview.semantic_intent":            strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
+			"voice.preview.semantic_slot_readiness":    strings.TrimSpace(snapshot.Arbitration.SemanticSlotReadiness),
 			"voice.preview.task_family":                strings.TrimSpace(snapshot.Arbitration.TaskFamily),
 			"voice.preview.slot_constraint_required":   strconv.FormatBool(snapshot.Arbitration.SlotConstraintRequired),
 			"voice.preview.semantic_confidence":        strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
@@ -676,16 +677,18 @@ func (s *asrInputPreviewSession) semanticTurnRequest(snapshot InputPreview) *Sem
 		return nil
 	}
 	return &SemanticTurnRequest{
-		SessionID:      s.previewRequest.SessionID,
-		DeviceID:       s.previewRequest.DeviceID,
-		ClientType:     s.previewRequest.ClientType,
-		PartialText:    partialText,
-		StablePrefix:   stablePrefix,
-		AudioMs:        snapshot.Arbitration.AudioMs,
-		Stability:      snapshot.Arbitration.Stability,
-		StableForMs:    snapshot.Arbitration.StableForMs,
-		TurnStage:      snapshot.Arbitration.Stage,
-		EndpointHinted: snapshot.Arbitration.EndpointHinted,
+		SessionID:              s.previewRequest.SessionID,
+		DeviceID:               s.previewRequest.DeviceID,
+		ClientType:             s.previewRequest.ClientType,
+		PartialText:            partialText,
+		StablePrefix:           stablePrefix,
+		AudioMs:                snapshot.Arbitration.AudioMs,
+		Stability:              snapshot.Arbitration.Stability,
+		StableForMs:            snapshot.Arbitration.StableForMs,
+		TurnStage:              snapshot.Arbitration.Stage,
+		EndpointHinted:         snapshot.Arbitration.EndpointHinted,
+		TaskFamilyHint:         snapshot.Arbitration.TaskFamily,
+		SlotConstraintRequired: snapshot.Arbitration.SlotConstraintRequired,
 	}
 }
 

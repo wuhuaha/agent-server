@@ -210,6 +210,14 @@ Current planning note:
 - the current unified early-processing gate has now landed its first task-aware runtime form:
   - `internal/voice` uses `task_family` as the generic early-gate abstraction instead of raw slot-parser domains
   - only `structured_command` currently implies `slot_constraint_required`, so command turns may prewarm early while still waiting on slot readiness before `draft_allowed`
+- the next semantic-depth refinement on that same path is now also landed:
+  - `SemanticTurnJudge` may now emit `task_family` plus `slot_readiness_hint`, so early gate policy is no longer limited to lexical floor plus slot-parser afterthought
+  - `slot_readiness_hint` currently distinguishes `wait_slot`, `clarify`, `ready`, and `not_applicable`
+  - candidate-ready query/command previews may now launch semantic judging earlier, while preview traces and prewarm metadata expose the resulting `semantic_slot_readiness`
+- the slot-parser prompt path now also follows the same generic-boundary rule:
+  - shared default prompt is generic and task-family-centered
+  - `smart_home / desktop_assistant` prompt hints are injected only through explicit profile/hint overlays
+  - `voice.entity_catalog_profile=seed_companion` now doubles as explicit slot-parser prompt-profile input rather than a hidden shared default bias
 - for this host's unprivileged deployment loop, `scripts/run-agentd-local.sh` now supports a repo-local override binary at `.runtime/bin/agentd`, which lets `systemd` restart onto a new user-built binary even when `/etc/agent-server/agentd.env` still points at the root-owned default path
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context

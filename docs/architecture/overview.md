@@ -106,6 +106,10 @@ The current endpoint-fusion direction is now also explicit at the control-flow l
 
 The latest early-gate refinement adds one more generic layer to that same runtime-owned path: `task_family`. Raw slot-parser domains such as `smart_home`, `desktop_assistant`, and `general_chat` are still preserved, but early-processing policy now prefers a more generic interaction-mode abstraction such as `structured_command`, `structured_query`, `knowledge_query`, or `dialogue`. In practice this means `structured_command` previews may stay at `prewarm_allowed` until slot readiness arrives, while `knowledge_query` and dialogue-style turns can still draft earlier without letting slot completeness become a universal hard gate.
 
+The next refinement keeps that same path runtime-owned while making it less lexical-only. The semantic judge may now emit both `task_family` and a lightweight `slot_readiness_hint` such as `not_applicable`, `wait_slot`, `clarify`, or `ready`. That lets `internal/voice` correct imperative-looking but actually query-style previews, and lets command-like previews distinguish “keep waiting”, “clarify now”, and “ready to start reversible draft” before the heavier slot parser has finished.
+
+The slot-parser side of that same convergence now also stays generic-by-default. Its shared prompt no longer treats `smart_home` or `desktop_assistant` as the runtime's default policy center; `task_family` remains the default early-gate abstraction, while vertical prompt hints now enter only through explicit profile/hint injection such as the opt-in `seed_companion` path. This keeps research/demo bias available without turning shared runtime defaults back into a vertical demo posture.
+
 The current observability baseline on that same path is also one step deeper: gateway preview traces now record not only first partial and endpoint-candidate timing, but also the first time a preview becomes `candidate_ready`, `draft_ready`, or `accept_ready`, together with fused wait-budget fields such as `base_wait_ms`, `semantic_wait_delta_ms`, `slot_guard_adjust_ms`, `effective_wait_ms`, plus hold/accept reasons. That keeps quality tuning and rollout comparison grounded in runtime evidence rather than only in final accept labels.
 
 The latest open-source endpointing review reinforces that same ownership model. Integrated `streaming ASR + EOU` checkpoints are starting to appear, but the current Chinese/local mainline still fits a runtime-owned layered fusion path better than a single endpointer dependency. Future integrated `ASR + EOU` models should therefore enter this repository only as normalized provider hints behind `StreamingTranscriber`, while final `turn accept`, `slot completeness`, and speaking-time orchestration remain owned by `internal/voice`.
@@ -206,6 +210,8 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [LLM 辅助语义完整性判断与 dynamic VAD 融合研究（2026-04-17）](llm-assisted-semantic-completeness-and-dynamic-vad-zh-2026-04-17.md)
 - [Household Demo 显式 Profile 入口（2026-04-17）](household-demo-profile-zh-2026-04-17.md)
 - [task-family aware 的早处理门槛实现说明（2026-04-17）](task-family-aware-early-processing-gate-zh-2026-04-17.md)
+- [semantic judge 的 task-family / slot-readiness hint 早处理增强说明（2026-04-17）](semantic-judge-early-gate-hints-zh-2026-04-17.md)
+- [semantic_slot_parser 的 generic/profile-aware prompt 收敛说明（2026-04-17）](semantic-slot-parser-profile-aware-prompt-zh-2026-04-17.md)
 - [端到端时延预算与主观体感映射（2026-04-16）](latency-budget-and-subjective-feel-zh-2026-04-16.md)
 - [播放事实回传与 heard-text 真相链（2026-04-16）](playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md)
 - [分层 LLM + FunASR 增强策略研究（2026-04-17）](voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md)

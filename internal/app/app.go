@@ -383,7 +383,10 @@ func buildVoiceSemanticSlotParser(cfg Config, logger *slog.Logger) (voice.Semant
 		"min_runes", cfg.Voice.LLMSlotParserMinRunes,
 		"min_stable_for_ms", cfg.Voice.LLMSlotParserMinStableForMs,
 	)
-	parser := voice.NewLLMSemanticSlotParser(model)
+	parser := voice.NewProfileAwareSemanticSlotParser(
+		voice.NewLLMSemanticSlotParser(model),
+		cfg.Voice.EntityCatalogProfile,
+	)
 	grounder, ok := voice.NewBuiltInEntityCatalogGrounder(cfg.Voice.EntityCatalogProfile)
 	if !ok {
 		logger.Info(

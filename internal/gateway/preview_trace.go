@@ -31,6 +31,7 @@ type inputPreviewTrace struct {
 	SemanticReady          bool
 	SemanticComplete       bool
 	SemanticIntent         string
+	SemanticSlotReadiness  string
 	TaskFamily             string
 	SlotConstraintRequired bool
 	SlotReady              bool
@@ -123,6 +124,7 @@ func (s *inputPreviewTraceState) ObservePreview(sessionID string, preview voice.
 	s.current.SemanticReady = preview.Arbitration.SemanticReady
 	s.current.SemanticComplete = preview.Arbitration.SemanticComplete
 	s.current.SemanticIntent = strings.TrimSpace(preview.Arbitration.SemanticIntent)
+	s.current.SemanticSlotReadiness = strings.TrimSpace(preview.Arbitration.SemanticSlotReadiness)
 	s.current.TaskFamily = strings.TrimSpace(preview.Arbitration.TaskFamily)
 	s.current.SlotConstraintRequired = preview.Arbitration.SlotConstraintRequired
 	s.current.SlotReady = preview.Arbitration.SlotReady
@@ -293,6 +295,9 @@ func appendInputPreviewTraceLogAttrs(attrs []any, trace inputPreviewTrace, now t
 	)
 	if intent := strings.TrimSpace(trace.SemanticIntent); intent != "" {
 		attrs = append(attrs, "preview_semantic_intent", intent)
+	}
+	if slotReadiness := strings.TrimSpace(trace.SemanticSlotReadiness); slotReadiness != "" {
+		attrs = append(attrs, "preview_semantic_slot_readiness", slotReadiness)
 	}
 	if taskFamily := strings.TrimSpace(trace.TaskFamily); taskFamily != "" {
 		attrs = append(attrs, "preview_task_family", taskFamily)

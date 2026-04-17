@@ -43,21 +43,31 @@ const (
 	SemanticUtteranceCorrection = "correction"
 )
 
+const (
+	SemanticSlotReadinessUnknown       = "unknown"
+	SemanticSlotReadinessNotApplicable = "not_applicable"
+	SemanticSlotReadinessWaitSlot      = "wait_slot"
+	SemanticSlotReadinessClarify       = "clarify"
+	SemanticSlotReadinessReady         = "ready"
+)
+
 type SemanticTurnJudge interface {
 	JudgePreview(context.Context, SemanticTurnRequest) (SemanticTurnJudgement, error)
 }
 
 type SemanticTurnRequest struct {
-	SessionID      string
-	DeviceID       string
-	ClientType     string
-	PartialText    string
-	StablePrefix   string
-	AudioMs        int
-	Stability      float64
-	StableForMs    int
-	TurnStage      TurnArbitrationStage
-	EndpointHinted bool
+	SessionID              string
+	DeviceID               string
+	ClientType             string
+	PartialText            string
+	StablePrefix           string
+	AudioMs                int
+	Stability              float64
+	StableForMs            int
+	TurnStage              TurnArbitrationStage
+	EndpointHinted         bool
+	TaskFamilyHint         string
+	SlotConstraintRequired bool
 }
 
 type SemanticTurnJudgement struct {
@@ -66,6 +76,8 @@ type SemanticTurnJudgement struct {
 	StablePrefix       string
 	UtteranceStatus    string
 	InterruptionIntent string
+	TaskFamily         string
+	SlotReadinessHint  string
 	DynamicWaitPolicy  string
 	WaitDeltaMs        int
 	Confidence         float64
@@ -122,6 +134,8 @@ func semanticJudgePrompt() string {
 请只输出一段 JSON，对象字段必须只有：
 - utterance_status: "incomplete" | "complete" | "correction"
 - interruption_intent: "unknown" | "backchannel" | "takeover" | "correction" | "request" | "question" | "continue" | "other"
+- task_family: "unknown" | "dialogue" | "knowledge_query" | "structured_command" | "structured_query" | "correction" | "backchannel"
+- slot_readiness_hint: "unknown" | "not_applicable" | "wait_slot" | "clarify" | "ready"
 - dynamic_wait_policy: "shorten" | "keep" | "extend"
 - wait_delta_ms: 一个整数，单位毫秒；shorten 为负数，extend 为正数，不确定时输出 0
 - confidence: 0 到 1 之间的小数
@@ -132,8 +146,19 @@ func semanticJudgePrompt() string {
 2. correction 表示用户明显在改口、修正、补充、重说，或前半句尚未真正收束。
 3. backchannel 只用于很短的附和、应答、确认，不应默认视为接管会话。
 4. takeover 用于明显要打断、纠正、否定上一轮、切换请求、要求停止或重新开始。
-5. 不确定时，优先输出 utterance_status="incomplete" 且 interruption_intent="unknown"。
-6. 不要输出解释文本，不要使用 markdown 代码块。`)
+5. task_family 是比 interruption_intent 更偏“交互模式”的抽象：
+   - 开放问答 / 闲聊 -> "dialogue" 或 "knowledge_query"
+   - 对设备、应用、结构化对象的操作 -> "structured_command"
+   - 对结构化对象的状态/信息查询 -> "structured_query"
+6. slot_readiness_hint 用于辅助早处理门槛：
+   - "not_applicable": 当前不是槽位驱动型请求，不应被 slot gate 拖慢
+   - "wait_slot": 这句话像结构化命令，但主要对象/参数仍未说全
+   - "clarify": 这句话大致说完了，但现在更适合立刻澄清，而不是继续空等
+   - "ready": 这句话已足够具体，可启动可撤销的 draft / planning
+7. 如果 task_family="structured_command" 且用户还没把关键对象/参数说完整，优先 slot_readiness_hint="wait_slot"。
+8. 如果 task_family 不是 structured_command，通常优先 slot_readiness_hint="not_applicable"。
+9. 不确定时，优先输出 utterance_status="incomplete"、interruption_intent="unknown"、task_family="unknown"、slot_readiness_hint="unknown"。
+10. 不要输出解释文本，不要使用 markdown 代码块。`)
 }
 
 func semanticJudgeUserMessage(req SemanticTurnRequest) string {
@@ -146,13 +171,17 @@ func semanticJudgeUserMessage(req SemanticTurnRequest) string {
   "stability": %.3f,
   "stable_for_ms": %d,
   "turn_stage": %q,
-  "endpoint_hinted": %t
-}`, strings.TrimSpace(req.PartialText), strings.TrimSpace(req.StablePrefix), req.AudioMs, clampUnit(req.Stability), req.StableForMs, req.TurnStage, req.EndpointHinted))
+  "endpoint_hinted": %t,
+  "task_family_hint": %q,
+  "slot_constraint_required": %t
+}`, strings.TrimSpace(req.PartialText), strings.TrimSpace(req.StablePrefix), req.AudioMs, clampUnit(req.Stability), req.StableForMs, req.TurnStage, req.EndpointHinted, normalizeSemanticTaskFamily(req.TaskFamilyHint), req.SlotConstraintRequired))
 }
 
 type semanticJudgeJSON struct {
 	UtteranceStatus    string  `json:"utterance_status"`
 	InterruptionIntent string  `json:"interruption_intent"`
+	TaskFamily         string  `json:"task_family"`
+	SlotReadinessHint  string  `json:"slot_readiness_hint"`
 	DynamicWaitPolicy  string  `json:"dynamic_wait_policy"`
 	WaitDeltaMs        int     `json:"wait_delta_ms"`
 	Confidence         float64 `json:"confidence"`
@@ -176,11 +205,28 @@ func decodeSemanticTurnJudgement(raw string) (SemanticTurnJudgement, error) {
 	return SemanticTurnJudgement{
 		UtteranceStatus:    normalizeSemanticUtteranceStatus(decoded.UtteranceStatus),
 		InterruptionIntent: normalizeSemanticIntent(decoded.InterruptionIntent),
+		TaskFamily:         normalizeSemanticTaskFamily(decoded.TaskFamily),
+		SlotReadinessHint:  normalizeSemanticSlotReadinessHint(decoded.SlotReadinessHint),
 		DynamicWaitPolicy:  normalizeSemanticWaitPolicy(decoded.DynamicWaitPolicy),
 		WaitDeltaMs:        clampSemanticWaitDeltaMs(decoded.WaitDeltaMs),
 		Confidence:         clampUnit(decoded.Confidence),
 		Reason:             normalizeSemanticReason(decoded.Reason),
 	}, nil
+}
+
+func normalizeSemanticSlotReadinessHint(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SemanticSlotReadinessNotApplicable:
+		return SemanticSlotReadinessNotApplicable
+	case SemanticSlotReadinessWaitSlot:
+		return SemanticSlotReadinessWaitSlot
+	case SemanticSlotReadinessClarify:
+		return SemanticSlotReadinessClarify
+	case SemanticSlotReadinessReady:
+		return SemanticSlotReadinessReady
+	default:
+		return SemanticSlotReadinessUnknown
+	}
 }
 
 func normalizeSemanticUtteranceStatus(value string) string {
@@ -349,6 +395,19 @@ func shouldJudgeSemantic(snapshot InputPreview, minRunes int, minStableFor time.
 	if stableFor >= minStableFor {
 		return true
 	}
+	taskFamily := normalizeSemanticTaskFamily(snapshot.Arbitration.TaskFamily)
+	if taskFamily == SemanticTaskFamilyUnknown {
+		taskFamily = inferLexicalTaskFamily(bestText)
+	}
+	if snapshot.Arbitration.CandidateReady {
+		switch taskFamily {
+		case SemanticTaskFamilyKnowledgeQuery,
+			SemanticTaskFamilyStructuredCommand,
+			SemanticTaskFamilyStructuredQuery,
+			SemanticTaskFamilyCorrection:
+			return true
+		}
+	}
 	if snapshot.Arbitration.AcceptCandidate || snapshot.Arbitration.AcceptNow || snapshot.Arbitration.DraftAllowed {
 		return true
 	}
@@ -365,16 +424,23 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 		return snapshot
 	}
 	arbitration := snapshot.Arbitration
+	semanticConfidence := clampUnit(judgement.Confidence)
 	arbitration.SemanticReady = true
 	arbitration.SemanticComplete = judgement.UtteranceStatus == SemanticUtteranceComplete
 	arbitration.SemanticIntent = normalizeSemanticIntent(judgement.InterruptionIntent)
-	if arbitration.TaskFamily == "" || arbitration.TaskFamily == SemanticTaskFamilyUnknown {
+	arbitration.SemanticSlotReadiness = normalizeSemanticSlotReadinessHint(judgement.SlotReadinessHint)
+	if semanticFamily := normalizeSemanticTaskFamily(judgement.TaskFamily); semanticFamily != SemanticTaskFamilyUnknown &&
+		(semanticConfidence >= semanticJudgeMediumConfidence ||
+			arbitration.TaskFamily == "" ||
+			arbitration.TaskFamily == SemanticTaskFamilyUnknown) {
+		arbitration.TaskFamily = semanticFamily
+	} else if arbitration.TaskFamily == "" || arbitration.TaskFamily == SemanticTaskFamilyUnknown {
 		arbitration.TaskFamily = inferSemanticTaskFamily(snapshot, judgement)
 	}
 	arbitration.SlotConstraintRequired = taskFamilyRequiresSlotReadiness(arbitration.TaskFamily)
 	arbitration.SemanticReason = normalizeSemanticReason(judgement.Reason)
 	arbitration.SemanticSource = strings.TrimSpace(judgement.Source)
-	arbitration.SemanticConfidence = clampUnit(judgement.Confidence)
+	arbitration.SemanticConfidence = semanticConfidence
 	arbitration.SemanticWaitPolicy = normalizeSemanticWaitPolicy(judgement.DynamicWaitPolicy)
 	arbitration.SemanticWaitDeltaMs = clampSemanticWaitDeltaMs(judgement.WaitDeltaMs)
 	if arbitration.SemanticWaitDeltaMs == 0 {
@@ -393,19 +459,43 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 			if arbitration.SemanticIntent != SemanticIntentBackchannel {
 				snapshot.UtteranceComplete = true
 				arbitration.PrewarmAllowed = true
-				if arbitration.SlotConstraintRequired && !arbitration.SlotReady {
-					if strings.TrimSpace(arbitration.Reason) == "" {
-						arbitration.Reason = "semantic_complete_wait_slot_guard"
-					}
-				} else {
+				switch arbitration.SemanticSlotReadiness {
+				case SemanticSlotReadinessClarify, SemanticSlotReadinessReady:
 					arbitration.DraftAllowed = true
+				case SemanticSlotReadinessWaitSlot:
+					arbitration.DraftAllowed = false
+				case SemanticSlotReadinessNotApplicable:
+					arbitration.DraftAllowed = true
+				default:
+					arbitration.DraftAllowed = !arbitration.SlotConstraintRequired || arbitration.SlotReady
+				}
+				if arbitration.DraftAllowed {
 					if arbitration.Stage == TurnArbitrationStagePreviewOnly ||
 						arbitration.Stage == TurnArbitrationStageWaitForMore ||
 						arbitration.Stage == TurnArbitrationStagePrewarmAllowed {
 						arbitration.Stage = TurnArbitrationStageDraftAllowed
 					}
 					if strings.TrimSpace(arbitration.Reason) == "" {
-						arbitration.Reason = "semantic_complete"
+						switch arbitration.SemanticSlotReadiness {
+						case SemanticSlotReadinessClarify:
+							arbitration.Reason = "semantic_complete_clarify_ready"
+						case SemanticSlotReadinessReady:
+							arbitration.Reason = "semantic_complete_slot_ready"
+						default:
+							arbitration.Reason = "semantic_complete"
+						}
+					}
+				} else if arbitration.SlotConstraintRequired && !arbitration.SlotReady {
+					if strings.TrimSpace(arbitration.Reason) == "" {
+						arbitration.Reason = "semantic_complete_wait_slot_guard"
+					}
+				} else if strings.TrimSpace(arbitration.Reason) == "" {
+					arbitration.Reason = "semantic_complete_hold"
+				}
+				if arbitration.SemanticSlotReadiness == SemanticSlotReadinessClarify {
+					arbitration.SlotClarifyNeeded = true
+					if arbitration.SlotActionability == "" || arbitration.SlotActionability == SemanticSlotActionabilityObserveOnly {
+						arbitration.SlotActionability = SemanticSlotActionabilityClarifyNeeded
 					}
 				}
 			}

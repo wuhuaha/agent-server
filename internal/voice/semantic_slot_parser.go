@@ -57,6 +57,8 @@ type SemanticSlotParseRequest struct {
 	TurnStage      TurnArbitrationStage
 	EndpointHinted bool
 	SemanticIntent string
+	PromptProfile  string
+	PromptHints    []string
 }
 
 type SemanticSlotParseResult struct {
@@ -96,7 +98,7 @@ func (p LLMSemanticSlotParser) ParsePreview(ctx context.Context, req SemanticSlo
 	if p.Model == nil {
 		return SemanticSlotParseResult{}, fmt.Errorf("semantic slot parser model is not configured")
 	}
-	prompt := semanticSlotParserPrompt()
+	prompt := semanticSlotParserPrompt(req)
 	user := semanticSlotParserUserMessage(req)
 	response, err := p.Model.Complete(ctx, agent.ChatModelRequest{
 		SessionID:    req.SessionID,
@@ -124,14 +126,14 @@ func (p LLMSemanticSlotParser) ParsePreview(ctx context.Context, req SemanticSlo
 	return result, nil
 }
 
-func semanticSlotParserPrompt() string {
-	return strings.TrimSpace(`
+func semanticSlotParserPrompt(req SemanticSlotParseRequest) string {
+	base := strings.TrimSpace(`
 你是一个实时语音系统里的结构化语义解析器，不是对话助手。
 
-你的任务不是回复用户，而是对当前预览文本做保守的 domain / intent / slot completeness 判断。
+你的任务不是回复用户，而是对当前预览文本做保守的 task_family / intent / slot completeness 判断。
 
 请只输出一段 JSON，对象字段必须只有：
-- domain: "unknown" | "smart_home" | "desktop_assistant" | "general_chat"
+- domain: 兼容性的 coarse scope 标签；仅在证据明确时输出 "smart_home" | "desktop_assistant" | "general_chat"，否则输出 "unknown"
 - task_family: "unknown" | "dialogue" | "knowledge_query" | "structured_command" | "structured_query" | "correction" | "backchannel"
 - intent: 一个简短 snake_case 标签；不确定时输出 "unknown"
 - slot_status: "unknown" | "partial" | "complete" | "ambiguous" | "not_applicable"
@@ -143,20 +145,26 @@ func semanticSlotParserPrompt() string {
 - reason: 一个简短 snake_case 标签
 
 保守规则：
-1. smart_home 关注 action / target / location / attribute / value / mode / duration 这类槽位。
-2. desktop_assistant 关注 action / target_app / query / window_name / system_setting / value 这类槽位。
-3. 如果用户像是在闲聊、开放问答、情感表达，而不是要执行命令，优先输出 domain="general_chat" 且 slot_status="not_applicable"。
-4. task_family 是比 domain 更通用的早处理抽象：
+1. shared runtime 的默认政策中心是 task_family，不是 raw domain。
+2. 默认只使用通用槽位概念做判断，例如 action / target / location / attribute / value / mode / duration / query / window_name / system_setting。
+3. 如果当前请求没有显式附带 profile / hint，不要因为零散设备词、应用词或生活场景词就强行套进某个垂直 domain；domain 证据不足时优先输出 "unknown"。
+4. 如果用户像是在闲聊、开放问答、情感表达，而不是要执行命令，优先输出 domain="general_chat" 且 slot_status="not_applicable"。
+5. task_family 是比 domain 更通用的早处理抽象：
    - 开放问答/闲聊 -> "dialogue" 或 "knowledge_query"
    - 对设备/应用/结构化对象的操作 -> "structured_command"
    - 对设备/应用/结构化对象的状态查询 -> "structured_query"
    - 附和/短确认 -> "backchannel"
    - 改口/纠正/重说 -> "correction"
-5. clarify_needed 表示“这句话本身大致说完了，但如果现在接收这一轮，更合理的是马上澄清，而不是继续傻等更多语音”。
-6. wait_more 表示尾部槽位仍明显没说完，或补充仍在进行中，不应过早提升。
-7. act_candidate 表示主要必填槽位已经足够完整，可作为后续执行或工具规划候选，但这仍不是最终 accept。
-8. 不确定时，优先 domain="unknown"、task_family="unknown"、slot_status="unknown"、actionability="observe_only"。
-9. 不要输出解释文本，不要使用 markdown 代码块。`)
+6. clarify_needed 表示“这句话本身大致说完了，但如果现在接收这一轮，更合理的是马上澄清，而不是继续傻等更多语音”。
+7. wait_more 表示尾部槽位仍明显没说完，或补充仍在进行中，不应过早提升。
+8. act_candidate 表示主要必填槽位已经足够完整，可作为后续执行或工具规划候选，但这仍不是最终 accept。
+9. 如果当前请求显式附带了 profile / hint，它们只作为补充证据，不能覆盖 task_family 的判断，也不能把垂直场景变成 shared default。
+10. 不确定时，优先 domain="unknown"、task_family="unknown"、slot_status="unknown"、actionability="observe_only"。
+11. 不要输出解释文本，不要使用 markdown 代码块。`)
+	if hints := semanticSlotPromptHintsBlock(req); hints != "" {
+		return strings.TrimSpace(base + "\n\n" + hints)
+	}
+	return base
 }
 
 func semanticSlotParserUserMessage(req SemanticSlotParseRequest) string {

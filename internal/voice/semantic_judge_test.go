@@ -18,7 +18,7 @@ func (m staticSemanticChatModel) Complete(context.Context, agent.ChatModelReques
 
 func TestLLMSemanticTurnJudgeDecodesJSONResponse(t *testing.T) {
 	judge := NewLLMSemanticTurnJudge(staticSemanticChatModel{
-		text: "```json\n{\"utterance_status\":\"complete\",\"interruption_intent\":\"takeover\",\"confidence\":0.91,\"reason\":\"new_request_takeover\"}\n```",
+		text: "```json\n{\"utterance_status\":\"complete\",\"interruption_intent\":\"takeover\",\"task_family\":\"structured_command\",\"slot_readiness_hint\":\"ready\",\"confidence\":0.91,\"reason\":\"new_request_takeover\"}\n```",
 	})
 	result, err := judge.JudgePreview(context.Background(), SemanticTurnRequest{
 		SessionID:   "sess_semantic",
@@ -32,6 +32,12 @@ func TestLLMSemanticTurnJudgeDecodesJSONResponse(t *testing.T) {
 	}
 	if result.InterruptionIntent != SemanticIntentTakeover {
 		t.Fatalf("expected takeover intent, got %+v", result)
+	}
+	if result.TaskFamily != SemanticTaskFamilyStructuredCommand {
+		t.Fatalf("expected structured command task family, got %+v", result)
+	}
+	if result.SlotReadinessHint != SemanticSlotReadinessReady {
+		t.Fatalf("expected slot readiness hint ready, got %+v", result)
 	}
 	if result.Confidence < 0.9 {
 		t.Fatalf("expected high confidence, got %+v", result)
@@ -53,6 +59,8 @@ func TestMergeSemanticJudgementPromotesDraftAllowed(t *testing.T) {
 		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
 		UtteranceStatus:    SemanticUtteranceComplete,
 		InterruptionIntent: SemanticIntentQuestion,
+		TaskFamily:         SemanticTaskFamilyKnowledgeQuery,
+		SlotReadinessHint:  SemanticSlotReadinessNotApplicable,
 		Confidence:         0.86,
 		Reason:             "standalone_question",
 		Source:             "test",
@@ -68,6 +76,9 @@ func TestMergeSemanticJudgementPromotesDraftAllowed(t *testing.T) {
 	}
 	if merged.Arbitration.TaskFamily != SemanticTaskFamilyKnowledgeQuery {
 		t.Fatalf("expected knowledge_query task family, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SemanticSlotReadiness != SemanticSlotReadinessNotApplicable {
+		t.Fatalf("expected semantic slot readiness hint to propagate, got %+v", merged.Arbitration)
 	}
 }
 
@@ -86,6 +97,8 @@ func TestMergeSemanticJudgementKeepsStructuredCommandAtPrewarmUntilSlotsArrive(t
 		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
 		UtteranceStatus:    SemanticUtteranceComplete,
 		InterruptionIntent: SemanticIntentRequest,
+		TaskFamily:         SemanticTaskFamilyStructuredCommand,
+		SlotReadinessHint:  SemanticSlotReadinessWaitSlot,
 		Confidence:         0.88,
 		Reason:             "device_control_complete",
 		Source:             "test",
@@ -98,6 +111,9 @@ func TestMergeSemanticJudgementKeepsStructuredCommandAtPrewarmUntilSlotsArrive(t
 	}
 	if merged.Arbitration.TaskFamily != SemanticTaskFamilyStructuredCommand || !merged.Arbitration.SlotConstraintRequired {
 		t.Fatalf("expected structured command task family with slot guard, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SemanticSlotReadiness != SemanticSlotReadinessWaitSlot {
+		t.Fatalf("expected semantic slot readiness wait_slot, got %+v", merged.Arbitration)
 	}
 }
 
@@ -119,6 +135,8 @@ func TestMergeSemanticJudgementShortensEffectiveWaitForCompleteQuestion(t *testi
 		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
 		UtteranceStatus:    SemanticUtteranceComplete,
 		InterruptionIntent: SemanticIntentQuestion,
+		TaskFamily:         SemanticTaskFamilyKnowledgeQuery,
+		SlotReadinessHint:  SemanticSlotReadinessNotApplicable,
 		DynamicWaitPolicy:  SemanticWaitPolicyShorten,
 		WaitDeltaMs:        -140,
 		Confidence:         0.9,
@@ -151,6 +169,8 @@ func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) 
 		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
 		UtteranceStatus:    SemanticUtteranceCorrection,
 		InterruptionIntent: SemanticIntentCorrection,
+		TaskFamily:         SemanticTaskFamilyCorrection,
+		SlotReadinessHint:  SemanticSlotReadinessUnknown,
 		Confidence:         0.82,
 		Reason:             "repair_in_progress",
 		Source:             "test",
@@ -163,6 +183,69 @@ func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) 
 	}
 	if merged.Arbitration.SemanticWaitDeltaMs <= 0 {
 		t.Fatalf("expected correction judgement to extend wait, got %+v", merged.Arbitration)
+	}
+}
+
+func TestMergeSemanticJudgementSemanticFamilyCanOverrideLexicalSlotGuard(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:       "帮我看看明天上海天气",
+		StablePrefix:      "帮我看看明天上海天气",
+		UtteranceComplete: false,
+		Arbitration: TurnArbitration{
+			Stage:                  TurnArbitrationStageWaitForMore,
+			TaskFamily:             SemanticTaskFamilyStructuredCommand,
+			SlotConstraintRequired: true,
+		},
+	}
+	merged := mergeSemanticJudgement(snapshot, SemanticTurnJudgement{
+		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		UtteranceStatus:    SemanticUtteranceComplete,
+		InterruptionIntent: SemanticIntentQuestion,
+		TaskFamily:         SemanticTaskFamilyKnowledgeQuery,
+		SlotReadinessHint:  SemanticSlotReadinessNotApplicable,
+		Confidence:         0.9,
+		Reason:             "weather_query_complete",
+		Source:             "test",
+	})
+	if merged.Arbitration.TaskFamily != SemanticTaskFamilyKnowledgeQuery {
+		t.Fatalf("expected semantic family to override lexical floor, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SlotConstraintRequired {
+		t.Fatalf("expected semantic family override to remove slot constraint, got %+v", merged.Arbitration)
+	}
+	if !merged.Arbitration.DraftAllowed {
+		t.Fatalf("expected knowledge query semantic judgement to allow draft, got %+v", merged.Arbitration)
+	}
+}
+
+func TestMergeSemanticJudgementClarifyHintCanPromoteDraftBeforeSlotParser(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:       "把灯调到舒服一点",
+		StablePrefix:      "把灯调到舒服一点",
+		UtteranceComplete: false,
+		Arbitration: TurnArbitration{
+			Stage:                  TurnArbitrationStageWaitForMore,
+			TaskFamily:             SemanticTaskFamilyStructuredCommand,
+			SlotConstraintRequired: true,
+			PrewarmAllowed:         false,
+			DraftAllowed:           false,
+		},
+	}
+	merged := mergeSemanticJudgement(snapshot, SemanticTurnJudgement{
+		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		UtteranceStatus:    SemanticUtteranceComplete,
+		InterruptionIntent: SemanticIntentRequest,
+		TaskFamily:         SemanticTaskFamilyStructuredCommand,
+		SlotReadinessHint:  SemanticSlotReadinessClarify,
+		Confidence:         0.87,
+		Reason:             "ambiguous_brightness_need_clarify",
+		Source:             "test",
+	})
+	if !merged.Arbitration.DraftAllowed || !merged.Arbitration.SlotClarifyNeeded {
+		t.Fatalf("expected clarify hint to promote draft and clarify-needed, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SemanticSlotReadiness != SemanticSlotReadinessClarify {
+		t.Fatalf("expected clarify semantic slot readiness hint, got %+v", merged.Arbitration)
 	}
 }
 
@@ -368,5 +451,21 @@ func TestShouldParseSemanticSlotsLaunchesEarlyForStructuredCommands(t *testing.T
 	}
 	if !shouldParseSemanticSlots(snapshot, 2, 160*time.Millisecond) {
 		t.Fatalf("expected structured command candidate to launch slot parser early, got %+v", snapshot.Arbitration)
+	}
+}
+
+func TestShouldJudgeSemanticLaunchesForCandidateReadyKnowledgeQuery(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "帮我看看明天上海天气",
+		StablePrefix: "帮我看看明天上海天气",
+		Arbitration: TurnArbitration{
+			AudioMs:        360,
+			StableForMs:    40,
+			CandidateReady: true,
+			TaskFamily:     SemanticTaskFamilyKnowledgeQuery,
+		},
+	}
+	if !shouldJudgeSemantic(snapshot, 4, 160*time.Millisecond) {
+		t.Fatalf("expected candidate-ready knowledge query to launch semantic judge early, got %+v", snapshot.Arbitration)
 	}
 }

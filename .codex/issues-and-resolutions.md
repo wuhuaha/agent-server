@@ -842,3 +842,14 @@
   - kept `knowledge_query` and `dialogue` on the faster early-draft path
   - surfaced `task_family` and `slot_constraint_required` into preview traces and prewarm metadata so rollout tuning remains observable
 - Status: resolved for the current early-gate slice. The shared runtime now has a generic way to keep command turns conservative without dragging all other turn families into the same slot-wait policy.
+
+### Semantic Early Gate Still Leaned Too Hard On Lexical Floors And Raw-Domain Prompt Bias
+
+- Problem: after the first `task_family` landing, the shared runtime could still misclassify imperative-looking queries at the lexical floor, and the slot-parser shared prompt still contained default `smart_home / desktop_assistant` guidance. That meant two different kinds of bias remained: command-vs-query early-gate errors, and vertical-demo prompt bias inside the generic runtime.
+- Resolution:
+  - taught `SemanticTurnJudge` to emit runtime-owned `task_family` plus `slot_readiness_hint`, so the early gate can distinguish `wait_slot`, `clarify`, `ready`, and `not_applicable` instead of only `complete/incomplete`
+  - let high-confidence semantic `task_family` override the lexical floor when needed, so previews like query-style requests are less likely to stay trapped behind a mistaken slot guard
+  - exposed `semantic_slot_readiness` through arbitration, preview traces, and prewarm metadata for observability
+  - rewrote the shared slot-parser prompt so `task_family` stays the default policy center and raw vertical hints enter only through explicit profile/prompt-hint injection
+  - added `NewProfileAwareSemanticSlotParser(...)` and wired `voice.entity_catalog_profile` into that opt-in injection path rather than leaving vertical prompt bias in the shared default
+- Status: resolved for the current convergence slice. The runtime early gate is now more semantic and less purely lexical, while the slot-parser prompt path is generic by default and profile-aware only when explicitly enabled.

@@ -1782,3 +1782,66 @@
 ### 本轮验证
 
 - `go test ./internal/voice ./internal/app ./internal/gateway`
+
+---
+
+## 2026-04-17 semantic judge hint 与 slot parser prompt 收敛补充
+
+### 本轮关注点
+
+- 在已有 `task_family` 之后，继续把 early gate 从“主要靠 lexical floor + slot parser 后验”推进到更强的 runtime-owned 语义裁判。
+- 同时继续收敛 slot parser shared prompt，避免 `smart_home / desktop_assistant` 再次变成 generic runtime 的默认 prompt 偏置。
+
+### 本轮结论
+
+- `SemanticTurnJudge` 不应只返回：
+  - `utterance_status`
+  - `interruption_intent`
+  - `wait_delta`
+- 它现在还应能返回：
+  - `task_family`
+  - `slot_readiness_hint`
+- `slot_readiness_hint` 当前最有用的 runtime 形态是：
+  - `unknown`
+  - `not_applicable`
+  - `wait_slot`
+  - `clarify`
+  - `ready`
+- `semantic_slot_parser` 的 shared prompt 不应再默认内嵌垂直场景 policy；默认中心应是：
+  - generic slot concepts
+  - `task_family`
+  - 显式 opt-in 的 profile / hints
+
+### 本轮实现落点
+
+- 语义早处理增强：
+  - `internal/voice/semantic_judge.go`
+  - `internal/voice/contracts.go`
+  - `internal/voice/asr_responder.go`
+  - `internal/gateway/preview_trace.go`
+  - `internal/voice/semantic_judge_test.go`
+  - `internal/gateway/realtime_test.go`
+- slot parser prompt 收敛：
+  - `internal/voice/semantic_slot_parser.go`
+  - `internal/voice/semantic_slot_profiles.go`
+  - `internal/voice/semantic_slot_profiles_test.go`
+  - `internal/app/app.go`
+- 新增 durable 文档：
+  - `docs/adr/0050-semantic-early-gate-hints-and-slot-prompt-profiles-stay-runtime-owned.md`
+  - `docs/architecture/semantic-judge-early-gate-hints-zh-2026-04-17.md`
+  - `docs/architecture/semantic-slot-parser-profile-aware-prompt-zh-2026-04-17.md`
+
+### 当前收益
+
+- imperative 外观但本质是 query 的 preview，更容易被 semantic judge 拉回正确 `task_family`。
+- `structured_command` 在 slot parser 后验回来前，已经可区分：
+  - 继续等
+  - 先澄清
+  - 先推进
+- preview trace 与 prewarm metadata 现在可直接看到：
+  - `semantic_slot_readiness`
+- `seed_companion` 不再只是 entity grounding profile，也成为显式 slot parser prompt-profile 输入；shared default prompt 仍保持 generic。
+
+### 本轮验证
+
+- `go test ./internal/voice ./internal/gateway ./internal/app`

@@ -279,6 +279,7 @@ func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.
 		SemanticReady:          true,
 		SemanticComplete:       true,
 		SemanticIntent:         voice.SemanticIntentQuestion,
+		SemanticSlotReadiness:  voice.SemanticSlotReadinessNotApplicable,
 		TaskFamily:             voice.SemanticTaskFamilyKnowledgeQuery,
 		SlotReady:              true,
 		SlotComplete:           false,
@@ -304,6 +305,7 @@ func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.
 		"preview_accept_reason",
 		"preview_slot_actionability",
 		"preview_semantic_intent",
+		"preview_semantic_slot_readiness",
 		"preview_task_family",
 	} {
 		if _, ok := got[key]; !ok {

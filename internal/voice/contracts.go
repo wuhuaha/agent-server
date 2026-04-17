@@ -257,6 +257,7 @@ type TurnArbitration struct {
 	SemanticReady           bool
 	SemanticComplete        bool
 	SemanticIntent          string
+	SemanticSlotReadiness   string
 	TaskFamily              string
 	SlotConstraintRequired  bool
 	SemanticReason          string

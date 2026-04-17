@@ -538,3 +538,13 @@
   - raw slot-parser domains such as `smart_home` and `desktop_assistant` remain useful evidence, but they no longer directly own the early-draft policy
   - only `structured_command` currently implies `slot_constraint_required=true`
   - therefore command-like previews may `prewarm` early yet still wait for slot readiness before `draft_allowed`, while question/dialogue turns keep the faster draft path
+
+- The next semantic-depth slice now also keeps early-gate intelligence runtime-owned and generic-by-default:
+  - `SemanticTurnJudge` may now emit both `task_family` and `slot_readiness_hint`
+  - high-confidence semantic `task_family` may override the lexical floor when they disagree
+  - `slot_readiness_hint` is currently `unknown | not_applicable | wait_slot | clarify | ready`
+  - preview traces and prewarm metadata now expose `semantic_slot_readiness` so this semantic gate stays observable
+- The slot-parser prompt path now follows the same boundary:
+  - the shared default prompt is generic and task-family-centered
+  - raw vertical hints such as `smart_home` or `desktop_assistant` are injected only through explicit prompt profiles/hints
+  - `voice.entity_catalog_profile=seed_companion` now also acts as an explicit prompt-profile input for the slot parser, not only as an entity-grounding switch
