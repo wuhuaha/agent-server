@@ -21,6 +21,12 @@ const (
 )
 
 const (
+	SemanticWaitPolicyKeep    = "keep"
+	SemanticWaitPolicyShorten = "shorten"
+	SemanticWaitPolicyExtend  = "extend"
+)
+
+const (
 	SemanticIntentUnknown     = "unknown"
 	SemanticIntentBackchannel = "backchannel"
 	SemanticIntentTakeover    = "takeover"
@@ -60,6 +66,8 @@ type SemanticTurnJudgement struct {
 	StablePrefix       string
 	UtteranceStatus    string
 	InterruptionIntent string
+	DynamicWaitPolicy  string
+	WaitDeltaMs        int
 	Confidence         float64
 	Reason             string
 	Source             string
@@ -114,6 +122,8 @@ func semanticJudgePrompt() string {
 请只输出一段 JSON，对象字段必须只有：
 - utterance_status: "incomplete" | "complete" | "correction"
 - interruption_intent: "unknown" | "backchannel" | "takeover" | "correction" | "request" | "question" | "continue" | "other"
+- dynamic_wait_policy: "shorten" | "keep" | "extend"
+- wait_delta_ms: 一个整数，单位毫秒；shorten 为负数，extend 为正数，不确定时输出 0
 - confidence: 0 到 1 之间的小数
 - reason: 一个简短 snake_case 标签
 
@@ -143,6 +153,8 @@ func semanticJudgeUserMessage(req SemanticTurnRequest) string {
 type semanticJudgeJSON struct {
 	UtteranceStatus    string  `json:"utterance_status"`
 	InterruptionIntent string  `json:"interruption_intent"`
+	DynamicWaitPolicy  string  `json:"dynamic_wait_policy"`
+	WaitDeltaMs        int     `json:"wait_delta_ms"`
 	Confidence         float64 `json:"confidence"`
 	Reason             string  `json:"reason"`
 }
@@ -164,6 +176,8 @@ func decodeSemanticTurnJudgement(raw string) (SemanticTurnJudgement, error) {
 	return SemanticTurnJudgement{
 		UtteranceStatus:    normalizeSemanticUtteranceStatus(decoded.UtteranceStatus),
 		InterruptionIntent: normalizeSemanticIntent(decoded.InterruptionIntent),
+		DynamicWaitPolicy:  normalizeSemanticWaitPolicy(decoded.DynamicWaitPolicy),
+		WaitDeltaMs:        clampSemanticWaitDeltaMs(decoded.WaitDeltaMs),
 		Confidence:         clampUnit(decoded.Confidence),
 		Reason:             normalizeSemanticReason(decoded.Reason),
 	}, nil
@@ -209,6 +223,58 @@ func normalizeSemanticReason(value string) string {
 	replacer := strings.NewReplacer(" ", "_", "-", "_")
 	value = replacer.Replace(value)
 	return value
+}
+
+func normalizeSemanticWaitPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case SemanticWaitPolicyShorten:
+		return SemanticWaitPolicyShorten
+	case SemanticWaitPolicyExtend:
+		return SemanticWaitPolicyExtend
+	default:
+		return SemanticWaitPolicyKeep
+	}
+}
+
+func clampSemanticWaitDeltaMs(value int) int {
+	const limit = 600
+	switch {
+	case value > limit:
+		return limit
+	case value < -limit:
+		return -limit
+	default:
+		return value
+	}
+}
+
+func defaultSemanticWaitDelta(judgement SemanticTurnJudgement) int {
+	switch judgement.UtteranceStatus {
+	case SemanticUtteranceCorrection:
+		return 320
+	case SemanticUtteranceComplete:
+		switch normalizeSemanticIntent(judgement.InterruptionIntent) {
+		case SemanticIntentQuestion:
+			return -140
+		case SemanticIntentRequest, SemanticIntentTakeover:
+			return -120
+		case SemanticIntentBackchannel:
+			return 180
+		case SemanticIntentContinue:
+			return 180
+		default:
+			return -80
+		}
+	default:
+		switch normalizeSemanticIntent(judgement.InterruptionIntent) {
+		case SemanticIntentContinue, SemanticIntentCorrection:
+			return 220
+		case SemanticIntentBackchannel:
+			return 120
+		default:
+			return 0
+		}
+	}
 }
 
 func semanticCandidateKey(stablePrefix, partialText string) string {
@@ -305,6 +371,11 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 	arbitration.SemanticReason = normalizeSemanticReason(judgement.Reason)
 	arbitration.SemanticSource = strings.TrimSpace(judgement.Source)
 	arbitration.SemanticConfidence = clampUnit(judgement.Confidence)
+	arbitration.SemanticWaitPolicy = normalizeSemanticWaitPolicy(judgement.DynamicWaitPolicy)
+	arbitration.SemanticWaitDeltaMs = clampSemanticWaitDeltaMs(judgement.WaitDeltaMs)
+	if arbitration.SemanticWaitDeltaMs == 0 {
+		arbitration.SemanticWaitDeltaMs = defaultSemanticWaitDelta(judgement)
+	}
 
 	if arbitration.SemanticConfidence >= semanticJudgeMediumConfidence {
 		switch judgement.UtteranceStatus {
@@ -330,6 +401,6 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 			}
 		}
 	}
-	snapshot.Arbitration = arbitration
+	snapshot.Arbitration = recomputeTurnArbitration(snapshot, arbitration)
 	return snapshot
 }

@@ -67,6 +67,41 @@ func TestMergeSemanticJudgementPromotesDraftAllowed(t *testing.T) {
 	}
 }
 
+func TestMergeSemanticJudgementShortensEffectiveWaitForCompleteQuestion(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:       "明天周几",
+		StablePrefix:      "明天周几",
+		UtteranceComplete: false,
+		Arbitration: TurnArbitration{
+			Stage:           TurnArbitrationStageWaitForMore,
+			AudioMs:         320,
+			SilenceMs:       260,
+			MinAudioMs:      100,
+			BaseWaitMs:      360,
+			EffectiveWaitMs: 360,
+		},
+	}
+	merged := mergeSemanticJudgement(snapshot, SemanticTurnJudgement{
+		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		UtteranceStatus:    SemanticUtteranceComplete,
+		InterruptionIntent: SemanticIntentQuestion,
+		DynamicWaitPolicy:  SemanticWaitPolicyShorten,
+		WaitDeltaMs:        -140,
+		Confidence:         0.9,
+		Reason:             "standalone_question",
+		Source:             "test",
+	})
+	if merged.Arbitration.SemanticWaitDeltaMs != -140 {
+		t.Fatalf("expected semantic wait delta to propagate, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.EffectiveWaitMs != 220 {
+		t.Fatalf("expected effective wait 220ms after semantic shortening, got %+v", merged.Arbitration)
+	}
+	if !merged.Arbitration.AcceptCandidate || !merged.Arbitration.AcceptNow {
+		t.Fatalf("expected shortened wait to allow accept immediately, got %+v", merged.Arbitration)
+	}
+}
+
 func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) {
 	snapshot := InputPreview{
 		PartialText:       "打开客厅灯不对",
@@ -91,6 +126,9 @@ func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) 
 	}
 	if merged.Arbitration.DraftAllowed {
 		t.Fatalf("expected correction judgement to suppress draft, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SemanticWaitDeltaMs <= 0 {
+		t.Fatalf("expected correction judgement to extend wait, got %+v", merged.Arbitration)
 	}
 }
 
@@ -238,5 +276,40 @@ func TestMergeSemanticSlotParseCanPullDraftBackToWaitMore(t *testing.T) {
 	}
 	if merged.Arbitration.Stage != TurnArbitrationStagePrewarmAllowed {
 		t.Fatalf("expected slot wait_more to keep only prewarm_allowed, got %+v", merged.Arbitration)
+	}
+}
+
+func TestMergeSemanticSlotParseAddsSlotGuardDelay(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "把客厅灯",
+		StablePrefix: "把客厅灯",
+		Arbitration: TurnArbitration{
+			Stage:           TurnArbitrationStageWaitForMore,
+			AudioMs:         320,
+			SilenceMs:       360,
+			MinAudioMs:      100,
+			BaseWaitMs:      300,
+			EffectiveWaitMs: 300,
+			PrewarmAllowed:  true,
+		},
+	}
+	merged := mergeSemanticSlotParse(snapshot, SemanticSlotParseResult{
+		CandidateKey:  semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityWaitMore,
+		Confidence:    0.84,
+		Reason:        "tail_slot_incomplete",
+		Source:        "test",
+	})
+	if merged.Arbitration.SlotGuardAdjustMs <= 0 {
+		t.Fatalf("expected slot wait_more to extend wait, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.EffectiveWaitMs <= merged.Arbitration.BaseWaitMs {
+		t.Fatalf("expected slot guard to raise effective wait, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.AcceptCandidate || merged.Arbitration.AcceptNow {
+		t.Fatalf("expected slot guard to keep preview conservative, got %+v", merged.Arbitration)
 	}
 }

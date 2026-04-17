@@ -407,6 +407,7 @@ func mergeSemanticSlotParse(snapshot InputPreview, result SemanticSlotParseResul
 			}
 		}
 	}
-	snapshot.Arbitration = arbitration
+	arbitration.SlotGuardAdjustMs = slotGuardAdjustMs(arbitration)
+	snapshot.Arbitration = recomputeTurnArbitration(snapshot, arbitration)
 	return snapshot
 }

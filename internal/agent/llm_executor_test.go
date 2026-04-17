@@ -705,9 +705,9 @@ func TestLLMTurnExecutorExecutesModelToolLoopAndReinjectsToolResults(t *testing.
 	}
 }
 
-func TestLLMTurnExecutorDefaultPromptUsesAssistantNameAndHomeControlConstraints(t *testing.T) {
+func TestLLMTurnExecutorDefaultPromptUsesAssistantNameAndGenericDryRunConstraints(t *testing.T) {
 	model := &recordingChatModel{
-		response: ChatModelResponse{Text: "好的，已经为你处理好了。"},
+		response: ChatModelResponse{Text: "好的，我可以协助你处理。"},
 	}
 	executor := NewLLMTurnExecutor(model).WithAssistantName("云璟")
 
@@ -721,17 +721,20 @@ func TestLLMTurnExecutorDefaultPromptUsesAssistantNameAndHomeControlConstraints(
 	if !strings.Contains(prompt, "云璟") {
 		t.Fatalf("expected prompt to include assistant name, got %q", prompt)
 	}
+	if !strings.Contains(prompt, "通用 AI 助手") {
+		t.Fatalf("expected prompt to include generic assistant persona, got %q", prompt)
+	}
 	if !strings.Contains(prompt, "不输出 JSON") {
 		t.Fatalf("expected prompt to include natural-language-only rule, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "不要主动提及调试阶段") {
-		t.Fatalf("expected prompt to include debug-stage concealment rule, got %q", prompt)
+	if !strings.Contains(prompt, "不要声称已经真实执行完成") {
+		t.Fatalf("expected prompt to include dry_run safety rule, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "仿真执行成功式反馈") {
-		t.Fatalf("expected prompt to include simulated success rule, got %q", prompt)
+	if strings.Contains(prompt, "家庭智能中控") {
+		t.Fatalf("did not expect household persona in default prompt, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "当前执行模式：simulation") {
-		t.Fatalf("expected prompt to include simulation mode policy, got %q", prompt)
+	if !strings.Contains(prompt, "当前执行模式：dry_run") {
+		t.Fatalf("expected prompt to include dry_run mode policy, got %q", prompt)
 	}
 }
 

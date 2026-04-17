@@ -178,6 +178,9 @@ func TestSilenceTurnDetectorPromotesStableCompletePreviewBeforeAccept(t *testing
 	if snapshot.Arbitration.Stage != TurnArbitrationStageAcceptCandidate {
 		t.Fatalf("expected accept candidate stage, got %q", snapshot.Arbitration.Stage)
 	}
+	if !snapshot.Arbitration.CandidateReady || !snapshot.Arbitration.DraftReady || !snapshot.Arbitration.AcceptReady {
+		t.Fatalf("expected candidate/draft/accept readiness to be true, got %+v", snapshot.Arbitration)
+	}
 	if !snapshot.Arbitration.PrewarmAllowed || !snapshot.Arbitration.DraftAllowed {
 		t.Fatalf("expected stable complete preview to allow prewarm and draft, got %+v", snapshot.Arbitration)
 	}
@@ -252,11 +255,51 @@ func TestSilenceTurnDetectorAllowsEarlyPrewarmOnMatureStablePrefix(t *testing.T)
 	if mature.Arbitration.Stage != TurnArbitrationStagePrewarmAllowed {
 		t.Fatalf("expected prewarm_allowed stage, got %q", mature.Arbitration.Stage)
 	}
+	if !mature.Arbitration.CandidateReady || mature.Arbitration.DraftReady {
+		t.Fatalf("expected candidate_ready true and draft_ready false, got %+v", mature.Arbitration)
+	}
 	if !mature.Arbitration.PrewarmAllowed || mature.Arbitration.DraftAllowed || mature.Arbitration.AcceptCandidate {
 		t.Fatalf("expected only low-risk prewarm promotion, got %+v", mature.Arbitration)
 	}
 	if mature.Arbitration.StableForMs < defaultPrewarmStableForMs {
 		t.Fatalf("expected stable dwell >= %dms, got %+v", defaultPrewarmStableForMs, mature.Arbitration)
+	}
+}
+
+func TestSilenceTurnDetectorComputesEffectiveWaitFromBaseAndRuleAdjust(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "帮我把",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(500 * time.Millisecond))
+	if snapshot.Arbitration.BaseWaitMs != 300 {
+		t.Fatalf("expected base wait 300ms, got %+v", snapshot.Arbitration)
+	}
+	if snapshot.Arbitration.RuleAdjustMs != 600 {
+		t.Fatalf("expected lexical/rule hold 600ms, got %+v", snapshot.Arbitration)
+	}
+	if snapshot.Arbitration.EffectiveWaitMs != 900 {
+		t.Fatalf("expected effective wait 900ms, got %+v", snapshot.Arbitration)
+	}
+	if !snapshot.Arbitration.CandidateReady || !snapshot.Arbitration.AcceptReady {
+		t.Fatalf("expected candidate/accept readiness to stay true while waiting, got %+v", snapshot.Arbitration)
+	}
+	if snapshot.Arbitration.AcceptCandidate || snapshot.Arbitration.AcceptNow {
+		t.Fatalf("expected 500ms silence to remain below effective wait, got %+v", snapshot.Arbitration)
 	}
 }
 

@@ -342,6 +342,19 @@ func buildVoiceSemanticJudge(cfg Config, logger *slog.Logger) (voice.SemanticTur
 	return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 }
 
+func buildVoiceSemanticJudgeRollout(cfg Config, logger *slog.Logger) voice.SemanticJudgeRolloutConfig {
+	rollout := voice.NormalizeSemanticJudgeRolloutConfig(voice.SemanticJudgeRolloutConfig{
+		Mode:       cfg.Voice.LLMSemanticJudgeRolloutMode,
+		Percentage: cfg.Voice.LLMSemanticJudgeRolloutPercent,
+	})
+	logger.Info(
+		"voice llm semantic judge rollout configured",
+		"mode", rollout.Mode,
+		"percent", rollout.Percentage,
+	)
+	return rollout
+}
+
 func buildVoiceSemanticSlotParser(cfg Config, logger *slog.Logger) (voice.SemanticSlotParser, time.Duration, int, time.Duration) {
 	timeout := time.Duration(cfg.Voice.LLMSlotParserTimeoutMs) * time.Millisecond
 	minStableFor := time.Duration(cfg.Voice.LLMSlotParserMinStableForMs) * time.Millisecond
@@ -403,6 +416,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 		return bootstrap
 	case "funasr_http":
 		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
+		semanticRollout := buildVoiceSemanticJudgeRollout(cfg, logger)
 		slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor := buildVoiceSemanticSlotParser(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewHTTPTranscriber(
@@ -425,6 +439,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
+			WithSemanticJudgeRollout(semanticRollout).
 			WithSlotParser(slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)
@@ -436,6 +451,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			return bootstrap
 		}
 		semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor := buildVoiceSemanticJudge(cfg, logger)
+		semanticRollout := buildVoiceSemanticJudgeRollout(cfg, logger)
 		slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor := buildVoiceSemanticSlotParser(cfg, logger)
 		transcriber := voice.LoggingTranscriber{
 			Inner: voice.NewBufferedStreamingTranscriber(
@@ -470,6 +486,7 @@ func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExec
 			WithSpeechPlannerConfig(buildSpeechPlannerConfig(cfg)).
 			WithTurnExecutor(turnExecutor).
 			WithSemanticJudge(semanticJudge, semanticTimeout, semanticMinRunes, semanticMinStableFor).
+			WithSemanticJudgeRollout(semanticRollout).
 			WithSlotParser(slotParser, slotParserTimeout, slotParserMinRunes, slotParserMinStableFor).
 			WithMemoryStore(memoryStore).
 			WithSynthesizer(synthesizer)

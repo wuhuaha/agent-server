@@ -335,44 +335,59 @@ Runtime backend config lives in `.env.example`:
 AGENT_SERVER_AGENT_MEMORY_PROVIDER=in_memory
 AGENT_SERVER_AGENT_MEMORY_MAX_TURNS=8
 AGENT_SERVER_AGENT_TOOL_PROVIDER=builtin
-AGENT_SERVER_AGENT_SKILLS=household_control
+AGENT_SERVER_AGENT_SKILLS=
 AGENT_SERVER_AGENT_LLM_PROVIDER=auto
-AGENT_SERVER_AGENT_PERSONA=household_control_screen
-AGENT_SERVER_AGENT_EXECUTION_MODE=simulation
-AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧管家
+AGENT_SERVER_AGENT_PERSONA=general_assistant
+AGENT_SERVER_AGENT_EXECUTION_MODE=dry_run
+AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧助手
 AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL=https://api.deepseek.com
 AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
 ```
 
 Optional LLM-backed runtime config also lives under `AGENT_SERVER_AGENT_*`:
 
-- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set layered over the shared core; current built-in option is `household_control`
+- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set layered over the shared core; default empty, current built-in option is `household_control`
 - `auto`: prefer `deepseek_chat` when a DeepSeek key is present, otherwise stay on `bootstrap`
 - `bootstrap`: keep the current echo or bring-up executor
 - `deepseek_chat`: call DeepSeek's OpenAI-compatible chat completions API from inside the shared runtime boundary
 
-When no custom system prompt is supplied, the runtime now uses a built-in family-control-screen assistant persona:
+When no custom system prompt is supplied, the runtime now defaults to a built-in generic assistant persona:
 
-- positioned as a premium household smart-home voice assistant
+- positioned as a reusable multimodal assistant for the shared runtime
 - replies only in natural language
-- stays cautious for locks, gas, security, and other sensitive home scenarios
+- keeps execution claims conservative unless the configured execution mode allows stronger confirmation
 
-The runtime now also separates persona from execution mode:
+Household behavior remains available, but now as an explicit opt-in vertical:
 
+- `AGENT_SERVER_AGENT_SKILLS=household_control`
+- `AGENT_SERVER_AGENT_PERSONA=household_control_screen`
+
+The runtime keeps persona and execution mode separated:
+
+- `AGENT_SERVER_AGENT_PERSONA=general_assistant`: generic assistant persona, now the default
 - `AGENT_SERVER_AGENT_PERSONA=household_control_screen`: built-in household control-screen assistant persona
-- `AGENT_SERVER_AGENT_EXECUTION_MODE=simulation`: current debug-stage mode that gives simulated-success feedback without exposing that internal detail
-- `AGENT_SERVER_AGENT_EXECUTION_MODE=dry_run`: describes the understood target action and expected effect without claiming real execution
+- `AGENT_SERVER_AGENT_EXECUTION_MODE=dry_run`: default conservative mode that describes understood intent without claiming real execution
+- `AGENT_SERVER_AGENT_EXECUTION_MODE=simulation`: debug-stage mode that gives simulated-success feedback without exposing that internal detail
 - `AGENT_SERVER_AGENT_EXECUTION_MODE=live_control`: only uses completion-style confirmation when real execution results exist
 
 Recommended DeepSeek env shape:
 
 ```bash
 export AGENT_SERVER_AGENT_LLM_PROVIDER=deepseek_chat
+export AGENT_SERVER_AGENT_PERSONA=general_assistant
+export AGENT_SERVER_AGENT_EXECUTION_MODE=dry_run
+export AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧助手
+export AGENT_SERVER_AGENT_DEEPSEEK_API_KEY=...
+export AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
+```
+
+If you want a smart-home demo profile instead, enable it explicitly:
+
+```bash
+export AGENT_SERVER_AGENT_SKILLS=household_control
 export AGENT_SERVER_AGENT_PERSONA=household_control_screen
 export AGENT_SERVER_AGENT_EXECUTION_MODE=simulation
 export AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧管家
-export AGENT_SERVER_AGENT_DEEPSEEK_API_KEY=...
-export AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
 ```
 
 If you want to override the built-in persona template, set `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT`. The runtime will replace `{{assistant_name}}` with `AGENT_SERVER_AGENT_ASSISTANT_NAME`, and will still append the configured execution-mode policy.

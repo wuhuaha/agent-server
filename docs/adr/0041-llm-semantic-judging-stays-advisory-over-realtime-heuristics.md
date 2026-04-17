@@ -37,6 +37,7 @@ Introduce an optional runtime-owned `SemanticTurnJudge` inside `internal/voice` 
 3. websocket and channel adapters do not call the model directly
 4. acoustic timing, silence windows, and transport-safe interruption behavior remain in the heuristic core
 5. LLM judgement may upgrade or suppress **draft / prewarm / interruption interpretation**, but does not directly short-circuit final accept semantics
+6. rollout and A/B policy stay runtime-owned and session-sticky rather than becoming adapter or client configuration
 
 Concretely:
 
@@ -44,6 +45,7 @@ Concretely:
 - the returned judgement may mark a preview as semantically complete, correction-like, backchannel-like, or takeover-like
 - that judgement is merged back into `InputPreview.Arbitration`
 - `EvaluateBargeIn(...)` may use the semantic intent to avoid false hard interrupts on short acknowledgements and to escalate earlier when semantic takeover is clear
+- preview sessions may independently stay in `control`, `semantic`, or `sticky_percent` rollout variants, but that decision is made once inside `internal/voice` and then only exposed as additive trace metadata such as variant or enabled state
 
 ## Consequences
 
@@ -63,5 +65,6 @@ Tradeoffs:
 ## Follow-Up
 
 - keep the semantic judge capability-gated and runtime-configurable
+- keep semantic rollout default-conservative (`control`) and make A/B activation sticky per preview session
 - add trace fields and later eval slices for semantic-judge hit rate, false promotion rate, and interruption disagreement rate
 - later extend the same judge toward `slot completeness` and domain-aware ambiguity handling rather than turning it into a free-form policy engine

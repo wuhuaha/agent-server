@@ -475,3 +475,55 @@
   - concrete smart-home / desktop seed data is no longer treated as a permanent runtime assumption; it now sits behind the optional built-in profile `voice.entity_catalog_profile=seed_companion`
   - runtime risk gating now consumes abstract annotations such as `risk_level` instead of lexical business-term hardcoding
   - if a deployment wants a more generic voice runtime, it can disable that built-in seed profile with `voice.entity_catalog_profile=off` while keeping `SemanticSlotParser` itself enabled
+
+
+- 当前开源端点生态（2026-04-17）应这样理解：
+  - 已经出现少量联合 `streaming ASR + EOU` checkpoint，例如 Hugging Face 上的 `nvidia/parakeet_realtime_eou_120m-v1`
+  - 但当前中文 / FunASR / ModelScope 主线仍更接近 `streaming ASR + VAD + punctuation + runtime endpoint fusion` 的模块化路径
+  - 对本仓库，未来若接入这类一体化 `ASR + EOU` 模型，应把它们当作 `internal/voice` 归一化后的可选 provider hint，而不是让它们直接替代 `turn accept`、`slot completeness`、或服务侧 speaking-time orchestration
+
+
+- 当前关于 LLM 与 dynamic VAD 的 durable 结论（2026-04-17）是：
+  - 推荐把小模型 / 小 LLM 用于 `semantic wait-time / endpoint controller`，分析 `utterance completeness`、`intent_family`、`correction / continuation`、`slot_readiness` 等语义信号
+  - 不推荐让 LLM 替代底层 VAD 或直接单独制造最终 `turn accept`
+  - 对本仓库，最合适的主线是 `acoustic VAD floor + stable_prefix gate + LLM semantic judge + slot/guard checks + runtime orchestrator`
+  - 若后续继续实现，这层应优先输出 `dynamic_wait_policy` 与 `wait_delta_ms`，先服务于动态等待时间控制，而不是让主回复 LLM 高频兼任 endpoint 裁判
+
+
+- 当前关于 `Gemma 4` 小模型的 durable 结论（2026-04-17）是：
+  - `Gemma 4 E4B` 比 `E2B` 更值得在本仓库做文本侧 A/B，优先可试 `SemanticTurnJudge` 或 `SemanticSlotParser`
+  - 不推荐把 `Gemma 4 E2B/E4B` 直接拿来替换当前 `FunASR + streaming preview + endpointing` 主链
+  - 也不推荐当前就把它们替换为中文优先主对话默认模型；它们更像高质量备选，而不是现阶段的主线默认答案
+
+
+- 当前融合式 endpoint controller 的 durable 结论（2026-04-17）是：
+  - 主线不应走单一黑箱 score 或单一 semantic endpointer，而应走 stage-based、runtime-owned 的融合控制器
+  - 推荐的控制流是 `candidate_ready -> draft_ready -> accept_ready`
+  - `dynamic VAD` 提供 `base_wait_ms`，`SemanticTurnJudge` 主要输出 `wait_delta_ms` 与 `dynamic_wait_policy`，`SemanticSlotParser`/risk guard 提供命令型 accept 的硬约束
+  - 最终 accept 与 speaking-time interruption escalation 继续由 `internal/voice` 统一拥有
+
+- 当前 stage-based fused endpoint controller 的第一版代码已落地（2026-04-17）：
+  - `TurnArbitration` 现在显式记录 `candidate_ready`、`draft_ready`、`accept_ready`，以及 `base_wait_ms / rule_adjust_ms / punctuation_adjust_ms / semantic_wait_delta_ms / slot_guard_adjust_ms / effective_wait_ms`
+  - `SemanticTurnJudge` 的最佳当前职责是“动态等待时间控制器”，即优先输出 `dynamic_wait_policy + wait_delta_ms`，而不是单独直接制造最终 accept
+  - `SemanticSlotParser` 已经进入同一条 wait-budget 融合链，命令型槽位不完整时可以显式拉长等待时间并压回更保守阶段
+  - 现阶段仍保留现有 `TurnArbitrationStage` 作为兼容外观，新的 `candidate_ready -> draft_ready -> accept_ready` 先以布尔 readiness 形式落地，避免过早扩大协议或 gateway 改动
+  - 其中 `accept_ready` 的 durable 语义是“结构上已具备进入 accept path 的成熟文本/音频条件”，而不是“已经进入 accept silence window”；真正接近或达到接收阈值仍以 `accept_candidate` / `accept_now` 表示
+
+- 当前 realtime 语音主链上的 observability 与 semantic rollout 结论（2026-04-17）是：
+  - gateway preview traces 现在应把 `candidate_ready / draft_ready / accept_ready` 的首达时延，与 `base_wait_ms / semantic_wait_delta_ms / slot_guard_adjust_ms / effective_wait_ms / hold_reason / accept_reason` 一起记录
+  - runtime-owned semantic judge 不应只有全局 on/off；当前默认答案是 `session-sticky rollout`
+  - 当前支持的 semantic rollout 模式为：
+    - `control`：默认且保守，完全跳过 semantic judge
+    - `semantic`：全量启用 semantic judge
+    - `sticky_percent`：按 `session_id + device_id` 稳定分桶
+  - rollout 决策必须发生在 `internal/voice` preview session 内部，并只以下游可观测 metadata 形式暴露给 gateway / traces / prewarm
+
+- The repository-default runtime posture is now explicitly generic rather than household-oriented:
+  - `agent.persona = general_assistant`
+  - `agent.execution_mode = dry_run`
+  - `agent.assistant_name = 小欧助手`
+  - `agent.skills = ""`
+  - `voice.entity_catalog_profile = off`
+- Household control remains a supported built-in vertical, but only as explicit opt-in through `AGENT_SERVER_AGENT_SKILLS=household_control`, optional `AGENT_SERVER_AGENT_PERSONA=household_control_screen`, and optional `voice.entity_catalog_profile=seed_companion`.
+- Config drift on agent vertical settings should now fail fast: unknown `agent.persona` and unknown builtin `agent.skills` are configuration errors rather than silent fallback/ignore paths.
+- Normalize/support logic for semantic-judge rollout belongs to `internal/voice`; app bootstrap may assemble the config, but it should not maintain a second copy of rollout-policy normalization rules.

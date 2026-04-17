@@ -73,6 +73,12 @@ func TestBuildResponderSupportsIflytekRTASR(t *testing.T) {
 	if asrResponder.SpeechPlannerTargetChunkRunes != 18 {
 		t.Fatalf("expected speech planner target chunk runes 18, got %d", asrResponder.SpeechPlannerTargetChunkRunes)
 	}
+	if asrResponder.SemanticJudgeRollout.Mode != voice.SemanticJudgeRolloutModeControl {
+		t.Fatalf("expected conservative semantic judge rollout mode control, got %q", asrResponder.SemanticJudgeRollout.Mode)
+	}
+	if asrResponder.SemanticJudgeRollout.Percentage != 0 {
+		t.Fatalf("expected conservative semantic judge rollout percent 0, got %d", asrResponder.SemanticJudgeRollout.Percentage)
+	}
 }
 
 func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
@@ -96,6 +102,8 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 				BaseURL:  "http://127.0.0.1:8012/v1",
 				Model:    "Qwen/Qwen3-1.7B",
 			},
+			LLMSemanticJudgeRolloutMode:    voice.SemanticJudgeRolloutModeStickyPercent,
+			LLMSemanticJudgeRolloutPercent: 35,
 			LLMSemanticJudgeTimeoutMs:      180,
 			LLMSemanticJudgeMinRunes:       3,
 			LLMSemanticJudgeMinStableForMs: 140,
@@ -153,6 +161,12 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.SemanticJudgeMinStableFor != 140*time.Millisecond {
 		t.Fatalf("expected semantic judge min stable_for 140ms, got %s", asrResponder.SemanticJudgeMinStableFor)
+	}
+	if asrResponder.SemanticJudgeRollout.Mode != voice.SemanticJudgeRolloutModeStickyPercent {
+		t.Fatalf("expected semantic judge rollout mode sticky_percent, got %q", asrResponder.SemanticJudgeRollout.Mode)
+	}
+	if asrResponder.SemanticJudgeRollout.Percentage != 35 {
+		t.Fatalf("expected semantic judge rollout percent 35, got %d", asrResponder.SemanticJudgeRollout.Percentage)
 	}
 	if asrResponder.SlotParser == nil {
 		t.Fatal("expected llm slot parser to be configured")

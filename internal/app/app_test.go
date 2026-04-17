@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agent-server/internal/agent"
+	"agent-server/internal/voice"
 )
 
 func mustNewServer(t *testing.T, cfg Config) *http.Server {
@@ -204,14 +205,14 @@ func TestBuildTurnExecutorSupportsDeepSeekChat(t *testing.T) {
 	if _, ok := llm.Model.(agent.DeepSeekChatModel); !ok {
 		t.Fatalf("expected DeepSeekChatModel, got %T", llm.Model)
 	}
-	if llm.AssistantName != "小欧管家" {
-		t.Fatalf("expected default assistant name xiaoou-guanjia, got %q", llm.AssistantName)
+	if llm.AssistantName != agent.DefaultAssistantName {
+		t.Fatalf("expected default assistant name %q, got %q", agent.DefaultAssistantName, llm.AssistantName)
 	}
-	if llm.Persona != "household_control_screen" {
-		t.Fatalf("expected default persona household_control_screen, got %q", llm.Persona)
+	if llm.Persona != agent.AgentPersonaGeneralAssistant {
+		t.Fatalf("expected default persona %q, got %q", agent.AgentPersonaGeneralAssistant, llm.Persona)
 	}
-	if llm.ExecutionMode != "simulation" {
-		t.Fatalf("expected default execution mode simulation, got %q", llm.ExecutionMode)
+	if llm.ExecutionMode != agent.AgentExecutionModeDryRun {
+		t.Fatalf("expected default execution mode %q, got %q", agent.AgentExecutionModeDryRun, llm.ExecutionMode)
 	}
 	if _, ok := llm.MemoryStore.(*agent.InMemoryMemoryStore); !ok {
 		t.Fatalf("expected in-memory memory store, got %T", llm.MemoryStore)
@@ -280,14 +281,23 @@ func TestRealtimeDefaultsUseClientCommitTurnMode(t *testing.T) {
 	if cfg.Voice.ServerEndpointHintSilenceMs != 160 {
 		t.Fatalf("expected default hint silence 160ms, got %d", cfg.Voice.ServerEndpointHintSilenceMs)
 	}
-	if cfg.Agent.Persona != "household_control_screen" {
-		t.Fatalf("expected household_control_screen persona default, got %q", cfg.Agent.Persona)
+	if cfg.Voice.LLMSemanticJudgeRolloutMode != voice.SemanticJudgeRolloutModeControl {
+		t.Fatalf("expected default semantic judge rollout mode control, got %q", cfg.Voice.LLMSemanticJudgeRolloutMode)
 	}
-	if cfg.Agent.ExecutionMode != "simulation" {
-		t.Fatalf("expected simulation execution mode default, got %q", cfg.Agent.ExecutionMode)
+	if cfg.Voice.LLMSemanticJudgeRolloutPercent != 0 {
+		t.Fatalf("expected default semantic judge rollout percent 0, got %d", cfg.Voice.LLMSemanticJudgeRolloutPercent)
 	}
-	if cfg.Agent.Skills != "household_control" {
-		t.Fatalf("expected household_control runtime skill default, got %q", cfg.Agent.Skills)
+	if cfg.Voice.EntityCatalogProfile != "off" {
+		t.Fatalf("expected built-in entity catalog profile to default off, got %q", cfg.Voice.EntityCatalogProfile)
+	}
+	if cfg.Agent.Persona != agent.AgentPersonaGeneralAssistant {
+		t.Fatalf("expected %q persona default, got %q", agent.AgentPersonaGeneralAssistant, cfg.Agent.Persona)
+	}
+	if cfg.Agent.ExecutionMode != agent.AgentExecutionModeDryRun {
+		t.Fatalf("expected %q execution mode default, got %q", agent.AgentExecutionModeDryRun, cfg.Agent.ExecutionMode)
+	}
+	if cfg.Agent.Skills != "" {
+		t.Fatalf("expected builtin skills to default empty, got %q", cfg.Agent.Skills)
 	}
 }
 
@@ -333,6 +343,53 @@ func TestConfigValidateRejectsSemanticJudgeDeepSeekWithoutAPIKey(t *testing.T) {
 	}.Validate()
 	if err == nil || !strings.Contains(err.Error(), "voice.llm_semantic_judge api key is required") {
 		t.Fatalf("expected semantic judge api key validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsUnknownSemanticJudgeRolloutMode(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:                    "funasr_http",
+			LLMSemanticJudgeRolloutMode: "randomized",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice.llm_semantic_judge_rollout_mode must be control, semantic, or sticky_percent") {
+		t.Fatalf("expected semantic judge rollout mode validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsUnknownAgentPersona(t *testing.T) {
+	err := Config{
+		Agent: AgentConfig{
+			Persona: "smart_home_but_harder",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "agent.persona must be general_assistant or household_control_screen") {
+		t.Fatalf("expected agent persona validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsUnknownBuiltinAgentSkill(t *testing.T) {
+	err := Config{
+		Agent: AgentConfig{
+			ToolProvider: "builtin",
+			Skills:       "household_control,unknown_skill",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "agent.skills contains unsupported builtin skill") {
+		t.Fatalf("expected builtin skill validation error, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsSemanticJudgeRolloutPercentOutOfRange(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:                       "funasr_http",
+			LLMSemanticJudgeRolloutPercent: 101,
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice.llm_semantic_judge_rollout_percent must be between 0 and 100") {
+		t.Fatalf("expected semantic judge rollout percent validation error, got %v", err)
 	}
 }
 

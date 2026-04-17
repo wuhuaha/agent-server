@@ -235,12 +235,25 @@ type TurnArbitration struct {
 	StableForMs             int
 	AudioMs                 int
 	SilenceMs               int
+	MinAudioMs              int
+	BaseWaitMs              int
+	RuleAdjustMs            int
+	PunctuationAdjustMs     int
+	SemanticWaitPolicy      string
+	SemanticWaitDeltaMs     int
+	SlotGuardAdjustMs       int
+	EffectiveWaitMs         int
 	RequiredSilenceMs       int
+	CandidateReady          bool
+	DraftReady              bool
+	AcceptReady             bool
 	PrewarmAllowed          bool
 	DraftAllowed            bool
 	AcceptCandidate         bool
 	AcceptNow               bool
 	EndpointHinted          bool
+	SemanticJudgeVariant    string
+	SemanticJudgeEnabled    bool
 	SemanticReady           bool
 	SemanticComplete        bool
 	SemanticIntent          string

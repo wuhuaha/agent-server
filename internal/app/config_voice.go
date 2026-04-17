@@ -22,6 +22,8 @@ type VoiceConfig struct {
 	BargeInHoldAudioMs             int
 	LLMSemanticJudgeEnabled        bool
 	LLMSemanticJudgeLLM            VoiceLLMProviderConfig
+	LLMSemanticJudgeRolloutMode    string
+	LLMSemanticJudgeRolloutPercent int
 	LLMSemanticJudgeTimeoutMs      int
 	LLMSemanticJudgeMinRunes       int
 	LLMSemanticJudgeMinStableForMs int
@@ -93,6 +95,8 @@ func loadVoiceConfig() VoiceConfig {
 		BargeInMinAudioMs:              getenvInt("AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS", 120),
 		BargeInHoldAudioMs:             getenvInt("AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS", 240),
 		LLMSemanticJudgeEnabled:        getenvBool("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ENABLED", true),
+		LLMSemanticJudgeRolloutMode:    getenv("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ROLLOUT_MODE", voice.SemanticJudgeRolloutModeControl),
+		LLMSemanticJudgeRolloutPercent: getenvInt("AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ROLLOUT_PERCENT", 0),
 		LLMSemanticJudgeLLM: VoiceLLMProviderConfig{
 			Provider:    semanticJudgeProvider,
 			BaseURL:     semanticJudgeBaseURL,
@@ -172,6 +176,7 @@ func applyVoiceDefaults(cfg *Config) {
 	if cfg.Voice.BargeInHoldAudioMs <= 0 {
 		cfg.Voice.BargeInHoldAudioMs = 240
 	}
+	cfg.Voice.LLMSemanticJudgeRolloutMode = voice.NormalizeSemanticJudgeRolloutMode(cfg.Voice.LLMSemanticJudgeRolloutMode)
 	cfg.Voice.LLMSemanticJudgeLLM.Provider = normalizeVoiceLLMProvider(cfg.Voice.LLMSemanticJudgeLLM.Provider)
 	if strings.TrimSpace(cfg.Voice.LLMSemanticJudgeLLM.BaseURL) == "" && cfg.Voice.LLMSemanticJudgeLLM.Provider == "deepseek_chat" {
 		cfg.Voice.LLMSemanticJudgeLLM.BaseURL = "https://api.deepseek.com"
@@ -206,7 +211,7 @@ func applyVoiceDefaults(cfg *Config) {
 	}
 	cfg.Voice.EntityCatalogProfile = normalizeVoiceEntityCatalogProfile(cfg.Voice.EntityCatalogProfile)
 	if cfg.Voice.EntityCatalogProfile == "" {
-		cfg.Voice.EntityCatalogProfile = voice.BuiltInEntityCatalogProfileSeedCompanion
+		cfg.Voice.EntityCatalogProfile = "off"
 	}
 	if cfg.Voice.SpeechPlannerMinChunkRunes <= 0 {
 		cfg.Voice.SpeechPlannerMinChunkRunes = 6
@@ -241,6 +246,12 @@ func validateVoiceConfig(cfg Config) error {
 	}
 	if cfg.Voice.LLMSemanticJudgeEnabled {
 		problems = append(problems, validateVoiceLLMProvider("voice.llm_semantic_judge", cfg.Voice.LLMSemanticJudgeLLM)...)
+	}
+	if !voice.IsSupportedSemanticJudgeRolloutMode(cfg.Voice.LLMSemanticJudgeRolloutMode) {
+		problems = append(problems, "voice.llm_semantic_judge_rollout_mode must be control, semantic, or sticky_percent")
+	}
+	if cfg.Voice.LLMSemanticJudgeRolloutPercent < 0 || cfg.Voice.LLMSemanticJudgeRolloutPercent > 100 {
+		problems = append(problems, "voice.llm_semantic_judge_rollout_percent must be between 0 and 100")
 	}
 	if cfg.Voice.LLMSlotParserEnabled {
 		problems = append(problems, validateVoiceLLMProvider("voice.llm_slot_parser", cfg.Voice.LLMSlotParserLLM)...)

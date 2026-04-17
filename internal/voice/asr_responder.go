@@ -34,6 +34,7 @@ type ASRResponder struct {
 	SemanticJudgeTimeout          time.Duration
 	SemanticJudgeMinRunes         int
 	SemanticJudgeMinStableFor     time.Duration
+	SemanticJudgeRollout          SemanticJudgeRolloutConfig
 	SlotParserTimeout             time.Duration
 	SlotParserMinRunes            int
 	SlotParserMinStableFor        time.Duration
@@ -82,6 +83,7 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		detector:             &detector,
 		prewarmer:            previewTurnPrewarmer(r.Executor),
 		semanticJudge:        r.SemanticJudge,
+		semanticDecision:     decideSemanticJudgeRollout(req, r.SemanticJudgeRollout, r.SemanticJudge),
 		semanticTimeout:      firstPositiveDuration(r.SemanticJudgeTimeout, defaultSemanticJudgeTimeout),
 		semanticMinRunes:     maxInt(r.SemanticJudgeMinRunes, defaultSemanticJudgeMinRunes),
 		semanticMinStableFor: firstPositiveDuration(r.SemanticJudgeMinStableFor, defaultSemanticJudgeMinStableFor),
@@ -107,6 +109,7 @@ func NewASRResponder(
 		SemanticJudgeTimeout:          defaultSemanticJudgeTimeout,
 		SemanticJudgeMinRunes:         defaultSemanticJudgeMinRunes,
 		SemanticJudgeMinStableFor:     defaultSemanticJudgeMinStableFor,
+		SemanticJudgeRollout:          NormalizeSemanticJudgeRolloutConfig(SemanticJudgeRolloutConfig{}),
 		SlotParserTimeout:             defaultSemanticSlotParserTimeout,
 		SlotParserMinRunes:            defaultSemanticSlotParserMinRunes,
 		SlotParserMinStableFor:        defaultSemanticSlotParserMinStableFor,
@@ -228,6 +231,11 @@ func (r ASRResponder) WithSemanticJudge(judge SemanticTurnJudge, timeout time.Du
 	if minStableFor > 0 {
 		r.SemanticJudgeMinStableFor = minStableFor
 	}
+	return r
+}
+
+func (r ASRResponder) WithSemanticJudgeRollout(cfg SemanticJudgeRolloutConfig) ASRResponder {
+	r.SemanticJudgeRollout = NormalizeSemanticJudgeRolloutConfig(cfg)
 	return r
 }
 
@@ -448,6 +456,7 @@ type asrInputPreviewSession struct {
 	detector             *SilenceTurnDetector
 	prewarmer            agent.TurnPrewarmer
 	semanticJudge        SemanticTurnJudge
+	semanticDecision     semanticJudgeRolloutDecision
 	semanticState        previewSemanticJudgeState
 	semanticTimeout      time.Duration
 	semanticMinRunes     int
@@ -499,6 +508,7 @@ func (s *asrInputPreviewSession) Poll(now time.Time) InputPreview {
 	snapshot := s.detector.Snapshot(now)
 	s.maybeLaunchSemanticJudge(snapshot)
 	snapshot = s.mergedSemanticSnapshot(snapshot)
+	snapshot = s.annotateSemanticJudgeTracing(snapshot)
 	s.maybeLaunchSlotParser(snapshot)
 	snapshot = s.mergedSlotSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
@@ -537,6 +547,7 @@ func (s *asrInputPreviewSession) pushPreviewChunk(ctx context.Context, chunk []b
 	snapshot := s.detector.Snapshot(time.Now())
 	s.maybeLaunchSemanticJudge(snapshot)
 	snapshot = s.mergedSemanticSnapshot(snapshot)
+	snapshot = s.annotateSemanticJudgeTracing(snapshot)
 	s.maybeLaunchSlotParser(snapshot)
 	snapshot = s.mergedSlotSnapshot(snapshot)
 	s.maybePrewarm(snapshot)
@@ -574,8 +585,19 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 			"voice.preview.stable_prefix":              candidate,
 			"voice.preview.utterance_complete":         strconv.FormatBool(snapshot.UtteranceComplete),
 			"voice.preview.turn_stage":                 string(snapshot.Arbitration.Stage),
+			"voice.preview.candidate_ready":            strconv.FormatBool(snapshot.Arbitration.CandidateReady),
+			"voice.preview.draft_ready":                strconv.FormatBool(snapshot.Arbitration.DraftReady),
+			"voice.preview.accept_ready":               strconv.FormatBool(snapshot.Arbitration.AcceptReady),
 			"voice.preview.stable_for_ms":              strconv.Itoa(snapshot.Arbitration.StableForMs),
 			"voice.preview.stability_percent":          strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
+			"voice.preview.base_wait_ms":               strconv.Itoa(snapshot.Arbitration.BaseWaitMs),
+			"voice.preview.rule_adjust_ms":             strconv.Itoa(snapshot.Arbitration.RuleAdjustMs),
+			"voice.preview.punctuation_adjust_ms":      strconv.Itoa(snapshot.Arbitration.PunctuationAdjustMs),
+			"voice.preview.semantic_wait_delta_ms":     strconv.Itoa(snapshot.Arbitration.SemanticWaitDeltaMs),
+			"voice.preview.semantic_variant":           strings.TrimSpace(snapshot.Arbitration.SemanticJudgeVariant),
+			"voice.preview.semantic_enabled":           strconv.FormatBool(snapshot.Arbitration.SemanticJudgeEnabled),
+			"voice.preview.slot_guard_adjust_ms":       strconv.Itoa(snapshot.Arbitration.SlotGuardAdjustMs),
+			"voice.preview.effective_wait_ms":          strconv.Itoa(snapshot.Arbitration.EffectiveWaitMs),
 			"voice.preview.commit_suggested":           strconv.FormatBool(snapshot.CommitSuggested),
 			"voice.preview.endpoint_candidate":         strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
 			"voice.preview.endpoint_reason":            strings.TrimSpace(snapshot.EndpointReason),
@@ -615,7 +637,7 @@ func previewTurnPrewarmer(executor agent.TurnExecutor) agent.TurnPrewarmer {
 }
 
 func (s *asrInputPreviewSession) maybeLaunchSemanticJudge(snapshot InputPreview) {
-	if s == nil || s.semanticJudge == nil {
+	if s == nil || s.semanticJudge == nil || !s.semanticDecision.Enabled {
 		return
 	}
 	if !shouldJudgeSemantic(snapshot, s.semanticMinRunes, s.semanticMinStableFor) {
@@ -674,6 +696,15 @@ func (s *asrInputPreviewSession) mergedSemanticSnapshot(snapshot InputPreview) I
 		return snapshot
 	}
 	return mergeSemanticJudgement(snapshot, result)
+}
+
+func (s *asrInputPreviewSession) annotateSemanticJudgeTracing(snapshot InputPreview) InputPreview {
+	if s == nil {
+		return snapshot
+	}
+	snapshot.Arbitration.SemanticJudgeVariant = strings.TrimSpace(s.semanticDecision.Variant)
+	snapshot.Arbitration.SemanticJudgeEnabled = s.semanticDecision.Enabled
+	return snapshot
 }
 
 func (s *asrInputPreviewSession) maybeLaunchSlotParser(snapshot InputPreview) {

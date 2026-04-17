@@ -115,3 +115,11 @@ func newBuiltinRuntimeSkill(name string) RuntimeSkill {
 		return nil
 	}
 }
+
+func NormalizeBuiltinSkillName(name string) string {
+	return canonicalBuiltinSkillName(name)
+}
+
+func IsSupportedBuiltinSkillName(name string) bool {
+	return NormalizeBuiltinSkillName(name) != ""
+}

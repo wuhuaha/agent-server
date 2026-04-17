@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,6 +211,20 @@ type fixedSemanticJudge struct {
 
 func (j fixedSemanticJudge) JudgePreview(context.Context, SemanticTurnRequest) (SemanticTurnJudgement, error) {
 	return j.result, nil
+}
+
+type recordingSemanticJudge struct {
+	result SemanticTurnJudgement
+	calls  int32
+}
+
+func (j *recordingSemanticJudge) JudgePreview(context.Context, SemanticTurnRequest) (SemanticTurnJudgement, error) {
+	atomic.AddInt32(&j.calls, 1)
+	return j.result, nil
+}
+
+func (j *recordingSemanticJudge) CallCount() int {
+	return int(atomic.LoadInt32(&j.calls))
 }
 
 type fixedSemanticSlotParser struct {
@@ -455,7 +470,8 @@ func TestASRResponderPrefersPreviewTranscriptionFastPath(t *testing.T) {
 func TestASRResponderPreviewSessionTriggersPrewarmOnStableCompletePrefix(t *testing.T) {
 	executor := &capturingPrewarmExecutor{calls: make(chan agent.TurnInput, 1)}
 	responder := NewASRResponder(previewStreamingTranscriber{text: "明天周几"}, "auto", "pcm16le", 16000, 1, false).
-		WithTurnExecutor(executor)
+		WithTurnExecutor(executor).
+		WithSemanticJudgeRollout(SemanticJudgeRolloutConfig{Mode: SemanticJudgeRolloutModeControl})
 
 	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
 		SessionID:    "sess_prewarm",
@@ -485,6 +501,12 @@ func TestASRResponderPreviewSessionTriggersPrewarmOnStableCompletePrefix(t *test
 		}
 		if got := input.Metadata["voice.preview.utterance_complete"]; got != "true" {
 			t.Fatalf("expected utterance_complete metadata, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.semantic_variant"]; got != SemanticJudgeVariantControl {
+			t.Fatalf("expected semantic rollout variant control, got %q", got)
+		}
+		if got := input.Metadata["voice.preview.semantic_enabled"]; got != "false" {
+			t.Fatalf("expected semantic rollout enabled=false metadata, got %q", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected preview prewarm call")
@@ -549,7 +571,8 @@ func TestASRResponderPreviewSessionPollIncludesSemanticJudgeResult(t *testing.T)
 				Reason:             "short_ack",
 				Source:             "test",
 			},
-		}, 80*time.Millisecond, 2, 0)
+		}, 80*time.Millisecond, 2, 0).
+		WithSemanticJudgeRollout(SemanticJudgeRolloutConfig{Mode: SemanticJudgeRolloutModeSemantic})
 
 	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
 		SessionID:    "sess_semantic_preview",
@@ -569,6 +592,12 @@ func TestASRResponderPreviewSessionPollIncludesSemanticJudgeResult(t *testing.T)
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		snapshot := preview.Poll(time.Now())
+		if snapshot.Arbitration.SemanticJudgeVariant != SemanticJudgeVariantSemantic {
+			t.Fatalf("expected semantic rollout variant semantic, got %+v", snapshot.Arbitration)
+		}
+		if !snapshot.Arbitration.SemanticJudgeEnabled {
+			t.Fatalf("expected semantic rollout to stay enabled, got %+v", snapshot.Arbitration)
+		}
 		if snapshot.Arbitration.SemanticReady {
 			if snapshot.Arbitration.SemanticIntent != SemanticIntentBackchannel {
 				t.Fatalf("expected semantic backchannel intent, got %+v", snapshot.Arbitration)
@@ -582,6 +611,108 @@ func TestASRResponderPreviewSessionPollIncludesSemanticJudgeResult(t *testing.T)
 	}
 
 	t.Fatal("expected preview poll to include semantic judgement result")
+}
+
+func TestASRResponderPreviewSessionControlVariantSkipsSemanticJudge(t *testing.T) {
+	judge := &recordingSemanticJudge{
+		result: SemanticTurnJudgement{
+			UtteranceStatus:    SemanticUtteranceComplete,
+			InterruptionIntent: SemanticIntentQuestion,
+			Confidence:         0.9,
+			Reason:             "question_complete",
+			Source:             "test",
+		},
+	}
+	responder := NewASRResponder(previewStreamingTranscriber{text: "明白"}, "auto", "pcm16le", 16000, 1, false).
+		WithSemanticJudge(judge, 80*time.Millisecond, 2, 0).
+		WithSemanticJudgeRollout(SemanticJudgeRolloutConfig{Mode: SemanticJudgeRolloutModeControl})
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_semantic_control",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	snapshot, err := preview.PushAudio(context.Background(), make([]byte, 1280))
+	if err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+	if got := snapshot.Arbitration.SemanticJudgeVariant; got != SemanticJudgeVariantControl {
+		t.Fatalf("expected semantic rollout variant control, got %q", got)
+	}
+	if snapshot.Arbitration.SemanticJudgeEnabled {
+		t.Fatalf("expected semantic rollout to stay disabled, got %+v", snapshot.Arbitration)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if judge.CallCount() != 0 {
+		t.Fatalf("expected semantic judge to stay skipped on control variant, got %d calls", judge.CallCount())
+	}
+}
+
+func TestASRResponderPreviewSessionStickyPercentRolloutIsStablePerSession(t *testing.T) {
+	judge := &recordingSemanticJudge{
+		result: SemanticTurnJudgement{
+			UtteranceStatus:    SemanticUtteranceComplete,
+			InterruptionIntent: SemanticIntentQuestion,
+			Confidence:         0.9,
+			Reason:             "question_complete",
+			Source:             "test",
+		},
+	}
+	rollout := SemanticJudgeRolloutConfig{
+		Mode:       SemanticJudgeRolloutModeStickyPercent,
+		Percentage: 50,
+	}
+	responder := NewASRResponder(previewStreamingTranscriber{text: "明白"}, "auto", "pcm16le", 16000, 1, false).
+		WithSemanticJudge(judge, 80*time.Millisecond, 2, 0).
+		WithSemanticJudgeRollout(rollout)
+
+	request := InputPreviewRequest{
+		SessionID:    "sess_semantic_rollout",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	}
+	previewA, err := responder.StartInputPreview(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartInputPreview A failed: %v", err)
+	}
+	snapshotA, err := previewA.PushAudio(context.Background(), make([]byte, 1280))
+	if err != nil {
+		t.Fatalf("PushAudio A failed: %v", err)
+	}
+	previewB, err := responder.StartInputPreview(context.Background(), request)
+	if err != nil {
+		t.Fatalf("StartInputPreview B failed: %v", err)
+	}
+	snapshotB, err := previewB.PushAudio(context.Background(), make([]byte, 1280))
+	if err != nil {
+		t.Fatalf("PushAudio B failed: %v", err)
+	}
+
+	expectedVariant := SemanticJudgeVariantControl
+	if semanticJudgeRolloutBucket(request) < rollout.Percentage {
+		expectedVariant = SemanticJudgeVariantSemantic
+	}
+	if snapshotA.Arbitration.SemanticJudgeVariant != expectedVariant {
+		t.Fatalf("expected rollout variant %q, got %+v", expectedVariant, snapshotA.Arbitration)
+	}
+	if snapshotA.Arbitration.SemanticJudgeVariant != snapshotB.Arbitration.SemanticJudgeVariant {
+		t.Fatalf("expected sticky rollout variant to stay stable, got %q vs %q", snapshotA.Arbitration.SemanticJudgeVariant, snapshotB.Arbitration.SemanticJudgeVariant)
+	}
+	if snapshotA.Arbitration.SemanticJudgeEnabled != snapshotB.Arbitration.SemanticJudgeEnabled {
+		t.Fatalf("expected sticky rollout enabled flag to stay stable, got %t vs %t", snapshotA.Arbitration.SemanticJudgeEnabled, snapshotB.Arbitration.SemanticJudgeEnabled)
+	}
+	if snapshotA.Arbitration.SemanticJudgeEnabled != (expectedVariant == SemanticJudgeVariantSemantic) {
+		t.Fatalf("expected rollout enabled=%t, got %+v", expectedVariant == SemanticJudgeVariantSemantic, snapshotA.Arbitration)
+	}
 }
 
 func TestASRResponderPreviewSessionPollIncludesSlotParserResult(t *testing.T) {

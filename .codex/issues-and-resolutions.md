@@ -777,3 +777,47 @@
   - made risk gating consume abstract catalog/policy annotations such as `risk_level` instead of lexical business-term matching in runtime code
   - added regression tests to ensure lexical terms alone no longer escalate risk inside `slot_value_normalizer`
 - Status: resolved for the current convergence slice. Future work may still externalize more seed-domain normalization data into catalog/profile annotations.
+
+
+### Fused Endpoint Controller Regression Test Misread `accept_ready` As A Near-Threshold Signal
+
+- Problem: the newly added integration-style regression file for the fused endpoint controller treated `accept_ready` as if it should only turn true once silence was close to the accept threshold. That conflicted with the runtime implementation and existing tests, where `accept_ready` already means the text/audio evidence is mature enough to enter the accept path structurally, while `accept_candidate` / `accept_now` remain the actual threshold gates.
+- Resolution:
+  - kept the runtime implementation unchanged
+  - updated `internal/voice/fused_endpoint_controller_test.go` so it asserts:
+    - structural readiness via `candidate_ready / draft_ready / accept_ready`
+    - actual threshold crossing via `accept_candidate / accept_now`
+    - fused wait accounting after clamp, not raw unclamped addition
+- Status: resolved. `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session` is green again.
+
+
+### Fused Endpoint Mainline Still Lacked Online Readiness And Wait-Budget Traces
+
+- Problem: although the runtime already computed `candidate_ready / draft_ready / accept_ready` and fused wait-budget fields, gateway-side online traces still mostly exposed only first partial, endpoint candidate, and commit timing. That made it hard to compare endpoint policies or understand whether a slow accept came from semantic wait, slot guard, or simple missing maturity.
+- Resolution:
+  - extended `inputPreviewTrace` to record readiness first-hit timestamps plus fused wait fields and hold/accept reasons
+  - added gateway lifecycle logs for one-shot `candidate ready`, `draft ready`, and `accept ready` transitions
+  - carried those fields through accepted-turn logs so endpoint tuning can use runtime evidence instead of only final labels
+- Status: resolved for the current baseline. `go test ./internal/gateway ./internal/session ./internal/voice ./internal/app` and `go test ./...` are green.
+
+
+### Semantic Judge Was Configurable But Not Yet A Real Session-Sticky A/B Path
+
+- Problem: the repository already had an optional `SemanticTurnJudge`, but it was still effectively "configured or not configured". There was no runtime-owned session-sticky rollout layer to compare heuristic-only control against semantic-assisted preview policy in real traffic without modifying adapters or flipping the whole instance at once.
+- Resolution:
+  - added `SemanticJudgeRolloutConfig` inside `internal/voice` with `control`, `semantic`, and `sticky_percent`
+  - routed preview-session startup through a stable rollout decision based on `session/device` identity
+  - exposed `semantic_variant` and `semantic_enabled` as additive arbitration and prewarm metadata instead of teaching adapters rollout policy
+  - added config loading, validation, and responder wiring in `internal/app`
+- Status: resolved for the first production-research slice. Default remains conservative `control`, and `sticky_percent` is now available for controlled A/B work.
+
+### Generic Agent Defaults Still Pulled The Repository Back Toward A Household Demo
+
+- Problem: although recent architecture work had already pushed smart-home semantics behind runtime skills and optional voice profiles, the process still booted with household-oriented agent defaults (`household_control_screen`, `simulation`, `小欧管家`, implicit builtin skill) and an implicit `seed_companion` voice profile. That meant the repository still behaved like a vertical demo by default even after the runtime boundaries had been cleaned up.
+- Resolution:
+  - changed agent defaults to a generic runtime posture: `general_assistant`, `dry_run`, `小欧助手`, and no builtin skill by default
+  - changed `voice.entity_catalog_profile` default to `off`
+  - added config validation for unknown `agent.persona` and unsupported builtin `agent.skills`
+  - moved semantic rollout normalize/support helpers fully back under `internal/voice` so app bootstrap no longer owned duplicate policy logic
+  - updated docs, env examples, and architecture records to match the new generic-by-default stance
+- Status: resolved for the current convergence slice. Household behavior remains available, but now only through explicit opt-in runtime configuration.

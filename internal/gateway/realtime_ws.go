@@ -320,31 +320,7 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 	if !observation.Active {
 		return nil
 	}
-	if observation.PartialChanged {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-		)
-	}
-	if observation.SpeechStartedObserved {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
-			"audio_bytes", observation.Preview.AudioBytes,
-		)
-	}
-	if observation.EndpointCandidateObserved {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-			"endpoint_reason", observation.Preview.EndpointReason,
-		)
-	}
-	if observation.CommitSuggested {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-			"endpoint_reason", observation.Preview.EndpointReason,
-		)
-	}
+	logInputPreviewObservationLifecycle(h.logger, snapshot.SessionID, "gateway input preview", observation)
 	if err := h.emitPreviewObservationEvents(runtime, snapshot, observation); err != nil {
 		return err
 	}
@@ -372,6 +348,7 @@ func (h *realtimeWSHandler) handleServerEndpointTick(ctx context.Context, runtim
 			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 			"input_channels", turn.Snapshot.InputChannels,
 			"turn_index", turn.Snapshot.Turns,
+			"accept_reason", "server_endpoint",
 			"endpoint_reason", observation.Preview.EndpointReason,
 		}
 		if previewResultOK && previewErr == nil {
@@ -412,24 +389,7 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 	if previous.State == session.StateSpeaking {
 		runtime.stagePendingBargeInAudio(normalizedPayload)
 		observation := runtime.previewForBargeIn(context.Background(), h.responder, previous, normalizedPayload)
-		if observation.PartialChanged {
-			logInputPreviewTraceInfo(h.logger, "gateway barge-in preview updated", previous.SessionID, observation.Trace,
-				"partial_text", observation.Preview.PartialText,
-				"audio_bytes", observation.Preview.AudioBytes,
-			)
-		}
-		if observation.SpeechStartedObserved {
-			logInputPreviewTraceInfo(h.logger, "gateway barge-in speech started", previous.SessionID, observation.Trace,
-				"audio_bytes", observation.Preview.AudioBytes,
-			)
-		}
-		if observation.EndpointCandidateObserved {
-			logInputPreviewTraceInfo(h.logger, "gateway barge-in endpoint candidate", previous.SessionID, observation.Trace,
-				"partial_text", observation.Preview.PartialText,
-				"audio_bytes", observation.Preview.AudioBytes,
-				"endpoint_reason", observation.Preview.EndpointReason,
-			)
-		}
+		logInputPreviewObservationLifecycle(h.logger, previous.SessionID, "gateway barge-in", observation)
 		if err := h.emitPreviewObservationEvents(runtime, previous, observation); err != nil {
 			return err
 		}
@@ -512,31 +472,7 @@ func (h *realtimeWSHandler) handleBinary(runtime *connectionRuntime, payload []b
 				// 同一段入口音频现在可能在 voice runtime 内被拆成多个 preview observation，
 				// 这里逐个透传，确保端侧能尽早看到 partial / endpoint 候选。
 				for _, observation := range observations {
-					if observation.PartialChanged {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview updated", current.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-						)
-					}
-					if observation.SpeechStartedObserved {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", current.SessionID, observation.Trace,
-							"audio_bytes", observation.Preview.AudioBytes,
-						)
-					}
-					if observation.EndpointCandidateObserved {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", current.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-							"endpoint_reason", observation.Preview.EndpointReason,
-						)
-					}
-					if observation.CommitSuggested {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", current.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-							"endpoint_reason", observation.Preview.EndpointReason,
-						)
-					}
+					logInputPreviewObservationLifecycle(h.logger, current.SessionID, "gateway input preview", observation)
 					if err := h.emitPreviewObservationEvents(runtime, current, observation); err != nil {
 						return err
 					}

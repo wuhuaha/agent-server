@@ -12,6 +12,8 @@ const (
 	defaultTurnDetectorIncompleteHoldMs = 720
 	defaultTurnDetectorHintSilenceMs    = 160
 	defaultTurnDetectorAcceptLeadMs     = 120
+	defaultTurnDetectorMinWaitMs        = 120
+	defaultTurnDetectorMaxWaitMs        = 900
 	defaultTurnDetectorLexicalMode      = "conservative"
 	defaultPrewarmStableForMs           = 120
 	defaultDraftStableForMs             = 200
@@ -22,6 +24,13 @@ const (
 	correctionHoldServerEndpointReason  = "server_correction_hold_timeout"
 	defaultPrewarmStableRatio           = 0.6
 	defaultDraftStableRatio             = 0.82
+	defaultQuestionClosureBonusMs       = -80
+	defaultTerminalPunctuationBonusMs   = -100
+	defaultClauseContinuationHoldMs     = 120
+	defaultSlotWaitMoreHoldMs           = 220
+	defaultSlotClarifyHoldMs            = 80
+	defaultSlotRiskConfirmHoldMs        = 120
+	defaultSlotActCandidateBonusMs      = -40
 )
 
 type SilenceTurnDetectorConfig struct {
@@ -56,7 +65,7 @@ type turnArbitrationInput struct {
 	stablePrefix      string
 	audioMs           int
 	silence           time.Duration
-	requiredSilence   time.Duration
+	baseWait          time.Duration
 	stableFor         time.Duration
 	endpointReason    string
 	utteranceComplete bool
@@ -133,18 +142,21 @@ func (d *SilenceTurnDetector) Snapshot(now time.Time) InputPreview {
 		preview.Arbitration = TurnArbitration{
 			Stage:             TurnArbitrationStagePreviewOnly,
 			AudioMs:           audioMs,
+			MinAudioMs:        d.config.MinAudioMs,
+			BaseWaitMs:        d.config.SilenceMs,
+			EffectiveWaitMs:   d.config.SilenceMs,
 			Stability:         previewTextStabilityRatio(partialText, stablePrefix),
 			RequiredSilenceMs: d.config.SilenceMs,
 		}
 		return preview
 	}
-	requiredSilence, endpointReason := d.requiredSilenceForPartial()
+	baseWait, endpointReason := d.baseWaitForPartial()
 	arbitration := NewMultiSignalTurnArbitrator(d.config).Arbitrate(turnArbitrationInput{
 		partialText:       partialText,
 		stablePrefix:      stablePrefix,
 		audioMs:           audioMs,
 		silence:           now.Sub(d.lastAudioAt),
-		requiredSilence:   requiredSilence,
+		baseWait:          baseWait,
 		stableFor:         stableFor,
 		endpointReason:    strings.TrimSpace(endpointReason),
 		utteranceComplete: utteranceComplete,
@@ -197,11 +209,22 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		StableForMs:       durationMs(input.stableFor),
 		AudioMs:           input.audioMs,
 		SilenceMs:         durationMs(input.silence),
-		RequiredSilenceMs: durationMs(input.requiredSilence),
+		RequiredSilenceMs: durationMs(input.baseWait),
 		EndpointHinted:    strings.TrimSpace(input.endpointReason) != "",
 	}
 	if strings.TrimSpace(input.partialText) == "" {
 		return arbitration
+	}
+	arbitration.MinAudioMs = a.cfg.MinAudioMs
+	arbitration.BaseWaitMs = durationMs(input.baseWait)
+	arbitration.RuleAdjustMs = a.ruleAdjustMs(input.partialText)
+	if a.cfg.LexicalEndpointMode != turnDetectorLexicalModeOff {
+		arbitration.PunctuationAdjustMs = previewPunctuationAdjustMs(input.partialText, input.stablePrefix, input.utteranceComplete)
+	}
+	if arbitration.RuleAdjustMs > 0 {
+		if holdReason := strings.TrimSpace(analyzeUtteranceCompleteness(input.partialText).HoldReason); holdReason != "" {
+			arbitration.Reason = holdReason
+		}
 	}
 
 	// 这里把早处理门槛拆成三层：
@@ -214,53 +237,27 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		stablePrefixComplete &&
 		stability >= defaultPrewarmStableRatio &&
 		input.stableFor >= time.Duration(defaultPrewarmStableForMs)*time.Millisecond {
-		arbitration.Stage = TurnArbitrationStagePrewarmAllowed
 		arbitration.PrewarmAllowed = true
 	}
 	if input.utteranceComplete &&
 		stability >= defaultDraftStableRatio &&
 		input.stableFor >= time.Duration(defaultDraftStableForMs)*time.Millisecond {
-		arbitration.Stage = TurnArbitrationStageDraftAllowed
 		arbitration.PrewarmAllowed = true
 		arbitration.DraftAllowed = true
 	}
-	candidateLead := time.Duration(defaultTurnDetectorAcceptLeadMs) * time.Millisecond
-	if !input.utteranceComplete {
-		if input.audioMs >= a.cfg.MinAudioMs && input.requiredSilence > 0 && input.silence+candidateLead >= input.requiredSilence {
-			arbitration.Stage = TurnArbitrationStageAcceptCandidate
-			arbitration.AcceptCandidate = true
-		}
-		if input.audioMs >= a.cfg.MinAudioMs && input.silence >= input.requiredSilence {
-			arbitration.Stage = TurnArbitrationStageAcceptNow
-			arbitration.AcceptCandidate = true
-			arbitration.AcceptNow = true
-		}
-		if arbitration.AcceptNow || arbitration.AcceptCandidate {
-			return arbitration
-		}
-		if arbitration.Stage == TurnArbitrationStagePreviewOnly {
-			arbitration.Stage = TurnArbitrationStageWaitForMore
-		}
-		return arbitration
+	if input.utteranceComplete {
+		// 一旦 live partial 自身已经像一句完整话，就允许更激进的可撤销前推；
+		// 更细的稳定前缀驻留时间只影响“未完整 utterance 时能否先做低风险 prewarm”。
+		arbitration.PrewarmAllowed = true
+		arbitration.DraftAllowed = true
 	}
-
-	// 一旦 live partial 自身已经像一句完整话，就允许更激进的可撤销前推；
-	// 更细的稳定前缀驻留时间只影响“未完整 utterance 时能否先做低风险 prewarm”。
-	arbitration.PrewarmAllowed = true
-	arbitration.DraftAllowed = true
-	if arbitration.Stage == TurnArbitrationStagePreviewOnly {
-		arbitration.Stage = TurnArbitrationStageDraftAllowed
+	snapshot := InputPreview{
+		PartialText:       input.partialText,
+		StablePrefix:      input.stablePrefix,
+		UtteranceComplete: input.utteranceComplete,
+		Arbitration:       arbitration,
 	}
-	if input.audioMs >= a.cfg.MinAudioMs && input.requiredSilence > 0 && input.silence+candidateLead >= input.requiredSilence {
-		arbitration.Stage = TurnArbitrationStageAcceptCandidate
-		arbitration.AcceptCandidate = true
-	}
-	if input.audioMs >= a.cfg.MinAudioMs && input.silence >= input.requiredSilence {
-		arbitration.Stage = TurnArbitrationStageAcceptNow
-		arbitration.AcceptCandidate = true
-		arbitration.AcceptNow = true
-	}
-	return arbitration
+	return recomputeTurnArbitration(snapshot, arbitration)
 }
 
 func updateStablePrefix(previousPartial, previousStable, nextPartial string, final bool) string {
@@ -351,12 +348,18 @@ func (d *SilenceTurnDetector) stablePrefixDuration(now time.Time) time.Duration 
 	return now.Sub(d.stablePrefixAt)
 }
 
-func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string) {
+func (d *SilenceTurnDetector) baseWaitForPartial() (time.Duration, string) {
 	required := time.Duration(d.config.SilenceMs) * time.Millisecond
+	completeness := analyzeUtteranceCompleteness(d.latestPartial)
 	if d.config.LexicalEndpointMode == turnDetectorLexicalModeOff {
+		if hint := strings.TrimSpace(d.latestEndpointHint); hint != "" && completeness.Complete {
+			hintSilence := time.Duration(d.config.EndpointHintSilenceMs) * time.Millisecond
+			if hintSilence > 0 && hintSilence < required {
+				return hintSilence, hint
+			}
+		}
 		return required, defaultServerEndpointReason
 	}
-	completeness := analyzeUtteranceCompleteness(d.latestPartial)
 	if hint := strings.TrimSpace(d.latestEndpointHint); hint != "" && completeness.Complete {
 		hintSilence := time.Duration(d.config.EndpointHintSilenceMs) * time.Millisecond
 		if hintSilence > 0 && hintSilence < required {
@@ -364,11 +367,126 @@ func (d *SilenceTurnDetector) requiredSilenceForPartial() (time.Duration, string
 		}
 		return required, hint
 	}
-	if completeness.Complete {
-		return required, defaultServerEndpointReason
+	if !completeness.Complete {
+		return required, firstNonEmpty(strings.TrimSpace(completeness.HoldReason), lexicalHoldServerEndpointReason)
 	}
-	reason := firstNonEmpty(strings.TrimSpace(completeness.HoldReason), lexicalHoldServerEndpointReason)
-	return required + time.Duration(d.config.IncompleteHoldMs)*time.Millisecond, reason
+	return required, defaultServerEndpointReason
+}
+
+func (a MultiSignalTurnArbitrator) ruleAdjustMs(partialText string) int {
+	if a.cfg.LexicalEndpointMode == turnDetectorLexicalModeOff {
+		return 0
+	}
+	if analyzeUtteranceCompleteness(partialText).Complete {
+		return 0
+	}
+	return a.cfg.IncompleteHoldMs
+}
+
+func previewPunctuationAdjustMs(partialText, stablePrefix string, utteranceComplete bool) int {
+	text := strings.TrimSpace(firstNonEmpty(partialText, stablePrefix))
+	if text == "" {
+		return 0
+	}
+	if utteranceComplete {
+		lastRune := runeAtEnd(text)
+		switch lastRune {
+		case '.', '!', '?', '。', '！', '？':
+			return defaultTerminalPunctuationBonusMs
+		}
+		if looksQuestionClosure(text) {
+			return defaultQuestionClosureBonusMs
+		}
+		return 0
+	}
+	lastRune := runeAtEnd(text)
+	switch lastRune {
+	case ',', '，', '、', ';', '；', ':', '：':
+		return defaultClauseContinuationHoldMs
+	}
+	if matchesAnySuffix(text, chineseIncompleteSuffixes) || strings.HasSuffix(text, "...") || strings.HasSuffix(text, "……") {
+		return defaultClauseContinuationHoldMs
+	}
+	return 0
+}
+
+func looksQuestionClosure(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasSuffix(trimmed, "吗") || strings.HasSuffix(trimmed, "呢") || strings.HasSuffix(trimmed, "么") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "what ") || strings.HasPrefix(lower, "when ") || strings.HasPrefix(lower, "where ") || strings.HasPrefix(lower, "why ") || strings.HasPrefix(lower, "how ")
+}
+
+func slotGuardAdjustMs(arbitration TurnArbitration) int {
+	adjust := 0
+	switch arbitration.SlotActionability {
+	case SemanticSlotActionabilityWaitMore:
+		adjust += defaultSlotWaitMoreHoldMs
+	case SemanticSlotActionabilityClarifyNeeded:
+		adjust += defaultSlotClarifyHoldMs
+	case SemanticSlotActionabilityActCandidate:
+		adjust += defaultSlotActCandidateBonusMs
+	}
+	if arbitration.SlotRiskConfirmRequired {
+		adjust += defaultSlotRiskConfirmHoldMs
+	}
+	return adjust
+}
+
+// recomputeTurnArbitration 把多层信号重新折叠为当前 runtime 可消费的阶段结果：
+// acoustic/base wait 提供底座，semantic/slot/punctuation 只做等待时间与阶段推进的增减，
+// 最终仍由 shared voice runtime 统一决定 candidate/draft/accept。
+func recomputeTurnArbitration(snapshot InputPreview, arbitration TurnArbitration) TurnArbitration {
+	bestText := strings.TrimSpace(firstNonEmpty(snapshot.StablePrefix, snapshot.PartialText))
+	minAudioMs := arbitration.MinAudioMs
+	if minAudioMs <= 0 {
+		minAudioMs = defaultTurnDetectorMinAudioMs
+	}
+	if arbitration.BaseWaitMs <= 0 {
+		arbitration.BaseWaitMs = defaultTurnDetectorSilenceMs
+	}
+	arbitration.CandidateReady = bestText != "" && arbitration.AudioMs >= minAudioMs
+	arbitration.DraftReady = arbitration.DraftAllowed
+	totalWait := arbitration.BaseWaitMs + arbitration.RuleAdjustMs + arbitration.PunctuationAdjustMs + arbitration.SemanticWaitDeltaMs + arbitration.SlotGuardAdjustMs
+	arbitration.EffectiveWaitMs = clampInt(totalWait, defaultTurnDetectorMinWaitMs, defaultTurnDetectorMaxWaitMs)
+	arbitration.RequiredSilenceMs = arbitration.EffectiveWaitMs
+	arbitration.AcceptReady = arbitration.CandidateReady
+	candidateLeadMs := defaultTurnDetectorAcceptLeadMs
+	arbitration.AcceptCandidate = arbitration.AcceptReady && arbitration.SilenceMs+candidateLeadMs >= arbitration.EffectiveWaitMs
+	arbitration.AcceptNow = arbitration.AcceptReady && arbitration.SilenceMs >= arbitration.EffectiveWaitMs
+	if arbitration.AcceptNow {
+		arbitration.Stage = TurnArbitrationStageAcceptNow
+	} else if arbitration.AcceptCandidate {
+		arbitration.Stage = TurnArbitrationStageAcceptCandidate
+	} else if arbitration.DraftAllowed {
+		arbitration.Stage = TurnArbitrationStageDraftAllowed
+	} else if arbitration.PrewarmAllowed {
+		arbitration.Stage = TurnArbitrationStagePrewarmAllowed
+	} else if arbitration.CandidateReady {
+		arbitration.Stage = TurnArbitrationStageWaitForMore
+	} else {
+		arbitration.Stage = TurnArbitrationStagePreviewOnly
+	}
+	return arbitration
+}
+
+func clampInt(value, minValue, maxValue int) int {
+	if minValue > maxValue {
+		minValue, maxValue = maxValue, minValue
+	}
+	switch {
+	case value < minValue:
+		return minValue
+	case value > maxValue:
+		return maxValue
+	default:
+		return value
+	}
 }
 
 func normalizeTurnDetectorLexicalMode(mode string) string {

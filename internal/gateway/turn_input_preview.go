@@ -13,6 +13,9 @@ type inputPreviewObservation struct {
 	Active                    bool
 	PartialChanged            bool
 	SpeechStartedObserved     bool
+	CandidateReadyObserved    bool
+	DraftReadyObserved        bool
+	AcceptReadyObserved       bool
 	EndpointCandidateObserved bool
 	CommitSuggested           bool
 	Trace                     inputPreviewTrace
@@ -48,13 +51,16 @@ func (r *connectionRuntime) pushInputPreviewAudio(ctx context.Context, payload [
 		if observation.Active {
 			_, _ = r.session.SetInputState(session.InputStatePreviewing)
 		}
-		trace, _, speechStarted, endpointCandidate, _ := r.previewTrace.ObservePreview(sessionID, observation.Preview, now)
+		trace, update := r.previewTrace.ObservePreview(sessionID, observation.Preview, now)
 		observations = append(observations, inputPreviewObservation{
 			Preview:                   observation.Preview,
 			Active:                    observation.Active,
 			PartialChanged:            observation.PartialChanged,
-			SpeechStartedObserved:     speechStarted,
-			EndpointCandidateObserved: endpointCandidate,
+			SpeechStartedObserved:     update.SpeechStartedObserved,
+			CandidateReadyObserved:    update.CandidateReadyObserved,
+			DraftReadyObserved:        update.DraftReadyObserved,
+			AcceptReadyObserved:       update.AcceptReadyObserved,
+			EndpointCandidateObserved: update.EndpointCandidateObserved,
 			CommitSuggested:           observation.CommitSuggested,
 			Trace:                     trace,
 		})
@@ -78,13 +84,16 @@ func (r *connectionRuntime) pollInputPreview(now time.Time) inputPreviewObservat
 	if observation.Active {
 		_, _ = r.session.SetInputState(session.InputStatePreviewing)
 	}
-	trace, _, speechStarted, endpointCandidate, _ := r.previewTrace.ObservePreview(r.session.Snapshot().SessionID, observation.Preview, now)
+	trace, update := r.previewTrace.ObservePreview(r.session.Snapshot().SessionID, observation.Preview, now)
 	return inputPreviewObservation{
 		Preview:                   observation.Preview,
 		Active:                    observation.Active,
 		PartialChanged:            observation.PartialChanged,
-		SpeechStartedObserved:     speechStarted,
-		EndpointCandidateObserved: endpointCandidate,
+		SpeechStartedObserved:     update.SpeechStartedObserved,
+		CandidateReadyObserved:    update.CandidateReadyObserved,
+		DraftReadyObserved:        update.DraftReadyObserved,
+		AcceptReadyObserved:       update.AcceptReadyObserved,
+		EndpointCandidateObserved: update.EndpointCandidateObserved,
 		CommitSuggested:           observation.CommitSuggested,
 		Trace:                     trace,
 	}

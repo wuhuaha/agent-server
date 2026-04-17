@@ -1024,3 +1024,80 @@
     - `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|HTTPTranscriber|TurnDetector|ASRResponder|ConfigValidate'`
     - `go test ./internal/voice ./internal/app ./internal/agent ./internal/gateway ./internal/session`
     - `make test-go`
+
+- Added a durable architecture/status review for the current repository state:
+  - added `docs/architecture/project-status-and-voice-flow-review-zh-2026-04-17.md`
+  - consolidated current milestone status, runtime layering, completed slices, default-vs-capability gaps, and three voice sequence diagrams covering:
+    - explicit `audio.in.commit` baseline
+    - `preview + server_endpoint + early_audio` mainline
+    - speaking-time interruption plus playback-truth flow
+  - appended the same round summary to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+
+
+- Added a new durable research note on streaming ASR plus semantic endpointing for the current voice-runtime mainline:
+  - added `docs/architecture/streaming-asr-and-semantic-endpointing-research-zh-2026-04-17.md`
+  - added ADR `docs/adr/0045-open-source-endpointing-stays-layered-and-runtime-owned.md` and refreshed `docs/architecture/overview.md` so the repository keeps `ASR + EOU` models behind normalized voice-runtime hints instead of turning them into a new protocol or orchestration center
+  - recorded the current ecosystem judgement that integrated `streaming ASR + EOU` checkpoints do exist, but remain sparse, while the Chinese/FunASR mainline still fits a runtime-owned layered fusion path better than a single endpointer dependency
+  - appended the same round summary to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+  - refreshed `.codex/project-memory.md` with the durable decision that future integrated `ASR + EOU` models should enter this repository as optional normalized hints behind `internal/voice`, not as a replacement for service-side turn orchestration
+
+
+- Added a focused research note on LLM-assisted semantic completeness as a helper for dynamic endpointing rather than a replacement for VAD:
+  - added `docs/architecture/llm-assisted-semantic-completeness-and-dynamic-vad-zh-2026-04-17.md`
+  - recorded that semantic judging is recommended for dynamic wait-time / hold / release control, while acoustic VAD and runtime guards remain the realtime safety floor
+  - appended the same round summary to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+  - refreshed `.codex/project-memory.md` with the durable guidance that the right next step is `LLM-assisted dynamic endpointing`, not `LLM replaces VAD`
+
+
+- Added a focused model-selection note for Google Gemma 4 against the current Chinese voice-agent stack:
+  - added `docs/architecture/gemma-4-fit-for-current-project-zh-2026-04-17.md`
+  - recorded that `Gemma 4 E2B/E4B` are interesting small-model candidates, especially for text-side semantic judging, but they are not recommended to replace the current realtime ASR/endpoint mainline or the current Chinese-first default dialogue path
+  - appended the same round summary to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+
+
+- Added a detailed fusion-plan note for the current streaming-ASR endpoint controller:
+  - added `docs/architecture/streaming-asr-dynamic-vad-fusion-pipeline-zh-2026-04-17.md`
+  - added ADR `docs/adr/0046-fused-streaming-endpoint-controller-stays-stage-based-and-runtime-owned.md`
+  - refreshed `docs/architecture/overview.md` to record the durable decision that endpoint fusion should stay stage-based, runtime-owned, and centered on `candidate_ready -> draft_ready -> accept_ready`
+  - appended the same round summary to `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+
+- Landed the first code slice of the stage-based fused endpoint controller inside `internal/voice`:
+  - `internal/voice/turn_detector.go` now computes a layered wait budget of `base_wait + rule_adjust + punctuation_adjust + semantic_wait_delta + slot_guard_adjust`, then derives explicit readiness booleans for `candidate_ready`, `draft_ready`, and `accept_ready` before mapping them back into the existing preview stages
+  - `internal/voice/semantic_judge.go` now accepts/normalizes `dynamic_wait_policy` plus `wait_delta_ms`, applies conservative defaults when the model omits them, and merges the result back into the runtime-owned wait controller instead of only toggling `draft_allowed`
+  - `internal/voice/semantic_slot_parser.go` now contributes `slot_guard_adjust_ms` into the same fused wait controller so slot-incomplete commands can stay conservative longer without moving policy into gateways
+  - `internal/voice/asr_responder.go` now includes the new readiness and wait-budget fields in preview prewarm metadata for traceability
+  - added regression coverage in:
+    - `internal/voice/turn_detector_test.go`
+    - `internal/voice/semantic_judge_test.go`
+    - `internal/voice/fused_endpoint_controller_test.go`
+  - locked the current readiness semantics in tests:
+    - `accept_ready` means the runtime has enough mature text/audio evidence to enter the accept path structurally
+    - `accept_candidate` / `accept_now` remain the actual silence-window gates, so semantic or slot holds can keep the turn conservative without forcing `accept_ready=false`
+  - validated with:
+    - `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session`
+
+- Landed the next observability + rollout slice on top of that same fused endpoint path:
+  - gateway preview traces now record `candidate_ready / draft_ready / accept_ready` first-hit latencies, fused wait-budget fields, and hold-vs-accept reasons instead of only first partial and commit timing
+  - native realtime and `xiaozhi` preview lifecycle logs now emit one-shot readiness transitions such as `candidate ready`, `draft ready`, and `accept ready`, while accepted turns also carry explicit `accept_reason=server_endpoint`
+  - the runtime-owned semantic judge now has a session-sticky rollout layer with `control`, `semantic`, and `sticky_percent` modes, defaulting to conservative `control`
+  - preview sessions now annotate `semantic_variant` / `semantic_enabled` into arbitration state and prewarm metadata so A/B behavior is observable without widening the wire contract
+  - validated with:
+    - `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session`
+    - `go test ./...`
+
+- 完成了一轮架构/代码健康收敛，重点修复“通用 agent server 被默认值拖回 household demo”的问题：
+  - agent 默认值已改为通用形态：`general_assistant` / `dry_run` / `小欧助手` / `skills=""`
+  - `voice.entity_catalog_profile` 默认改为 `off`，`seed_companion` 继续保留为显式 opt-in profile
+  - `internal/voice` 现在导出 semantic rollout normalize/support helper，`internal/app` 不再手抄第二套规则
+  - app 配置校验现在会拒绝未知 `agent.persona` 与未知 builtin `agent.skills`，避免 silent drift
+  - 同步更新了：
+    - `README.md`
+    - `.env.example`
+    - `docs/architecture/overview.md`
+    - `docs/architecture/runtime-configuration.md`
+    - `docs/architecture/project-status-and-voice-flow-review-zh-2026-04-17.md`
+    - `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+    - `docs/adr/0047-generic-runtime-defaults-avoid-domain-lock-in.md`
+    - `docs/architecture/architecture-and-code-health-review-zh-2026-04-17.md`
+  - validated with:
+    - `go test ./internal/agent ./internal/app`

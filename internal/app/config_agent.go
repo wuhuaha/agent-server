@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"strings"
+
+	"agent-server/internal/agent"
 )
 
 type AgentConfig struct {
@@ -32,12 +34,12 @@ func loadAgentConfig() AgentConfig {
 		MemoryProvider:  getenv("AGENT_SERVER_AGENT_MEMORY_PROVIDER", "in_memory"),
 		MemoryMaxTurns:  getenvInt("AGENT_SERVER_AGENT_MEMORY_MAX_TURNS", 8),
 		ToolProvider:    getenv("AGENT_SERVER_AGENT_TOOL_PROVIDER", "builtin"),
-		Skills:          getenv("AGENT_SERVER_AGENT_SKILLS", "household_control"),
+		Skills:          getenv("AGENT_SERVER_AGENT_SKILLS", ""),
 		LLMProvider:     getenv("AGENT_SERVER_AGENT_LLM_PROVIDER", "auto"),
 		LLMTimeoutMs:    getenvInt("AGENT_SERVER_AGENT_LLM_TIMEOUT_MS", 30000),
-		Persona:         getenv("AGENT_SERVER_AGENT_PERSONA", "household_control_screen"),
-		ExecutionMode:   getenv("AGENT_SERVER_AGENT_EXECUTION_MODE", "simulation"),
-		AssistantName:   getenv("AGENT_SERVER_AGENT_ASSISTANT_NAME", "小欧管家"),
+		Persona:         getenv("AGENT_SERVER_AGENT_PERSONA", agent.AgentPersonaGeneralAssistant),
+		ExecutionMode:   getenv("AGENT_SERVER_AGENT_EXECUTION_MODE", agent.AgentExecutionModeDryRun),
+		AssistantName:   getenv("AGENT_SERVER_AGENT_ASSISTANT_NAME", agent.DefaultAssistantName),
 		LLMSystemPrompt: getenv("AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT", ""),
 		DeepSeek: DeepSeekChatConfig{
 			BaseURL:     getenv("AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -59,9 +61,6 @@ func applyAgentDefaults(cfg *Config) {
 	if cfg.Agent.ToolProvider == "" {
 		cfg.Agent.ToolProvider = "builtin"
 	}
-	if cfg.Agent.Skills == "" {
-		cfg.Agent.Skills = "household_control"
-	}
 	if strings.TrimSpace(cfg.Agent.LLMProvider) == "" {
 		cfg.Agent.LLMProvider = "auto"
 	}
@@ -69,13 +68,17 @@ func applyAgentDefaults(cfg *Config) {
 		cfg.Agent.LLMTimeoutMs = 30000
 	}
 	if strings.TrimSpace(cfg.Agent.AssistantName) == "" {
-		cfg.Agent.AssistantName = "小欧管家"
+		cfg.Agent.AssistantName = agent.DefaultAssistantName
 	}
 	if strings.TrimSpace(cfg.Agent.Persona) == "" {
-		cfg.Agent.Persona = "household_control_screen"
+		cfg.Agent.Persona = agent.AgentPersonaGeneralAssistant
+	} else {
+		cfg.Agent.Persona = agent.NormalizeAgentPersona(cfg.Agent.Persona)
 	}
 	if strings.TrimSpace(cfg.Agent.ExecutionMode) == "" {
-		cfg.Agent.ExecutionMode = "simulation"
+		cfg.Agent.ExecutionMode = agent.AgentExecutionModeDryRun
+	} else {
+		cfg.Agent.ExecutionMode = agent.NormalizeAgentExecutionMode(cfg.Agent.ExecutionMode)
 	}
 	if strings.TrimSpace(cfg.Agent.DeepSeek.BaseURL) == "" {
 		cfg.Agent.DeepSeek.BaseURL = "https://api.deepseek.com"
@@ -97,10 +100,18 @@ func validateAgentConfig(cfg Config) error {
 	default:
 		problems = append(problems, "agent.tool_provider must be builtin or noop")
 	}
-	switch strings.ToLower(strings.TrimSpace(cfg.Agent.ExecutionMode)) {
-	case "simulation", "dry_run", "live_control":
-	default:
+	if !agent.IsSupportedAgentExecutionMode(cfg.Agent.ExecutionMode) {
 		problems = append(problems, "agent.execution_mode must be simulation, dry_run, or live_control")
+	}
+	if !agent.IsSupportedAgentPersona(cfg.Agent.Persona) {
+		problems = append(problems, "agent.persona must be general_assistant or household_control_screen")
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Agent.ToolProvider), "builtin") {
+		for _, skill := range splitAgentSkills(cfg.Agent.Skills) {
+			if !agent.IsSupportedBuiltinSkillName(skill) {
+				problems = append(problems, "agent.skills contains unsupported builtin skill: "+strings.TrimSpace(skill))
+			}
+		}
 	}
 	switch provider := strings.ToLower(strings.TrimSpace(cfg.Agent.LLMProvider)); provider {
 	case "", "auto", "bootstrap":

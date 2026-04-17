@@ -300,31 +300,7 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 	if !observation.Active {
 		return nil
 	}
-	if observation.PartialChanged {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-		)
-	}
-	if observation.SpeechStartedObserved {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
-			"audio_bytes", observation.Preview.AudioBytes,
-		)
-	}
-	if observation.EndpointCandidateObserved {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-			"endpoint_reason", observation.Preview.EndpointReason,
-		)
-	}
-	if observation.CommitSuggested {
-		logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
-			"partial_text", observation.Preview.PartialText,
-			"audio_bytes", observation.Preview.AudioBytes,
-			"endpoint_reason", observation.Preview.EndpointReason,
-		)
-	}
+	logInputPreviewObservationLifecycle(h.logger, snapshot.SessionID, "gateway input preview", observation)
 	if observation.CommitSuggested && snapshot.AudioBytes > 0 {
 		state.audioTurnOpen = false
 		previewTrace, previewResult, previewResultOK, previewErr := runtime.consumeInputPreview(ctx)
@@ -350,6 +326,7 @@ func (h *xiaozhiWSHandler) handleServerEndpointTick(ctx context.Context, runtime
 			"input_sample_rate_hz", turn.Snapshot.InputSampleRate,
 			"input_channels", turn.Snapshot.InputChannels,
 			"turn_index", turn.Snapshot.Turns,
+			"accept_reason", "server_endpoint",
 			"endpoint_reason", observation.Preview.EndpointReason,
 		}
 		if previewResultOK && previewErr == nil {
@@ -605,31 +582,7 @@ func (h *xiaozhiWSHandler) handleBinary(runtime *connectionRuntime, peer *xiaozh
 				// compat 适配层同样只消费 runtime 给出的 observation 序列，
 				// 不在网关自己重做 preview 分块或时序判断。
 				for _, observation := range observations {
-					if observation.PartialChanged {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview updated", snapshot.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-						)
-					}
-					if observation.SpeechStartedObserved {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview speech started", snapshot.SessionID, observation.Trace,
-							"audio_bytes", observation.Preview.AudioBytes,
-						)
-					}
-					if observation.EndpointCandidateObserved {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview endpoint candidate", snapshot.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-							"endpoint_reason", observation.Preview.EndpointReason,
-						)
-					}
-					if observation.CommitSuggested {
-						logInputPreviewTraceInfo(h.logger, "gateway input preview commit suggested", snapshot.SessionID, observation.Trace,
-							"partial_text", observation.Preview.PartialText,
-							"audio_bytes", observation.Preview.AudioBytes,
-							"endpoint_reason", observation.Preview.EndpointReason,
-						)
-					}
+					logInputPreviewObservationLifecycle(h.logger, snapshot.SessionID, "gateway input preview", observation)
 				}
 			}
 		}

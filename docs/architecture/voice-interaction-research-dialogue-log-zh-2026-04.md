@@ -1387,3 +1387,347 @@
   - 当前 smart-home demo 能力继续可用
   - 通用 agent server 的边界更清晰
   - 后续可把 catalog / policy / domain data 继续外置，而不需要推翻现有语音主链
+
+
+## Round 028｜2026-04-17｜项目现状盘点：架构设计、已完成内容与语音流时序图
+
+### 用户诉求
+
+- 对当前项目进行一次系统性盘点，覆盖：
+  - 当前架构设计
+  - 已完成内容
+  - 当前语音主链
+  - 语音流时序图
+
+### 本轮产出
+
+- 新增现状分析文档：
+  - `docs/architecture/project-status-and-voice-flow-review-zh-2026-04-17.md`
+- 文档重点覆盖：
+  - 当前项目所处阶段判断（M0 / M1 / M1.5 基本完成，M2 / M3 仍待推进）
+  - 当前核心分层：`gateway -> session -> voice -> agent -> workers/providers`
+  - 当前语音 runtime 已落地的关键能力：preview、server endpoint、双轨状态机、interruption、early audio、playback truth、resume / continue、semantic judge、slot parser、entity grounding
+  - 当前代码默认值与实际能力成熟度之间的差异
+  - 三张关键时序图：
+    - 显式 `audio.in.commit` 基线路径
+    - `preview + server endpoint + early audio` 路径
+    - `speaking-time interruption + playback truth` 路径
+  - 当前项目的主要优势、主要不足与下一步关键方向
+
+### 本轮结论
+
+- 当前项目已经不是简单的 `ASR + LLM + TTS` 串接 demo，而是形成了相对清晰的通用 `AI agent server` 主线。
+- `internal/voice` 已经是项目当前最强、最有辨识度的 runtime capability。
+- 当前真正的主战场不是“再扩能力面”，而是把已有的服务侧语音运行时能力继续做稳定化、默认化、工程化。
+- 从长期看，项目接下来最需要补的不是单点模型，而是：
+  - 语音 runtime 体验继续成熟
+  - channel / auth / policy 工程主线补齐
+  - seed-domain 能力继续 profile 化 / 数据化
+
+
+## Round 029｜2026-04-17｜专题研究：流式 ASR 与语义端点融合
+
+### 用户诉求
+
+- 深度研究两个问题：
+  1. `Hugging Face`、`ModelScope` 等网站是否已有“流式识别 + 端点检测结合”的开源模型
+  2. 如果没有成熟到可直接替换主链的方案，当前项目应如何结合声学、流式识别、标点、规则、快速小模型/小 LLM 来做更快、更准、更符合语义的端点识别
+
+### 本轮产出
+
+- 新增专题研究文档：
+  - `docs/architecture/streaming-asr-and-semantic-endpointing-research-zh-2026-04-17.md`
+- 补充 durable architecture follow-through：
+  - `docs/adr/0045-open-source-endpointing-stays-layered-and-runtime-owned.md`
+  - `docs/architecture/overview.md`
+- 文档重点覆盖：
+  - 区分 `acoustic endpoint`、`EOU`、`turn accept`
+  - 复核 Hugging Face / FunASR / sherpa / OpenAI / LiveKit / Google / Amazon 的一手资料
+  - 判断当前开源生态里“一体化 streaming ASR + endpointing”能力的真实成熟度
+  - 给出适配当前项目的五层 endpoint fusion 方案
+
+### 本轮结论
+
+- 当前开源生态并非完全没有“一体化 streaming ASR + EOU”模型；本轮明确确认到 Hugging Face 上的 `nvidia/parakeet_realtime_eou_120m-v1` 属于这一类代表。
+- 但截至 2026-04-17，我仍未找到一个成熟、中文优先、ModelScope/FunASR 主生态广泛采用、且足以直接替换当前项目主链的一体化 semantic endpoint 模型。
+- 对当前项目而言，最优路径仍然不是等待单一银弹模型，而是继续坚持 runtime-owned layered endpoint fusion：
+  - 声学层保底
+  - 流式 ASR 稳定性层提供 `stable_prefix` 与 revision 证据
+  - 标点 / clause 层增强语句闭合判断
+  - 规则层抑制 continuation / correction / slot-tail 误切
+  - 小模型 / 小 LLM 提供语义加速与错误抑制
+- 一体化 `ASR + EOU` 模型未来可以作为额外 provider hint 接入，但不应直接取代当前 `internal/voice` 的 turn orchestration 与 `turn accept` 逻辑。
+
+
+## Round 030｜2026-04-17｜专题研究：LLM 辅助语义完整性判断与 dynamic VAD 融合
+
+### 用户诉求
+
+- 深度研究：基于 LLM 分析用户已说文本的语义完整性、意图等，作为规则系统（例如 dynamic VAD）的辅助是否可以融合方案中；有没有效果；是否推荐
+
+### 本轮产出
+
+- 新增专题研究文档：
+  - `docs/architecture/llm-assisted-semantic-completeness-and-dynamic-vad-zh-2026-04-17.md`
+- 补充可发现性入口：
+  - `docs/architecture/overview.md`
+- 重点补充：
+  - 明确区分“LLM 替代 VAD”与“LLM 辅助 dynamic endpointing”
+  - 复核 OpenAI `semantic_vad`、LiveKit turn detector、Semantic VAD、TurnGPT、Apple 多信号 LLM、2025 全双工 LLM dialogue manager 等一手资料
+  - 给出本项目适用的融合边界与推荐落点
+
+### 本轮结论
+
+- 可以融合，而且通常有效；尤其适合改善：
+  - false endpoint
+  - 抢答
+  - pause vs continue 区分
+  - speaking-time backchannel / correction / takeover 仲裁
+- 但不推荐把它做成“LLM 取代 VAD/规则”的方案；更准确的方向应是：
+  - 声学/VAD 负责底座
+  - LLM/小模型负责语义完整性与意图判断
+  - 其输出主要用于动态调整等待时间、抑制误切、提升 `draft_allowed` 与 interruption 质量
+- 对当前项目，推荐把这一层实现为 runtime-owned 的 `semantic wait-time / endpoint controller`，而不是让主回复 LLM 高频兼任 endpoint 裁判。
+
+
+## Round 031｜2026-04-17｜专题研究：Gemma 4 小模型是否适合当前项目
+
+### 用户诉求
+
+- 深度研究：新出的 `Gemma 4` 模型如何；`2B / 4B` 多种小模型是否适合当前项目
+
+### 本轮产出
+
+- 新增专题研究文档：
+  - `docs/architecture/gemma-4-fit-for-current-project-zh-2026-04-17.md`
+- 同步补充：
+  - `docs/architecture/overview.md`
+- 文档重点覆盖：
+  - 确认 `Gemma 4` 的官方发布时间、模型家族与 `E2B / E4B` 的真实定位
+  - 结合当前项目的 `FunASR + tiered LLM + runtime-owned orchestration` 主线，判断它适不适合接入
+  - 给出按角色划分的建议：semantic judge / slot parser / main dialogue / realtime ASR
+
+### 本轮结论
+
+- `Gemma 4` 于 **2026-04-02** 正式发布；小模型 `E2B / E4B` 在官方定位上很强，兼具长上下文、agentic workflow、structured JSON、以及音频/图像输入能力。
+- 但对当前项目，最重要的判断是：
+  - **不适合**直接替换当前 realtime streaming ASR / endpoint 主链
+  - **不适合**现在就替代当前中文主对话模型主线
+  - **适合**作为文本侧 `SemanticTurnJudge` / `SemanticSlotParser` 的 A/B 候选，尤其是 `gemma-4-E4B-it`
+- 总结为一句话：Gemma 4 小模型很有潜力，但对当前项目更像“优质备选”，不是“应立刻切主线的默认答案”。
+
+
+## Round 032｜2026-04-17｜专题方案：streaming ASR + dynamic VAD + punctuation + runtime endpoint fusion + 小模型语义裁判
+
+### 用户诉求
+
+- 深度研究并提供具体方案：当前的 `streaming ASR + dynamic VAD + punctuation + runtime endpoint fusion + 小模型语义裁判` 应如何融合；典型决策流水线是什么；给出方案选项与推荐项
+
+### 本轮产出
+
+- 新增详细方案文档：
+  - `docs/architecture/streaming-asr-dynamic-vad-fusion-pipeline-zh-2026-04-17.md`
+- 新增 ADR：
+  - `docs/adr/0046-fused-streaming-endpoint-controller-stays-stage-based-and-runtime-owned.md`
+- 同步补充：
+  - `docs/architecture/overview.md`
+
+### 本轮结论
+
+- 当前项目最适合采用的不是单一 score、单一 learned endpointer、也不是纯规则阈值器，而是：
+  - **stage-based、runtime-owned 的融合式 endpoint controller**
+- 最推荐的主线方案是：
+  - `Acoustic floor + preview maturity gate + semantic wait-time controller + punctuation/clause evidence + slot/risk guard + runtime orchestrator`
+- 典型流水线应分为：
+  - `candidate_ready`
+  - `draft_ready`
+  - `accept_ready`
+- 其中：
+  - `dynamic VAD` 提供 base wait
+  - `SemanticTurnJudge` 主要输出 `dynamic_wait_policy + wait_delta_ms`
+  - `SemanticSlotParser` 负责命令型 accept 的 hard constraint
+  - 最终 accept 与 interruption 升级仍由 `internal/voice` 统一编排
+
+
+## Round 033｜2026-04-17｜实现第一版 stage-based fused endpoint controller
+
+### 用户诉求
+
+- 使用子 agent，合理规划后，并发直接开始实现此前推荐的第 2 项：
+  - 按推荐方案改服务端，把 `wait_delta_ms / candidate_ready / draft_ready / accept_ready` 真正落进代码
+
+### 本轮实现内容
+
+- 在 `internal/voice` 落地第一版融合式 wait controller：
+  - `TurnArbitration` 新增显式字段：
+    - `candidate_ready`
+    - `draft_ready`
+    - `accept_ready`
+    - `base_wait_ms`
+    - `rule_adjust_ms`
+    - `punctuation_adjust_ms`
+    - `semantic_wait_delta_ms`
+    - `slot_guard_adjust_ms`
+    - `effective_wait_ms`
+- `internal/voice/turn_detector.go` 现在不再只看一个 `required_silence`：
+  - 先算 acoustic/base wait
+  - 再叠加 lexical/rule hold
+  - 再叠加 punctuation/clause 调整
+  - 再叠加 semantic wait delta
+  - 再叠加 slot guard
+  - 最后统一折叠成当前 runtime 阶段结果
+- `internal/voice/semantic_judge.go`：
+  - 新增并消费 `dynamic_wait_policy + wait_delta_ms`
+  - 当模型未返回这两个字段时，runtime 会根据 `utterance_status + interruption_intent` 走保守默认值
+- `internal/voice/semantic_slot_parser.go`：
+  - 新增 `slot_guard_adjust_ms`
+  - `wait_more / clarify_needed / act_candidate` 现在都能进入同一条等待时间融合链
+- `internal/voice/asr_responder.go`：
+  - preview prewarm metadata 现会带上新的 readiness / wait-budget 字段，便于后续 tracing
+- 同步新增 / 扩展测试：
+  - `internal/voice/turn_detector_test.go`
+  - `internal/voice/semantic_judge_test.go`
+
+### 验证
+
+- `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session`
+
+### 本轮结论
+
+- 第一版代码已经把“融合策略”从文档真正推到了运行时主链里。
+- 当前实现仍保持兼容：
+  - 现有 `TurnArbitrationStage` 没有被粗暴推翻
+  - 新的 `candidate_ready -> draft_ready -> accept_ready` 先以 readiness 布尔形式落地
+- 这使得后续可以继续演进而不必立刻扩大 gateway / protocol 改动范围。
+
+
+## Round 034｜2026-04-17｜收敛 fused endpoint readiness 语义并补齐回归测试
+
+### 用户诉求
+
+- 使用子 agent，合理规划后并发继续实现此前推荐方案中的第 2 项。
+- 目标是把服务侧 stage-based fused endpoint controller 真正收敛到可验证状态。
+
+### 本轮实现与收敛
+
+- 主线程保留了当前 runtime 语义，不把 `accept_ready` 收窄成“已经接近 accept 阈值”：
+  - `candidate_ready`：文本/音频是否已经成熟到值得进入后续处理路径
+  - `draft_ready`：是否允许进入 draft / speculative planning
+  - `accept_ready`：是否结构上具备进入 accept path 的前提
+  - `accept_candidate / accept_now`：是否真正进入或达到静音接收窗口
+- 补齐并收敛了新增测试文件：
+  - `internal/voice/fused_endpoint_controller_test.go`
+- 新增测试明确覆盖：
+  - 完整问句在很早期就可以 `candidate_ready + draft_ready + accept_ready`
+  - 但在静音预算未满足前，仍不得 `accept_candidate / accept_now`
+  - `continue / correction / slot wait_more` 这类保守情形可以保持 `accept_ready=true`，同时通过更长的 `effective_wait_ms` 阻止真正接收
+  - `effective_wait_ms` 的断言按 clamp 后的融合结果校验，而不是机械相加
+
+### 并行结论
+
+- 子 agent 负责并行审阅测试语义与覆盖缺口。
+- 主线程直接完成本地收敛与回归。
+
+### 验证
+
+- `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session`
+
+### 本轮结论
+
+- 当前第一版 fused endpoint controller 的语义已更清晰：
+  - readiness 布尔值表达“结构成熟度”
+  - `accept_candidate / accept_now` 表达“真正接收窗口”
+- 这样更适合后续继续把语义裁判、slot guard、以及 speaking-time interruption 一并接到同一条 runtime-owned 控制链，而不需要反复改协议含义。
+
+
+## Round 035｜2026-04-17｜并行推进在线观测增强与 semantic judge A/B 主链
+
+### 用户诉求
+
+- 使用子 agent，合理规划后并发实现两件事：
+  1. 把 `effective_wait_ms / accept_candidate / accept_now` 等更细粒度在线 debug/metrics 打通
+  2. 把 small-LLM semantic judge 从“测试态融合”推进到“真实 session 可 A/B 的主链”
+
+### 本轮并行实现
+
+- 主线程负责 gateway / trace 观测增强：
+  - `inputPreviewTrace` 现已新增：
+    - `candidate_ready_latency_ms`
+    - `draft_ready_latency_ms`
+    - `accept_ready_latency_ms`
+    - `base_wait_ms`
+    - `rule_adjust_ms`
+    - `punctuation_adjust_ms`
+    - `semantic_wait_delta_ms`
+    - `slot_guard_adjust_ms`
+    - `effective_wait_ms`
+    - `hold_reason`
+    - `accept_reason`
+  - native realtime 与 `xiaozhi` 网关现在会在首次命中时输出：
+    - `gateway input preview candidate ready`
+    - `gateway input preview draft ready`
+    - `gateway input preview accept ready`
+  - `server_endpoint` 接收日志也显式带上 `accept_reason=server_endpoint`
+
+- 子 agent 负责 semantic judge 的主链 rollout：
+  - 现已引入 runtime-owned、session-sticky 的 rollout 配置：
+    - `control`
+    - `semantic`
+    - `sticky_percent`
+  - 默认仍保持保守：
+    - `rollout_mode=control`
+    - `rollout_percent=0`
+  - preview session 在创建时会基于 `session_id + device_id` 稳定分流
+  - `variant` 与 `enabled` 会作为 additive metadata 写入：
+    - `InputPreview.Arbitration`
+    - preview prewarm metadata
+
+### 本轮验证
+
+- `go test ./internal/voice ./internal/app ./internal/gateway ./internal/session`
+- `go test ./...`
+
+### 本轮结论
+
+- 当前服务侧已经不只是“把融合控制器算出来”，而是进一步具备了：
+  - **可在线观测**
+  - **可解释调参**
+  - **可做保守默认 + session-sticky A/B**
+- 这意味着下一步可以更放心地把 semantic judge、slot guard、以及后续更强的小模型策略接到真实流量上，而不是停留在单元测试或全局一刀切开关。
+
+---
+
+## 2026-04-17 架构/代码腐化审视补充
+
+### 本轮关注点
+
+- 从“当前主链是否已经被智能家居 demo 反向腐化”这个角度，重新审视默认值、配置装配层、静默回退和 optional seed profile。
+
+### 本轮发现
+
+- 主干架构本身仍健康，问题不在 `gateway/session/voice` 主链本体。
+- 主要风险集中在：
+  - agent 默认 persona / execution mode / skills 仍偏 household demo
+  - `voice.entity_catalog_profile` 默认仍会隐式落到 `seed_companion`
+  - semantic rollout helper 在 app 与 voice 两层重复定义
+  - `persona` 与 builtin `skill` 配错时存在静默漂移
+
+### 本轮收敛
+
+- 默认 agent 形态已改为：
+  - `persona=general_assistant`
+  - `execution_mode=dry_run`
+  - `assistant_name=小欧助手`
+  - `skills=\"\"`
+- `voice.entity_catalog_profile` 默认改为 `off`
+- semantic rollout normalize/support helper 已收口到 `internal/voice`
+- app 配置校验现在会拒绝：
+  - 未知 `agent.persona`
+  - 未知 builtin `agent.skills`
+
+### 持久化结果
+
+- 新增 ADR：
+  - `docs/adr/0047-generic-runtime-defaults-avoid-domain-lock-in.md`
+- 新增健康审视文档：
+  - `docs/architecture/architecture-and-code-health-review-zh-2026-04-17.md`

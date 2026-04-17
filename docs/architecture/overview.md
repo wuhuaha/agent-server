@@ -34,6 +34,8 @@ Runtime memory is now layered as well: a bounded recent-message window feeds imm
 
 Domain-specific behavior should enter this layer through runtime skills, not by hardwiring household rules into the executor path. A runtime skill may contribute prompt fragments, tool definitions, and tool execution logic while still staying behind the shared runtime interfaces.
 
+The repository defaults now follow that same boundary more strictly: the built-in default persona is `general_assistant`, the default execution mode is `dry_run`, and no vertical runtime skill is enabled implicitly. Product-specific behavior such as household control must be opted into explicitly through runtime skills and persona selection rather than smuggled in through bootstrap defaults.
+
 ### 3. Voice Runtime
 
 Provides built-in voice capabilities such as turn detection, ASR, TTS, and stream control. It prepares spoken turns for the `Agent Runtime Core` and renders spoken output afterward.
@@ -80,9 +82,13 @@ The latest interruption-verification slice keeps that same ownership model but m
 
 The next refinement on that same boundary now also lets an optional LLM act as a runtime-owned semantic judge instead of keeping every decision inside handwritten heuristics. The shared voice runtime may asynchronously ask a provider-neutral `agent.ChatModel` for a small structured judgement over a mature preview candidate, then merge that result back into `InputPreview.Arbitration` as advisory evidence such as semantic completeness, correction-in-progress, backchannel intent, or takeover intent. This does not replace the heuristic safety floor: adapters still do not call models directly, `CommitSuggested` is still not created by the model alone, and acoustic/timing gates remain the final safeguard for realtime behavior.
 
+The latest rollout slice keeps that semantic judge usable in production research rather than only in unit tests. Preview sessions now decide their semantic-judge variant once, inside `internal/voice`, using a session-sticky runtime rollout (`control`, `semantic`, or `sticky_percent`) instead of letting gateways or clients flip policy ad hoc. The resulting `variant/enabled` status is carried as additive preview arbitration metadata, so the same runtime path now supports conservative default-off behavior, controlled A/B activation, and later trace-based comparison without changing transport contracts or teaching adapters about provider reachability.
+
 The next slot-depth slice now extends that same runtime-owned path one step farther: `SemanticSlotParser` may first produce `domain / intent / slot completeness / actionability / clarify_needed`, and then a runtime-owned entity catalog grounder may turn positive alias evidence into canonical target or location summaries such as `客厅灯 -> 客厅灯` or `VS Code -> Visual Studio Code`. This grounding stays inside `internal/voice`, feeds only additive arbitration summaries such as `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`, and deliberately uses a positive-evidence rule: catalog hits may promote or clarify a parse, explicit multi-hit ambiguity may pull it back toward `clarify_needed`, but a catalog miss must not by itself negate the LLM slot parse because the seed catalog is intentionally incomplete during the research stage.
 
 The latest convergence slice keeps that path generic instead of letting seed demo logic leak into the runtime core. `internal/voice` may still own recent-context ranking, provider-neutral ASR hint generation, slot value normalization, and risk gating, but concrete smart-home or desktop entities now live behind an optional built-in catalog profile (`seed_companion`) instead of being treated as a permanent architecture assumption. High-risk confirmation now consumes abstract annotations such as `risk_level` from runtime-owned catalog or policy data rather than lexical business-term lists scattered through the voice runtime.
+
+That convergence now also applies to defaults: the shared voice runtime no longer enables the built-in seed catalog implicitly. `voice.entity_catalog_profile` defaults to `off`, while `seed_companion` remains an explicit research/demo profile that deployments may turn on deliberately.
 
 The latest output-orchestration slice also keeps the same compatibility boundary while making the planner more explicit. `internal/voice` now treats early speech output as structured clause planning rather than only raw string chunking: each internal clause carries boundary strength, a lightweight prosody hint, launchability before final turn settlement, and an estimated duration. The clause queue is now buffered so one slow TTS startup does not back-pressure later text deltas as aggressively, and the gateway now uses `ResponseAudioStart.Text` as the earliest trustworthy speech text when audio starts before the first delta is consumed. That means `response.start` can still truthfully advertise `text,audio` in the audio-first race without inventing a second protocol family.
 
@@ -93,6 +99,12 @@ The next playback-truth depth slice now pushes that same ownership into two more
 The current long-term voice direction now explicitly converges on a `server-primary hybrid` architecture after wake and session establishment: devices keep audio-front-end, local reflex, playback execution, playback telemetry, and fallback controls, while the shared voice runtime owns preview, early-processing gates, interruption arbitration, clause-level output orchestration, and playback-truth reconciliation. The public realtime contract still evolves additively and compatibility-first while that target graduates.
 
 The next service-side optimization priority is now explicit on top of that same architecture: do not widen the transport or model surface first. Instead, keep the cascade boundary and strengthen `internal/voice` with a multi-signal turn arbitrator, acoustic-first interruption verification, layered reversible early-processing, clause-aware output planning, finer playback-truth alignment, and runtime-owned dynamic biasing for domain entities.
+
+The current endpoint-fusion direction is now also explicit at the control-flow level: keep the controller stage-based and runtime-owned. In practice that means `internal/voice` should combine acoustic base wait, preview maturity, punctuation/clause evidence, semantic wait-time adjustments, and slot/risk guards through explicit readiness stages such as `candidate_ready`, `draft_ready`, and `accept_ready`, instead of collapsing everything into one gateway rule set or one black-box score.
+
+The current observability baseline on that same path is also one step deeper: gateway preview traces now record not only first partial and endpoint-candidate timing, but also the first time a preview becomes `candidate_ready`, `draft_ready`, or `accept_ready`, together with fused wait-budget fields such as `base_wait_ms`, `semantic_wait_delta_ms`, `slot_guard_adjust_ms`, `effective_wait_ms`, plus hold/accept reasons. That keeps quality tuning and rollout comparison grounded in runtime evidence rather than only in final accept labels.
+
+The latest open-source endpointing review reinforces that same ownership model. Integrated `streaming ASR + EOU` checkpoints are starting to appear, but the current Chinese/local mainline still fits a runtime-owned layered fusion path better than a single endpointer dependency. Future integrated `ASR + EOU` models should therefore enter this repository only as normalized provider hints behind `StreamingTranscriber`, while final `turn accept`, `slot completeness`, and speaking-time orchestration remain owned by `internal/voice`.
 
 ### 4. Device Adapters
 
@@ -185,6 +197,9 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [当前 realtime 全双工差距复核（2026-04-15）](realtime-full-duplex-gap-review-zh-2026-04-15.md)
 - [语音架构完整方案（2026-04-16）](voice-architecture-blueprint-zh-2026-04-16.md)
 - [语音架构执行路线图（2026-04-16）](voice-architecture-execution-roadmap-zh-2026-04-16.md)
+- [流式 ASR 与语义端点融合研究（2026-04-17）](streaming-asr-and-semantic-endpointing-research-zh-2026-04-17.md)
+- [融合式 streaming endpoint controller 方案（2026-04-17）](streaming-asr-dynamic-vad-fusion-pipeline-zh-2026-04-17.md)
+- [LLM 辅助语义完整性判断与 dynamic VAD 融合研究（2026-04-17）](llm-assisted-semantic-completeness-and-dynamic-vad-zh-2026-04-17.md)
 - [端到端时延预算与主观体感映射（2026-04-16）](latency-budget-and-subjective-feel-zh-2026-04-16.md)
 - [播放事实回传与 heard-text 真相链（2026-04-16）](playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md)
 - [分层 LLM + FunASR 增强策略研究（2026-04-17）](voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md)

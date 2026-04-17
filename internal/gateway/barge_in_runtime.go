@@ -117,7 +117,7 @@ func (r *connectionRuntime) previewForBargeIn(ctx context.Context, responder voi
 		}
 	}
 	observation.Preview = r.pendingBargeInPreview(observation.Preview)
-	trace, _, _, _, _ := r.previewTrace.ObservePreview(snapshot.SessionID, observation.Preview, time.Now().UTC())
+	trace, _ := r.previewTrace.ObservePreview(snapshot.SessionID, observation.Preview, time.Now().UTC())
 	observation.Trace = trace
 	return observation
 }

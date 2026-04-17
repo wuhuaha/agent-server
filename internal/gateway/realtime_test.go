@@ -131,21 +131,40 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 		t.Fatalf("expected preview audio bytes 640, got %d", trace.AudioBytes)
 	}
 
-	trace, firstPartial, speechStarted, endpointCandidate, commitSuggested := state.ObservePreview("sess_trace", voice.InputPreview{
+	trace, update := state.ObservePreview("sess_trace", voice.InputPreview{
 		PartialText:   "打开客厅灯",
 		AudioBytes:    1280,
 		SpeechStarted: true,
+		Arbitration: voice.TurnArbitration{
+			CandidateReady:   true,
+			AcceptReady:      true,
+			BaseWaitMs:       320,
+			EffectiveWaitMs:  320,
+			Reason:           "server_wait_more",
+			SemanticReady:    true,
+			SemanticIntent:   voice.SemanticIntentQuestion,
+			SemanticComplete: true,
+		},
 	}, startedAt.Add(120*time.Millisecond))
-	if !firstPartial {
+	if !update.FirstPartialObserved {
 		t.Fatal("expected first partial observation to be recorded")
 	}
-	if !speechStarted {
+	if !update.SpeechStartedObserved {
 		t.Fatal("expected speech start observation to be recorded")
 	}
-	if endpointCandidate {
+	if !update.CandidateReadyObserved {
+		t.Fatal("expected candidate-ready observation to be recorded")
+	}
+	if update.DraftReadyObserved {
+		t.Fatal("did not expect draft-ready observation on the first partial")
+	}
+	if !update.AcceptReadyObserved {
+		t.Fatal("expected accept-ready observation to be recorded")
+	}
+	if update.EndpointCandidateObserved {
 		t.Fatal("did not expect endpoint candidate on first partial")
 	}
-	if commitSuggested {
+	if update.CommitSuggestedObserved {
 		t.Fatal("did not expect commit suggestion on first partial")
 	}
 	if got := trace.SpeechStartLatencyMs(); got != 120 {
@@ -155,24 +174,65 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 		t.Fatalf("expected first partial latency 120ms, got %d", got)
 	}
 
-	trace, firstPartial, speechStarted, endpointCandidate, commitSuggested = state.ObservePreview("sess_trace", voice.InputPreview{
+	if got := trace.CandidateReadyLatencyMs(); got != 120 {
+		t.Fatalf("expected candidate-ready latency 120ms, got %d", got)
+	}
+	if got := trace.AcceptReadyLatencyMs(); got != 120 {
+		t.Fatalf("expected accept-ready latency 120ms, got %d", got)
+	}
+	if !trace.CandidateReady || !trace.AcceptReady || trace.DraftReady {
+		t.Fatalf("expected candidate/accept ready state to persist, got %+v", trace)
+	}
+	if trace.BaseWaitMs != 320 || trace.EffectiveWaitMs != 320 {
+		t.Fatalf("expected wait metrics to persist, got %+v", trace)
+	}
+	if trace.HoldReason != "server_wait_more" {
+		t.Fatalf("expected hold reason to persist, got %q", trace.HoldReason)
+	}
+
+	trace, update = state.ObservePreview("sess_trace", voice.InputPreview{
 		PartialText:     "打开客厅灯",
 		AudioBytes:      1920,
 		SpeechStarted:   true,
 		CommitSuggested: true,
 		EndpointReason:  "preview_tail_silence",
+		Arbitration: voice.TurnArbitration{
+			CandidateReady:   true,
+			DraftReady:       true,
+			AcceptReady:      true,
+			AcceptCandidate:  true,
+			AcceptNow:        true,
+			BaseWaitMs:       320,
+			EffectiveWaitMs:  320,
+			Reason:           "preview_tail_silence",
+			SemanticReady:    true,
+			SemanticIntent:   voice.SemanticIntentQuestion,
+			SemanticComplete: true,
+		},
 	}, startedAt.Add(420*time.Millisecond))
-	if firstPartial {
+	if update.FirstPartialObserved {
 		t.Fatal("expected first partial to stay one-shot")
 	}
-	if speechStarted {
+	if update.SpeechStartedObserved {
 		t.Fatal("expected speech start observation to stay one-shot")
 	}
-	if !endpointCandidate {
+	if update.CandidateReadyObserved {
+		t.Fatal("expected candidate-ready to stay one-shot")
+	}
+	if !update.DraftReadyObserved {
+		t.Fatal("expected draft-ready observation to be recorded")
+	}
+	if update.AcceptReadyObserved {
+		t.Fatal("expected accept-ready to stay one-shot")
+	}
+	if !update.EndpointCandidateObserved {
 		t.Fatal("expected endpoint candidate observation to be recorded")
 	}
-	if !commitSuggested {
+	if !update.CommitSuggestedObserved {
 		t.Fatal("expected commit suggestion observation to be recorded")
+	}
+	if got := trace.DraftReadyLatencyMs(); got != 420 {
+		t.Fatalf("expected draft-ready latency 420ms, got %d", got)
 	}
 	if got := trace.EndpointCandidateLatencyMs(); got != 420 {
 		t.Fatalf("expected endpoint candidate latency 420ms, got %d", got)
@@ -183,6 +243,12 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 	if trace.EndpointReason != "preview_tail_silence" {
 		t.Fatalf("expected endpoint reason to persist, got %q", trace.EndpointReason)
 	}
+	if trace.AcceptReason != "preview_tail_silence" {
+		t.Fatalf("expected accept reason to persist, got %q", trace.AcceptReason)
+	}
+	if trace.HoldReason != "" {
+		t.Fatalf("expected hold reason to clear after accept, got %q", trace.HoldReason)
+	}
 
 	cleared := state.Clear()
 	if cleared.PreviewID == "" {
@@ -191,6 +257,71 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 	if state.Current().PreviewID != "" {
 		t.Fatal("expected preview trace state to reset after clear")
 	}
+}
+
+func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.T) {
+	startedAt := time.Unix(1700000000, 0).UTC()
+	trace := inputPreviewTrace{
+		PreviewID:           "preview_1",
+		SessionID:           "sess_trace",
+		StartedAt:           startedAt,
+		FirstPartialAt:      startedAt.Add(80 * time.Millisecond),
+		CandidateReadyAt:    startedAt.Add(90 * time.Millisecond),
+		DraftReadyAt:        startedAt.Add(140 * time.Millisecond),
+		AcceptReadyAt:       startedAt.Add(90 * time.Millisecond),
+		EndpointCandidateAt: startedAt.Add(240 * time.Millisecond),
+		CommitSuggestedAt:   startedAt.Add(260 * time.Millisecond),
+		AudioBytes:          3200,
+		TurnStage:           "accept_candidate",
+		CandidateReady:      true,
+		DraftReady:          true,
+		AcceptReady:         true,
+		SemanticReady:       true,
+		SemanticComplete:    true,
+		SemanticIntent:      voice.SemanticIntentQuestion,
+		SlotReady:           true,
+		SlotComplete:        false,
+		SlotActionability:   voice.SemanticSlotActionabilityClarifyNeeded,
+		BaseWaitMs:          320,
+		PunctuationAdjustMs: -100,
+		SemanticWaitDeltaMs: -140,
+		SlotGuardAdjustMs:   80,
+		EffectiveWaitMs:     160,
+		AcceptReason:        "server_endpoint_candidate",
+	}
+
+	got := attrsToMap(appendInputPreviewTraceLogAttrs(nil, trace, startedAt.Add(300*time.Millisecond)))
+	for _, key := range []string{
+		"preview_candidate_ready_latency_ms",
+		"preview_draft_ready_latency_ms",
+		"preview_accept_ready_latency_ms",
+		"preview_effective_wait_ms",
+		"preview_semantic_wait_delta_ms",
+		"preview_punctuation_adjust_ms",
+		"preview_slot_guard_adjust_ms",
+		"preview_accept_reason",
+		"preview_slot_actionability",
+		"preview_semantic_intent",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("expected attrs to contain %s, got %#v", key, got)
+		}
+	}
+	if got["preview_accept_reason"] != "server_endpoint_candidate" {
+		t.Fatalf("expected preview_accept_reason to persist, got %#v", got["preview_accept_reason"])
+	}
+}
+
+func attrsToMap(attrs []any) map[string]any {
+	result := make(map[string]any, len(attrs)/2)
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, ok := attrs[i].(string)
+		if !ok {
+			continue
+		}
+		result[key] = attrs[i+1]
+	}
+	return result
 }
 
 func TestTurnTraceTracksFirstOutputMilestones(t *testing.T) {

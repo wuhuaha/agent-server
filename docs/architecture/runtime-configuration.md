@@ -78,15 +78,15 @@ The first RTOS bring-up path should not depend on image input. Text input is opt
 - `AGENT_SERVER_AGENT_TOOL_PROVIDER`
   - `builtin`: default local runtime tool backend
   - `noop`: disable runtime tools
-- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set injected on top of the shared core; current built-in option is `household_control`
+- `AGENT_SERVER_AGENT_SKILLS`: comma-separated runtime skill set injected on top of the shared core; default empty, current built-in option is `household_control`
 - `AGENT_SERVER_AGENT_LLM_PROVIDER`
   - `auto`: default behaviour; prefer `deepseek_chat` when a DeepSeek key is present, otherwise fall back to `bootstrap`
   - `bootstrap`: existing placeholder or bring-up executor
   - `deepseek_chat`: shared chat-completions-backed executor; it can target DeepSeek itself or a local OpenAI-compatible `/chat/completions` service
 - `AGENT_SERVER_AGENT_LLM_TIMEOUT_MS`: timeout for one LLM request
-- `AGENT_SERVER_AGENT_PERSONA`: built-in persona profile selector, currently `household_control_screen`
-- `AGENT_SERVER_AGENT_EXECUTION_MODE`: runtime execution policy, one of `simulation`, `dry_run`, or `live_control`
-- `AGENT_SERVER_AGENT_ASSISTANT_NAME`: assistant display or speaking name used by the built-in household prompt template, default `小欧管家`
+- `AGENT_SERVER_AGENT_PERSONA`: built-in persona profile selector, one of `general_assistant` or `household_control_screen`, default `general_assistant`
+- `AGENT_SERVER_AGENT_EXECUTION_MODE`: runtime execution policy, one of `simulation`, `dry_run`, or `live_control`, default `dry_run`
+- `AGENT_SERVER_AGENT_ASSISTANT_NAME`: assistant display or speaking name used by the built-in prompt template, default `小欧助手`
 - `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT`: optional persona-template override; execution-mode policy is still appended by the runtime
 - `AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL`: default `https://api.deepseek.com`
 - `AGENT_SERVER_AGENT_DEEPSEEK_API_KEY` or `DEEPSEEK_API_KEY`
@@ -99,6 +99,7 @@ Current runtime note:
 - the current `deepseek_chat` integration stays inside `internal/agent`; device gateways, channel adapters, and the voice runtime still depend only on the shared `TurnExecutor`
 - when `AGENT_SERVER_AGENT_LLM_PROVIDER` is unset or `auto`, the runtime chooses `deepseek_chat` if a DeepSeek key is present; otherwise it stays on `bootstrap`
 - when `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is empty, the runtime injects a built-in assistant persona selected by `AGENT_SERVER_AGENT_PERSONA`
+- the repository defaults are intentionally generic: no built-in vertical skill is enabled by default, and household behavior must be opted into explicitly through `AGENT_SERVER_AGENT_SKILLS` and, if desired, `AGENT_SERVER_AGENT_PERSONA=household_control_screen`
 - prompt composition inside the shared runtime is now layered as:
   - core persona section
   - runtime output-contract section
@@ -156,6 +157,25 @@ Current host recommendation for the phase-1 voice demo:
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS`: shortened silence window used when a provider preview carries an explicit endpoint hint and the latest partial already looks complete, default `160`
 - `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`: minimum staged interrupt audio before lexically complete barge-in is accepted, default `120`
 - `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS`: extra staged audio hold applied when the current interrupt preview still looks incomplete, default `240`
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ENABLED`: enable the runtime-owned semantic judge capability, default `true`
+- `AGENT_SERVER_VOICE_SEMANTIC_JUDGE_PROVIDER`: semantic judge model provider (`openai_compat`, `deepseek_chat`, or empty)
+- `AGENT_SERVER_VOICE_SEMANTIC_JUDGE_BASE_URL`: semantic judge model base URL
+- `AGENT_SERVER_VOICE_SEMANTIC_JUDGE_API_KEY`: semantic judge model API key when required
+- `AGENT_SERVER_VOICE_SEMANTIC_JUDGE_MODEL`: semantic judge model name
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ROLLOUT_MODE`: semantic judge rollout mode, one of `control`, `semantic`, or `sticky_percent`; default `control`
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_ROLLOUT_PERCENT`: sticky-percent rollout bucket threshold, default `0`
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_TIMEOUT_MS`: semantic judge timeout, default `220`
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_RUNES`: minimum mature preview length before judge launch, default `2`
+- `AGENT_SERVER_VOICE_LLM_SEMANTIC_JUDGE_MIN_STABLE_FOR_MS`: minimum stable dwell before judge launch unless other gates already promote the preview, default `120`
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_ENABLED`: enable the runtime-owned slot parser capability, default `true`
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_PROVIDER`: slot parser model provider
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_BASE_URL`: slot parser model base URL
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_API_KEY`: slot parser model API key when required
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MODEL`: slot parser model name
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_TIMEOUT_MS`: slot parser timeout, default `280`
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_RUNES`: minimum mature preview length before slot parsing, default `4`
+- `AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_STABLE_FOR_MS`: minimum stable dwell before slot parsing, default `160`
+- `AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE`: built-in grounding profile (`off` default, or `seed_companion`)
 - `AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED`: enable shared clause-level incremental TTS planning when a synthesizer is configured, default `true`
 - `AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES`: minimum stable clause size before the speech planner emits an early segment, default `6`
 - `AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES`: preferred clause size for early speech-planner chunking, default `24`
@@ -205,8 +225,22 @@ Current server-endpoint candidate note:
 - the shared candidate endpoint policy is runtime-configurable through `AGENT_SERVER_VOICE_SERVER_ENDPOINT_MIN_AUDIO_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_SILENCE_MS`, `AGENT_SERVER_VOICE_SERVER_ENDPOINT_LEXICAL_MODE`, and `AGENT_SERVER_VOICE_SERVER_ENDPOINT_INCOMPLETE_HOLD_MS`, and those settings are applied uniformly to both `funasr_http` and `iflytek_rtasr` responder wiring
 - `AGENT_SERVER_VOICE_SERVER_ENDPOINT_HINT_SILENCE_MS` lets the shared detector use a shorter silence window when a provider preview already carries an explicit endpoint hint for a lexically complete partial
 - the current default candidate policy is intentionally conservative: if the latest partial still looks lexically unfinished, the preview path waits an additional hold window before suggesting auto-commit
+- the current online trace baseline now also exposes fused endpoint-controller timing and wait-budget evidence in gateway logs, including:
+  - `preview_candidate_ready_latency_ms`
+  - `preview_draft_ready_latency_ms`
+  - `preview_accept_ready_latency_ms`
+  - `preview_base_wait_ms`
+  - `preview_semantic_wait_delta_ms`
+  - `preview_slot_guard_adjust_ms`
+  - `preview_effective_wait_ms`
+  - `preview_hold_reason`
+  - `preview_accept_reason`
 - discovery and `/v1/info` now expose this path as `server_endpoint.main_path_candidate=true` when the selected voice provider supports shared preview-driven endpointing, even if the instance keeps the candidate disabled
 - preview polling no longer relies on websocket read timeouts for the non-terminal preview loop; native realtime and `xiaozhi` now keep the socket reusable after hidden auto-commit and a later client-driven close
+- the semantic judge now also has a runtime-owned rollout switch instead of only a global on/off toggle:
+  - `control`: never launch the semantic judge, but still expose `variant=control`
+  - `semantic`: always use the semantic judge when configured
+  - `sticky_percent`: choose once per preview session using a stable `session/device` hash and keep that variant fixed for the whole session
 - inbound audio barge-in now stages candidate interrupt audio and applies one shared adaptive threshold instead of interrupting on the first frame:
   - lexically complete interrupt previews may cut in after `AGENT_SERVER_VOICE_BARGE_IN_MIN_AUDIO_MS`
   - incomplete interrupt previews must clear an additional `AGENT_SERVER_VOICE_BARGE_IN_HOLD_AUDIO_MS`
