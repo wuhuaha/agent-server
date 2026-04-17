@@ -2,6 +2,30 @@
 
 ## 2026-04-17
 
+### Short Client-Committed Utterances Still Produce Empty ASR Results In Live RTOS Traffic
+
+- Problem: the real `2026-04-17 15:00` device session showed two early committed utterances with valid PCM payloads (`40960` and `35840` bytes, about `1.28s` and `1.12s`) that still ended with `text_len=0` and `partials=0`, causing the runtime to fall back to `未识别到有效语音。`.
+- Resolution: identified and documented in `docs/architecture/realtime-voice-log-analysis-zh-2026-04-17-1500.md` as a current P0 live blocker. The next implementation slice should focus on short-utterance ASR robustness before broader conversational tuning.
+- Status: identified; implementation remains open.
+
+### Speaking-Time Preview Partial Is Still Too Late For Natural Barge-In
+
+- Problem: in the same live RTOS session, the speaking-time preview path did eventually upgrade `duck_only` to `hard_interrupt`, but the first preview partial and accept-ready signal both appeared only after about `840ms`, which is still too slow for natural-feeling user interruption.
+- Resolution: documented as a measured live bottleneck in `docs/architecture/realtime-voice-log-analysis-zh-2026-04-17-1500.md`. The next optimization loop should explicitly target earlier preview partial visibility and earlier accept-candidate readiness during speaking.
+- Status: identified; implementation remains open.
+
+### TTS First-Audio Latency Still Dominates Subjective Responsiveness Even After Early Speaking
+
+- Problem: the live `15:00` session showed that once preview finalize fast path engaged, LLM first text delta dropped to about `180ms` and `speaking` could be announced by `382ms`, but the first actual audio byte still arrived around `2254ms`, while earlier turns took `4s+` to `7s+`.
+- Resolution: documented as the main output-side live bottleneck in `docs/architecture/realtime-voice-log-analysis-zh-2026-04-17-1500.md`. The next iteration should prioritize TTS first-segment start latency over further LLM optimization.
+- Status: identified; implementation remains open.
+
+### `write_failed` Playback Clears Still Lack A Root-Cause Error In Live Logs
+
+- Problem: the same live session proved that audio did reach the device because playback ACK marks advanced to `990ms`, but the stream later cleared with `Reason:write_failed` and the websocket closed with `1005` without a more specific outbound write error in the logs.
+- Resolution: documented as an observability blocker in `docs/architecture/realtime-voice-log-analysis-zh-2026-04-17-1500.md`. Follow-up logging should include the concrete websocket write error and outbound event context so future device failures can be classified without guesswork.
+- Status: identified; implementation remains open.
+
 ### Wrapper-Added `NextSegment()` Methods Could Trap Realtime Playback In An EOF Spin
 
 - Problem: `cancelOnCloseAudioStream` and `pcm16EffectAudioStream` both exposed `NextSegment()` passthrough methods, so native realtime treated even plain returned audio streams as `voice.SegmentedAudioStream`. On a one-shot stream, `startAudioStream(...)` then saw `io.EOF` and kept looping forever on the segmented-path `continue`, leaving the session stuck in `speaking` and suppressing the final return-to-active update.
@@ -868,3 +892,19 @@
   - logged `xiaozhi` hello negotiation, listen ingress, compat session startup, and `turn request prepared`
   - expanded playback-ack logging with explicit `response_id / playback_id / segment_id / played_duration_ms / cleared_reason`
 - Status: resolved for the current joint-debug baseline. The first RTOS/device联调 now has one shared info-level breadcrumb path instead of requiring ad hoc temporary patches.
+
+### Realtime Voice Preview/TTS Runtime Was Enabled In Code But Not Fully Visible Or Warm In Production
+
+- Problem: runtime research and code had already introduced `server_endpoint`, preview collaboration, playback ACK, and streaming TTS orchestration, but the actual machine still showed several joint-debug blockers:
+  - discovery had not truly advertized `server_endpoint.enabled=true` and `preview_events.enabled=true`
+  - preview first partial latency still carried an avoidable online preview chunk + cold-start penalty
+  - TTS lacked an explicit first-chunk milestone, making it hard to separate planner delay from synthesizer delay
+  - `write_failed` playback clears still lacked enough heard-text context for root-cause analysis
+- Resolution:
+  - enabled runtime env so discovery now advertizes `server_endpoint.enabled=true` and `voice_collaboration.preview_events.enabled=true`
+  - kept FunASR online preview at `stream_chunk_size=[0,6,3]` / `stream_preview_min_audio_ms=240`
+  - added preload-time online preview warmup in `workers/python/src/agent_server_workers/funasr_service.py` to reduce first-user cold-start jitter
+  - added `tts first audio chunk ready` milestone logging in `internal/voice/logging_synthesizer.go`
+  - expanded playback-clear diagnostics with `gateway playback ack write_failed observed` and playback/heard-text segment metadata in `internal/gateway/realtime_ws.go` and `internal/gateway/voice_collaboration.go`
+  - fixed `internal/voice/speech_planner.go` so no-punctuation streaming text now force-cuts at `TargetChunkRunes` instead of waiting until very long buffers or finalize before starting TTS
+- Status: resolved for the current runtime baseline. The next device round should use the new logs to validate whether first preview partial and first audio chunk both move earlier on real traffic.

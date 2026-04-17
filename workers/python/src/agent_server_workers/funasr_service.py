@@ -202,6 +202,7 @@ class FunASREngine:
                 self._ensure_fsmn_vad_model()
             if self.config.kws_enabled:
                 self._ensure_kws_model()
+            self._warm_preloaded_runtime()
         except Exception as exc:  # noqa: BLE001
             self._preload_completed = False
             self._preload_error = str(exc)
@@ -209,6 +210,42 @@ class FunASREngine:
             raise
         self._preload_completed = True
         self._preload_error = ""
+
+    def _warm_preloaded_runtime(self) -> None:
+        # 仅加载模型并不能消除首轮 CUDA kernel / graph 初始化开销。
+        # 这里在后台 preload 阶段做一次“静音热身”，把首个 preview partial 的冷启动
+        # 抖动尽量前置到服务启动期，而不是压到第一位真实用户身上。
+        try:
+            self._warm_online_preview_path()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[funasr-worker] online preview warmup skipped: {exc}", file=sys.stderr)
+
+    def _warm_online_preview_path(self) -> None:
+        if not self._online_preview_enabled():
+            return
+        sample_rate_hz = 16000
+        channels = 1
+        chunk_bytes = self._stream_chunk_bytes(sample_rate_hz, channels)
+        if chunk_bytes <= 0:
+            return
+        cache: dict[str, Any] = {}
+        silence = bytes(chunk_bytes)
+        self._run_online_preview(
+            silence,
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+            language=self.config.language,
+            cache=cache,
+            is_final=False,
+        )
+        self._run_online_preview(
+            b"",
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+            language=self.config.language,
+            cache=cache,
+            is_final=True,
+        )
 
     def start_background_preload(self) -> None:
         if not self.config.preload_models:

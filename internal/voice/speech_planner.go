@@ -642,6 +642,11 @@ func plannedSpeechBoundary(runes []rune, cfg SpeechPlannerConfig, flush bool) in
 		if lastSpace >= cfg.MinChunkRunes {
 			return lastSpace
 		}
+		if !flush {
+			// 实时语音场景里，不能因为缺少逗号/句号就一直攒到超长再起播。
+			// 一旦累计到目标长度，先按 target rune 强制切出首段，让 TTS 尽早启动。
+			return cfg.TargetChunkRunes
+		}
 	}
 	if total >= maxChunkRunes {
 		switch {

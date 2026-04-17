@@ -954,6 +954,7 @@ func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime,
 	}
 	runtime.syncAnnouncedPlaybackContext()
 	_, totalPlayed, heardText := runtime.recordPlaybackCleared(time.Now().UTC(), strings.TrimSpace(payload.ClearedAfterSegmentID), payload.Reason)
+	debug := runtime.playbackAckDebugSnapshot(strings.TrimSpace(payload.ClearedAfterSegmentID))
 	if runtime.voiceSession != nil {
 		switch {
 		case strings.TrimSpace(heardText) != "":
@@ -962,7 +963,30 @@ func (h *realtimeWSHandler) recordPlaybackAckCleared(runtime *connectionRuntime,
 			runtime.voiceSession.ObservePlaybackMarkFact(totalPlayed)
 		}
 	}
-	logPlaybackAckInfo(h.logger, "gateway playback ack cleared", runtime, payload)
+	extraAttrs := appendPlaybackAckDebugLogAttrs([]any{
+		"playback_total_played_ms", audioDurationMs(totalPlayed),
+		"playback_heard_text", strings.TrimSpace(heardText),
+		"session_state", runtime.session.Snapshot().State,
+		"input_state", runtime.session.Snapshot().InputState,
+		"output_state", runtime.session.Snapshot().OutputState,
+	}, debug)
+	logPlaybackAckInfo(h.logger, "gateway playback ack cleared", runtime, payload, extraAttrs...)
+	if strings.EqualFold(strings.TrimSpace(payload.Reason), "write_failed") {
+		h.logger.Warn("gateway playback ack write_failed observed",
+			append([]any{
+				"session_id", runtime.session.Snapshot().SessionID,
+				"remote_addr", runtime.remoteAddr,
+				"response_id", strings.TrimSpace(payload.ResponseID),
+				"playback_id", strings.TrimSpace(payload.PlaybackID),
+				"cleared_after_segment_id", strings.TrimSpace(payload.ClearedAfterSegmentID),
+				"playback_total_played_ms", audioDurationMs(totalPlayed),
+				"playback_heard_text", strings.TrimSpace(heardText),
+				"session_state", runtime.session.Snapshot().State,
+				"input_state", runtime.session.Snapshot().InputState,
+				"output_state", runtime.session.Snapshot().OutputState,
+			}, appendPlaybackAckDebugLogAttrs(nil, debug)...)...,
+		)
+	}
 	snapshot := runtime.session.Snapshot()
 	if snapshot.State == session.StateSpeaking {
 		return interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{

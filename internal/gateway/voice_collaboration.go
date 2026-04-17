@@ -134,6 +134,18 @@ type playbackAckState struct {
 	waitCh        chan struct{}
 }
 
+type playbackAckDebugSnapshot struct {
+	Meta          audioPlaybackMeta
+	StartedAt     time.Time
+	LastMarkMs    int
+	ClearedAt     time.Time
+	ClearedReason string
+	CompletedAt   time.Time
+	Completed     bool
+	Terminal      playbackAckTerminal
+	SegmentCount  int
+}
+
 type playbackAckTerminal string
 
 const (
@@ -424,6 +436,22 @@ func (r *connectionRuntime) playbackAckMeta() audioPlaybackMeta {
 	return r.playbackAckState.meta
 }
 
+func (r *connectionRuntime) playbackAckDebugSnapshot(segmentID string) playbackAckDebugSnapshot {
+	r.playbackAckState.mu.Lock()
+	defer r.playbackAckState.mu.Unlock()
+	return playbackAckDebugSnapshot{
+		Meta:          playbackAckMetaForSegmentLocked(&r.playbackAckState, segmentID),
+		StartedAt:     r.playbackAckState.startedAt,
+		LastMarkMs:    r.playbackAckState.lastMarkMs,
+		ClearedAt:     r.playbackAckState.clearedAt,
+		ClearedReason: r.playbackAckState.clearedReason,
+		CompletedAt:   r.playbackAckState.completedAt,
+		Completed:     r.playbackAckState.completed,
+		Terminal:      r.playbackAckState.terminal,
+		SegmentCount:  len(r.playbackAckState.segments),
+	}
+}
+
 func (r *connectionRuntime) syncAnnouncedPlaybackContext() {
 	if r == nil || r.voiceSession == nil {
 		return
@@ -583,6 +611,23 @@ func logPlaybackAckInfo(logger *slog.Logger, msg string, runtime *connectionRunt
 	base = appendPlaybackAckPayloadLogAttrs(base, payload)
 	base = append(base, attrs...)
 	logger.Info(msg, base...)
+}
+
+func appendPlaybackAckDebugLogAttrs(attrs []any, debug playbackAckDebugSnapshot) []any {
+	meta := debug.Meta
+	return append(attrs,
+		"playback_segment_id", strings.TrimSpace(meta.SegmentID),
+		"playback_segment_index", meta.SegmentIndex,
+		"playback_segment_text", strings.TrimSpace(meta.Text),
+		"playback_expected_duration_ms", audioDurationMs(meta.ExpectedDuration),
+		"playback_duration_before_ms", audioDurationMs(meta.DurationBefore),
+		"playback_duration_after_ms", audioDurationMs(meta.DurationAfter),
+		"playback_announced_text", strings.TrimSpace(meta.TextAfter),
+		"playback_last_mark_ms", debug.LastMarkMs,
+		"playback_terminal", string(debug.Terminal),
+		"playback_completed", debug.Completed,
+		"playback_segment_count", debug.SegmentCount,
+	)
 }
 
 func appendPlaybackAckPayloadLogAttrs(attrs []any, payload any) []any {

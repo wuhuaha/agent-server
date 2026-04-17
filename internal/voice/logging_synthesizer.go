@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"time"
 )
 
 type LoggingSynthesizer struct {
@@ -82,6 +83,7 @@ func (s LoggingSynthesizer) StreamSynthesize(ctx context.Context, req SynthesisR
 		turnID:    req.TurnID,
 		traceID:   req.TraceID,
 		deviceID:  req.DeviceID,
+		startedAt: time.Now(),
 	}, nil
 }
 
@@ -92,8 +94,10 @@ type loggingAudioStream struct {
 	turnID       string
 	traceID      string
 	deviceID     string
+	startedAt    time.Time
 	chunkCount   int
 	totalBytes   int
+	firstChunkAt time.Time
 	closedLogged bool
 }
 
@@ -107,6 +111,18 @@ func (s *loggingAudioStream) Next(ctx context.Context) ([]byte, error) {
 	}
 	s.chunkCount++
 	s.totalBytes += len(chunk)
+	if s.logger != nil && s.firstChunkAt.IsZero() {
+		s.firstChunkAt = time.Now()
+		s.logger.Info("tts first audio chunk ready",
+			"session_id", s.sessionID,
+			"turn_id", s.turnID,
+			"trace_id", s.traceID,
+			"device_id", s.deviceID,
+			"tts_first_chunk_latency_ms", s.firstChunkAt.Sub(s.startedAt).Milliseconds(),
+			"audio_chunk_bytes", len(chunk),
+			"audio_chunk_index", s.chunkCount,
+		)
+	}
 	return chunk, nil
 }
 

@@ -50,6 +50,36 @@ func TestSpeechPlannerSegmentsStableClausesAndFinalTail(t *testing.T) {
 	}
 }
 
+func TestSpeechPlannerForceCutsAtTargetWithoutPunctuationForEarlyAudioStart(t *testing.T) {
+	planner := NewSpeechPlanner(SpeechPlannerConfig{
+		Enabled:          true,
+		MinChunkRunes:    4,
+		TargetChunkRunes: 8,
+	})
+
+	clauses := planner.ObserveTextDeltaClauses("我现在帮你查一下明天周几")
+	if len(clauses) != 1 {
+		t.Fatalf("expected one forced-breath clause, got %+v", clauses)
+	}
+	if clauses[0].Text != "我现在帮你查一下" {
+		t.Fatalf("unexpected early clause %q", clauses[0].Text)
+	}
+	if clauses[0].BoundaryKind != SpeechClauseBoundaryForcedBreath || !clauses[0].CanStartBeforeFinalized {
+		t.Fatalf("expected forced-breath early clause, got %+v", clauses[0])
+	}
+
+	clauses = planner.FinalizeTextClauses("我现在帮你查一下明天周几。")
+	if len(clauses) != 1 {
+		t.Fatalf("expected one final tail clause, got %+v", clauses)
+	}
+	if clauses[0].Text != "明天周几。" {
+		t.Fatalf("unexpected final tail clause %q", clauses[0].Text)
+	}
+	if clauses[0].BoundaryKind != SpeechClauseBoundaryFinalFlush || clauses[0].CanStartBeforeFinalized {
+		t.Fatalf("expected finalized tail clause, got %+v", clauses[0])
+	}
+}
+
 func TestBootstrapResponderSpeechPlannerStartsSynthesisBeforeStreamFinishes(t *testing.T) {
 	executor := &blockingStreamingExecutor{
 		firstDeltaEmitted: make(chan struct{}),

@@ -2,6 +2,12 @@
 
 ## 2026-04-17
 
+- Added a durable live-log replay note for the `2026-04-17 15:00` RTOS device session under `docs/architecture/realtime-voice-log-analysis-zh-2026-04-17-1500.md`:
+  - reconstructed the main session timeline from `agentd`, `funasr-worker`, and `cosyvoice-fastapi` logs
+  - confirmed the public path was still `client commit` (`server_endpoint_enabled=false`, `preview_events_enabled=false`) while internal preview / barge-in / playback-ack runtime already participated
+  - identified the concrete live bottleneck order as short-utterance empty ASR, late speaking-time preview partials, TTS first-audio latency, and missing root-cause detail behind `write_failed`
+  - captured turn-by-turn timing evidence so the next optimization loop can target measured live pain points instead of broad guesses
+
 - Landed the first LLM-assisted turn-taking and interruption slice without moving provider logic into adapters:
   - added `internal/voice.SemanticTurnJudge` plus `LLMSemanticTurnJudge`, which asks a provider-neutral `agent.ChatModel` for a structured semantic judgement over mature preview candidates
   - preview sessions may now asynchronously merge semantic completeness, correction, backchannel, and takeover signals back into `InputPreview.Arbitration`
@@ -1144,3 +1150,29 @@
     - `go test ./internal/voice ./internal/gateway ./internal/app`
     - `go test ./...`
     - `make test-go-integration`
+
+- 完成了一轮 realtime voice 运行态收敛与时延压缩，重点解决“能力已实现但实际未真正开出 / 首轮延迟偏大 / 缺关键日志”的问题：
+  - 运行态已确认 discovery 真正开出：
+    - `server_endpoint.enabled=true`
+    - `voice_collaboration.preview_events.enabled=true`
+  - 为 `write_failed` 联调补齐了服务端根因日志：
+    - `internal/gateway/realtime_ws.go`
+    - `internal/gateway/voice_collaboration.go`
+    - 新增 `gateway playback ack write_failed observed`，可直接看到 `heard_text / segment_text / announced_text / played_ms / session_state`
+  - 为 TTS 首包分析补齐了 runtime 里程碑日志：
+    - `internal/voice/logging_synthesizer.go`
+    - 新增 `tts first audio chunk ready`，显式记录 `tts_first_chunk_latency_ms`
+  - 为更早起播修复了 speech planner 的无标点长尾等待：
+    - `internal/voice/speech_planner.go`
+    - 当流式文本达到 `TargetChunkRunes` 且仍无标点边界时，改为主动切出 forced-breath clause，而不是继续等待到超长或 finalize
+    - 新增回归测试 `TestSpeechPlannerForceCutsAtTargetWithoutPunctuationForEarlyAudioStart`
+  - 为压第一轮 preview partial 冷启动抖动，在 `workers/python/src/agent_server_workers/funasr_service.py` 中补了 online preview warmup：
+    - preload 后主动执行一次静音 warmup，把首轮 CUDA / kernel 开销前置到服务启动期
+  - 同步把本轮结论落盘到：
+    - `docs/architecture/realtime-voice-runtime-tuning-zh-2026-04-17.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/gateway ./internal/app`
+    - `python3 -m py_compile workers/python/src/agent_server_workers/funasr_service.py`
+    - `curl -sf http://127.0.0.1:8091/healthz`
+    - `curl -sf http://127.0.0.1:8080/healthz`
+    - `curl -sf http://127.0.0.1:8080/v1/realtime`

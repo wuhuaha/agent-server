@@ -52,6 +52,10 @@
 - `RealtimeSession` snapshots must stay lightweight metadata views; accumulated turn audio is now stored privately in the session and exported only once at `CommitTurn`.
 - The currently advertised realtime turn-taking contract is `client_wakeup_client_commit`; discovery, config defaults, docs, and schemas must not imply server-side VAD until that path exists end to end.
 - Shared server endpointing is no longer treated only as a hidden experiment: discovery and `/v1/info` now expose a structured `server_endpoint` object that marks the path as a main-path candidate when the selected voice provider supports shared preview-driven auto-commit, while `turn_mode` still stays on `client_wakeup_client_commit` until a later default-rollout decision.
+- The live RTOS session around `2026-04-17 15:00` established a measured bottleneck order for the current voice stack:
+  - the public negotiated path is still `client commit`, not `server endpoint primary` (`server_endpoint_enabled=false`, `preview_events_enabled=false`)
+  - the shared runtime preview / barge-in / playback-ack chain is already active internally and should be treated as real mainline behavior, not just debug scaffolding
+  - the next live-traffic priorities are short-utterance ASR robustness, earlier speaking-time preview partials, TTS first-audio latency, and richer root-cause logging behind `write_failed`
 - The next true full-duplex bottleneck is no longer "missing endpoint heuristics first"; it is the single-track realtime session model. The mainline architecture priority is now to introduce distinct internal input and output lanes before treating more endpoint or planner tuning as the primary fix.
 - The current realtime stack should be described internally as strong half-duplex plus adaptive interruption plus early TTS overlap, not as finished true full-duplex orchestration.
 - The shared agent runtime now owns prompt composition as three layers: persona template, runtime output contract, and execution-mode policy.
@@ -562,3 +566,11 @@
     - `voice semantic slot parser started/completed/failed`
   - preview trace 现在除 `candidate / draft / accept` 外，还应把 `semantic_ready / slot_ready` 的首达时延一起视作主观实时性基线
   - playback-ack 诊断不应只看整包 payload；`response_id / playback_id / segment_id / played_duration_ms / cleared_reason` 现已作为显式 grep 字段进入 shared logs
+
+- 当前 realtime voice 运行态联调的 durable 结论（2026-04-17）是：
+  - `server_endpoint.enabled=true` 与 `preview_events.enabled=true` 已在本机 discovery 真正开出，但单会话仍坚持 discovery + `session.start.capabilities` 双向协商，不做单边强开
+  - 历史上的 `preview_first_partial_latency_ms≈840` 主因是 FunASR online preview 默认 `stream_chunk_size=0,10,5` 带来的约 `600ms` 主块长，而不是 Go 网关 40ms 分片本身
+  - 当前运行态收敛到 `stream_chunk_size=[0,6,3]` 与 `stream_preview_min_audio_ms=240`，并新增 worker preload 后的 online preview warmup，把第一位真实用户的冷启动抖动尽量前置到服务启动期
+  - CosyVoice 当前 `stream=true` 的首包时延与首段文本长度强相关；服务侧最现实的优化优先级是“更短首段 + 更早提交 TTS”，不是继续假设 TTS provider 会天然极早吐首包
+  - speech planner 现在必须支持“达到 `TargetChunkRunes` 但仍无标点时主动 forced-breath 切段”，否则会把第一段 TTS 拖到 finalize 才启动，直接破坏 realtime 体验
+  - 端侧 `write_failed` 联调不能只看 cleared reason；服务端现在应同时记录 `heard_text / segment_text / announced_text / played_ms / session_state` 来判断实际播到了哪里
