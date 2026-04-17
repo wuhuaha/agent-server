@@ -399,6 +399,22 @@ func (h *xiaozhiWSHandler) handleHello(runtime *connectionRuntime, peer *xiaozhi
 	state.inputFrameDurationMs = audio.FrameDuration
 	state.deviceID = firstNonEmpty(strings.TrimSpace(msg.DeviceID), strings.TrimSpace(msg.DeviceMAC), state.deviceID)
 
+	if h.logger != nil {
+		h.logger.Info("gateway compat hello negotiated",
+			"session_id", state.sessionID,
+			"device_id", state.deviceID,
+			"client_id", state.clientID,
+			"binary_protocol_version", state.binaryProtocolVersion,
+			"input_codec", state.inputCodec,
+			"input_sample_rate_hz", state.inputSampleRate,
+			"input_channels", state.inputChannels,
+			"input_frame_duration_ms", state.inputFrameDurationMs,
+			"normalized_input_codec", runtime.inputNormalizer.OutputCodec(),
+			"normalized_input_sample_rate_hz", runtime.inputNormalizer.OutputSampleRate(),
+			"normalized_input_channels", runtime.inputNormalizer.OutputChannels(),
+		)
+	}
+
 	return peer.WriteJSON(xiaozhiHelloResponse{
 		Type:      "hello",
 		Version:   firstNonEmptyInt(state.binaryProtocolVersion, normalizeXiaozhiProtocolVersion(h.profile.WelcomeVersion)),
@@ -441,6 +457,16 @@ func (h *xiaozhiWSHandler) validateHello(audio xiaozhiAudioParams) error {
 
 func (h *xiaozhiWSHandler) handleListen(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, msg xiaozhiListenMessage) error {
 	state.listenMode = firstNonEmpty(strings.TrimSpace(msg.Mode), state.listenMode)
+	if h.logger != nil {
+		h.logger.Info("gateway compat listen received",
+			"session_id", state.sessionID,
+			"device_id", state.deviceID,
+			"listen_state", strings.TrimSpace(msg.State),
+			"listen_mode", state.listenMode,
+			"text_len", len(strings.TrimSpace(msg.Text)),
+			"audio_turn_open", state.audioTurnOpen,
+		)
+	}
 	switch strings.ToLower(strings.TrimSpace(msg.State)) {
 	case "start":
 		if err := h.interruptSpeaking(runtime, peer, state); err != nil {
@@ -612,12 +638,24 @@ func (h *xiaozhiWSHandler) ensureSessionStarted(runtime *connectionRuntime, stat
 	if err := applyReadDeadline(runtime, started, h.runtimeProfile()); err != nil {
 		return session.Snapshot{}, err
 	}
+	if h.logger != nil {
+		h.logger.Info("gateway compat session started",
+			"session_id", started.SessionID,
+			"device_id", started.DeviceID,
+			"client_type", started.ClientType,
+			"input_codec", started.InputCodec,
+			"input_sample_rate_hz", started.InputSampleRate,
+			"input_channels", started.InputChannels,
+			"listen_mode", state.listenMode,
+		)
+	}
 	return started, nil
 }
 
 func (h *xiaozhiWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, peer *xiaozhiJSONPeer, state *xiaozhiCompatState, turn session.CommittedTurn, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) error {
 	request := buildTurnRequest(turn, runtime, trace, text, previewTranscription)
 	logPreviousPlaybackContext(h.logger, state.sessionID, trace, request)
+	logTurnRequestPrepared(h.logger, state.sessionID, trace, request)
 	result, err := executeTurnResponse(ctx, request, trace, turnExecutionOptions{
 		Runtime:   runtime,
 		Responder: h.responder,

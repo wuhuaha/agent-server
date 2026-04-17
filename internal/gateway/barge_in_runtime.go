@@ -30,6 +30,12 @@ func (r *connectionRuntime) hasPendingBargeInAudio() bool {
 	return len(r.pendingBargeIn.chunks) > 0
 }
 
+func (r *connectionRuntime) pendingBargeInAudioBytes() int {
+	r.pendingBargeInMu.Lock()
+	defer r.pendingBargeInMu.Unlock()
+	return r.pendingBargeIn.audioBytes
+}
+
 func (r *connectionRuntime) resetPendingBargeInAudio() {
 	r.pendingBargeInMu.Lock()
 	r.pendingBargeIn = pendingBargeInAudio{}

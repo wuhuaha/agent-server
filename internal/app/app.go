@@ -339,7 +339,10 @@ func buildVoiceSemanticJudge(cfg Config, logger *slog.Logger) (voice.SemanticTur
 		"min_runes", cfg.Voice.LLMSemanticJudgeMinRunes,
 		"min_stable_for_ms", cfg.Voice.LLMSemanticJudgeMinStableForMs,
 	)
-	return voice.NewLLMSemanticTurnJudge(model), timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
+	return voice.LoggingSemanticTurnJudge{
+		Inner:  voice.NewLLMSemanticTurnJudge(model),
+		Logger: logger,
+	}, timeout, cfg.Voice.LLMSemanticJudgeMinRunes, minStableFor
 }
 
 func buildVoiceSemanticJudgeRollout(cfg Config, logger *slog.Logger) voice.SemanticJudgeRolloutConfig {
@@ -393,14 +396,20 @@ func buildVoiceSemanticSlotParser(cfg Config, logger *slog.Logger) (voice.Semant
 			"voice entity catalog grounding disabled",
 			"profile", normalizeVoiceEntityCatalogProfile(cfg.Voice.EntityCatalogProfile),
 		)
-		return parser, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+		return voice.LoggingSemanticSlotParser{
+			Inner:  parser,
+			Logger: logger,
+		}, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
 	}
 	logger.Info(
 		"voice entity catalog grounding enabled",
 		"profile", normalizeVoiceEntityCatalogProfile(cfg.Voice.EntityCatalogProfile),
 		"catalog_items", grounder.CatalogSize(),
 	)
-	return voice.NewGroundedSemanticSlotParser(parser, grounder), timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+	return voice.LoggingSemanticSlotParser{
+		Inner:  voice.NewGroundedSemanticSlotParser(parser, grounder),
+		Logger: logger,
+	}, timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
 }
 
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {

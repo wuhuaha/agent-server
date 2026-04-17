@@ -153,6 +153,9 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	if asrResponder.SemanticJudge == nil {
 		t.Fatal("expected llm semantic judge to be configured")
 	}
+	if got := fmt.Sprintf("%T", asrResponder.SemanticJudge); !strings.Contains(got, "LoggingSemanticTurnJudge") {
+		t.Fatalf("expected semantic judge to be wrapped with logging, got %s", got)
+	}
 	if asrResponder.SemanticJudgeTimeout != 180*time.Millisecond {
 		t.Fatalf("expected semantic judge timeout 180ms, got %s", asrResponder.SemanticJudgeTimeout)
 	}
@@ -171,8 +174,15 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	if asrResponder.SlotParser == nil {
 		t.Fatal("expected llm slot parser to be configured")
 	}
-	if got := fmt.Sprintf("%T", asrResponder.SlotParser); !strings.Contains(got, "groundedSemanticSlotParser") {
-		t.Fatalf("expected slot parser to be wrapped with entity grounding, got %s", got)
+	if got := fmt.Sprintf("%T", asrResponder.SlotParser); !strings.Contains(got, "LoggingSemanticSlotParser") {
+		t.Fatalf("expected slot parser to be wrapped with logging, got %s", got)
+	}
+	loggedSlotParser, ok := asrResponder.SlotParser.(voice.LoggingSemanticSlotParser)
+	if !ok {
+		t.Fatalf("expected LoggingSemanticSlotParser, got %T", asrResponder.SlotParser)
+	}
+	if got := fmt.Sprintf("%T", loggedSlotParser.Inner); !strings.Contains(got, "groundedSemanticSlotParser") {
+		t.Fatalf("expected slot parser inner to be wrapped with entity grounding, got %s", got)
 	}
 	if asrResponder.SlotParserTimeout != 260*time.Millisecond {
 		t.Fatalf("expected slot parser timeout 260ms, got %s", asrResponder.SlotParserTimeout)
@@ -210,7 +220,11 @@ func TestBuildResponderCanDisableBuiltInEntityCatalogGrounding(t *testing.T) {
 	if asrResponder.SlotParser == nil {
 		t.Fatal("expected llm slot parser to stay configured")
 	}
-	if got := fmt.Sprintf("%T", asrResponder.SlotParser); strings.Contains(got, "groundedSemanticSlotParser") {
+	loggedSlotParser, ok := asrResponder.SlotParser.(voice.LoggingSemanticSlotParser)
+	if !ok {
+		t.Fatalf("expected LoggingSemanticSlotParser, got %T", asrResponder.SlotParser)
+	}
+	if got := fmt.Sprintf("%T", loggedSlotParser.Inner); strings.Contains(got, "groundedSemanticSlotParser") {
 		t.Fatalf("expected slot parser grounding to stay disabled, got %s", got)
 	}
 }

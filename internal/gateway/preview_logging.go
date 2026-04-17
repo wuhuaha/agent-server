@@ -26,6 +26,18 @@ func logInputPreviewObservationLifecycle(logger *slog.Logger, sessionID string, 
 	if observation.AcceptReadyObserved {
 		logInputPreviewTraceInfo(logger, prefix+" accept ready", sessionID, observation.Trace)
 	}
+	if observation.SemanticReadyObserved {
+		logInputPreviewTraceInfo(logger, prefix+" semantic ready", sessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+		)
+	}
+	if observation.SlotReadyObserved {
+		logInputPreviewTraceInfo(logger, prefix+" slot ready", sessionID, observation.Trace,
+			"partial_text", observation.Preview.PartialText,
+			"audio_bytes", observation.Preview.AudioBytes,
+		)
+	}
 	if observation.EndpointCandidateObserved {
 		logInputPreviewTraceInfo(logger, prefix+" endpoint candidate", sessionID, observation.Trace,
 			"partial_text", observation.Preview.PartialText,

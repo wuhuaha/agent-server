@@ -584,6 +584,29 @@ func (h *realtimeWSHandler) handleSessionStart(runtime *connectionRuntime, envel
 		return err
 	}
 
+	if h.logger != nil {
+		h.logger.Info("gateway session.start negotiated",
+			"session_id", snapshot.SessionID,
+			"requested_session_id", envelope.SessionID,
+			"device_id", snapshot.DeviceID,
+			"client_type", snapshot.ClientType,
+			"mode", snapshot.Mode,
+			"wake_reason", strings.TrimSpace(payload.Session.WakeReason),
+			"input_codec", snapshot.InputCodec,
+			"input_sample_rate_hz", snapshot.InputSampleRate,
+			"input_channels", snapshot.InputChannels,
+			"normalized_input_codec", runtime.inputNormalizer.OutputCodec(),
+			"normalized_input_sample_rate_hz", runtime.inputNormalizer.OutputSampleRate(),
+			"normalized_input_channels", runtime.inputNormalizer.OutputChannels(),
+			"preview_events_requested", payload.Capabilities.PreviewEvents,
+			"preview_events_enabled", runtime.collaboration.PreviewEvents,
+			"playback_ack_requested", payload.Capabilities.playbackAckMode(),
+			"playback_ack_enabled", runtime.collaboration.PlaybackAckEnabled(),
+			"playback_ack_mode", runtime.collaboration.PlaybackAck.Mode,
+			"server_endpoint_enabled", h.profile.ServerEndpointEnabled,
+		)
+	}
+
 	return runtime.peer.WriteEvent(events.TypeSessionUpdate, snapshot.SessionID, sessionUpdateFromSnapshot(snapshot, "", ""))
 }
 
@@ -598,6 +621,21 @@ func (h *realtimeWSHandler) handleCommit(ctx context.Context, runtime *connectio
 	}
 
 	snapshot := runtime.session.Snapshot()
+	previewTraceBeforeCommit := runtime.currentInputPreviewTrace()
+	if h.logger != nil {
+		h.logger.Info("gateway audio commit received",
+			"session_id", firstNonEmpty(envelope.SessionID, snapshot.SessionID),
+			"commit_reason", strings.TrimSpace(payload.Reason),
+			"state", snapshot.State,
+			"input_state", snapshot.InputState,
+			"output_state", snapshot.OutputState,
+			"audio_bytes", snapshot.AudioBytes,
+			"preview_active", previewTraceBeforeCommit.PreviewID != "",
+			"preview_audio_bytes", previewTraceBeforeCommit.AudioBytes,
+			"preview_partial_text", strings.TrimSpace(previewTraceBeforeCommit.LastPartialText),
+			"pending_barge_in_audio_bytes", runtime.pendingBargeInAudioBytes(),
+		)
+	}
 	if snapshot.State == session.StateSpeaking && runtime.hasPendingBargeInAudio() {
 		if err := interruptSpeakingFlowWithOptions(runtime, h.profile, h.logger, interruptSpeakingOptions{
 			ClearPreview: false,
@@ -967,6 +1005,7 @@ func (h *realtimeWSHandler) recordPlaybackAckCompleted(runtime *connectionRuntim
 func (h *realtimeWSHandler) emitTurnResponse(ctx context.Context, runtime *connectionRuntime, turn session.CommittedTurn, trace turnTrace, text string, previewTranscription *voice.TranscriptionResult) error {
 	request := buildTurnRequest(turn, runtime, trace, text, previewTranscription)
 	logPreviousPlaybackContext(h.logger, turn.Snapshot.SessionID, trace, request)
+	logTurnRequestPrepared(h.logger, turn.Snapshot.SessionID, trace, request)
 	provisionalInputText := strings.TrimSpace(request.Text)
 	if provisionalInputText == "" && request.PreviewTranscription != nil {
 		provisionalInputText = strings.TrimSpace(request.PreviewTranscription.Text)

@@ -548,3 +548,17 @@
   - the shared default prompt is generic and task-family-centered
   - raw vertical hints such as `smart_home` or `desktop_assistant` are injected only through explicit prompt profiles/hints
   - `voice.entity_catalog_profile=seed_companion` now also acts as an explicit prompt-profile input for the slot parser, not only as an entity-grounding switch
+
+- 当前端侧联调的 durable observability baseline（2026-04-17）是：
+  - 默认 logger 下应优先依赖低噪声 `info` breadcrumb，而不是假设 `debug` 级别在线可见
+  - joint-debug 首先要看的 shared logs 包括：
+    - `gateway session.start negotiated`
+    - `gateway audio commit received`
+    - `gateway turn request prepared`
+    - `gateway compat hello negotiated`
+    - `gateway compat listen received`
+    - `gateway compat session started`
+    - `voice semantic judge started/completed/failed`
+    - `voice semantic slot parser started/completed/failed`
+  - preview trace 现在除 `candidate / draft / accept` 外，还应把 `semantic_ready / slot_ready` 的首达时延一起视作主观实时性基线
+  - playback-ack 诊断不应只看整包 payload；`response_id / playback_id / segment_id / played_duration_ms / cleared_reason` 现已作为显式 grep 字段进入 shared logs

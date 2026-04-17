@@ -580,6 +580,59 @@ func logPlaybackAckInfo(logger *slog.Logger, msg string, runtime *connectionRunt
 		"remote_addr", runtime.remoteAddr,
 		"payload", payload,
 	}
+	base = appendPlaybackAckPayloadLogAttrs(base, payload)
 	base = append(base, attrs...)
 	logger.Info(msg, base...)
+}
+
+func appendPlaybackAckPayloadLogAttrs(attrs []any, payload any) []any {
+	switch v := payload.(type) {
+	case audioOutStartedPayload:
+		return append(attrs,
+			"response_id", strings.TrimSpace(v.ResponseID),
+			"playback_id", strings.TrimSpace(v.PlaybackID),
+			"segment_id", strings.TrimSpace(v.SegmentID),
+		)
+	case *audioOutStartedPayload:
+		if v == nil {
+			return attrs
+		}
+		return appendPlaybackAckPayloadLogAttrs(attrs, *v)
+	case audioOutMarkPayload:
+		return append(attrs,
+			"response_id", strings.TrimSpace(v.ResponseID),
+			"playback_id", strings.TrimSpace(v.PlaybackID),
+			"segment_id", strings.TrimSpace(v.SegmentID),
+			"played_duration_ms", v.PlayedDurationMs,
+		)
+	case *audioOutMarkPayload:
+		if v == nil {
+			return attrs
+		}
+		return appendPlaybackAckPayloadLogAttrs(attrs, *v)
+	case audioOutClearedPayload:
+		return append(attrs,
+			"response_id", strings.TrimSpace(v.ResponseID),
+			"playback_id", strings.TrimSpace(v.PlaybackID),
+			"cleared_after_segment_id", strings.TrimSpace(v.ClearedAfterSegmentID),
+			"cleared_reason", strings.TrimSpace(v.Reason),
+		)
+	case *audioOutClearedPayload:
+		if v == nil {
+			return attrs
+		}
+		return appendPlaybackAckPayloadLogAttrs(attrs, *v)
+	case audioOutCompletedPayload:
+		return append(attrs,
+			"response_id", strings.TrimSpace(v.ResponseID),
+			"playback_id", strings.TrimSpace(v.PlaybackID),
+		)
+	case *audioOutCompletedPayload:
+		if v == nil {
+			return attrs
+		}
+		return appendPlaybackAckPayloadLogAttrs(attrs, *v)
+	default:
+		return attrs
+	}
 }

@@ -19,6 +19,8 @@ type inputPreviewTrace struct {
 	CandidateReadyAt       time.Time
 	DraftReadyAt           time.Time
 	AcceptReadyAt          time.Time
+	SemanticReadyAt        time.Time
+	SlotReadyAt            time.Time
 	EndpointCandidateAt    time.Time
 	CommitSuggestedAt      time.Time
 	AudioBytes             int
@@ -33,10 +35,16 @@ type inputPreviewTrace struct {
 	SemanticIntent         string
 	SemanticSlotReadiness  string
 	TaskFamily             string
+	SemanticConfidence     float64
 	SlotConstraintRequired bool
 	SlotReady              bool
 	SlotComplete           bool
+	SlotDomain             string
+	SlotStatus             string
 	SlotActionability      string
+	SlotConfidence         float64
+	SlotMissing            []string
+	SlotAmbiguous          []string
 	BaseWaitMs             int
 	RuleAdjustMs           int
 	PunctuationAdjustMs    int
@@ -53,6 +61,8 @@ type inputPreviewTraceUpdate struct {
 	CandidateReadyObserved    bool
 	DraftReadyObserved        bool
 	AcceptReadyObserved       bool
+	SemanticReadyObserved     bool
+	SlotReadyObserved         bool
 	EndpointCandidateObserved bool
 	CommitSuggestedObserved   bool
 }
@@ -126,10 +136,16 @@ func (s *inputPreviewTraceState) ObservePreview(sessionID string, preview voice.
 	s.current.SemanticIntent = strings.TrimSpace(preview.Arbitration.SemanticIntent)
 	s.current.SemanticSlotReadiness = strings.TrimSpace(preview.Arbitration.SemanticSlotReadiness)
 	s.current.TaskFamily = strings.TrimSpace(preview.Arbitration.TaskFamily)
+	s.current.SemanticConfidence = preview.Arbitration.SemanticConfidence
 	s.current.SlotConstraintRequired = preview.Arbitration.SlotConstraintRequired
 	s.current.SlotReady = preview.Arbitration.SlotReady
 	s.current.SlotComplete = preview.Arbitration.SlotComplete
+	s.current.SlotDomain = strings.TrimSpace(preview.Arbitration.SlotDomain)
+	s.current.SlotStatus = strings.TrimSpace(preview.Arbitration.SlotStatus)
 	s.current.SlotActionability = strings.TrimSpace(preview.Arbitration.SlotActionability)
+	s.current.SlotConfidence = preview.Arbitration.SlotConfidence
+	s.current.SlotMissing = append([]string(nil), preview.Arbitration.SlotMissing...)
+	s.current.SlotAmbiguous = append([]string(nil), preview.Arbitration.SlotAmbiguous...)
 	s.current.BaseWaitMs = preview.Arbitration.BaseWaitMs
 	s.current.RuleAdjustMs = preview.Arbitration.RuleAdjustMs
 	s.current.PunctuationAdjustMs = preview.Arbitration.PunctuationAdjustMs
@@ -147,6 +163,14 @@ func (s *inputPreviewTraceState) ObservePreview(sessionID string, preview voice.
 	if preview.Arbitration.AcceptReady && s.current.AcceptReadyAt.IsZero() {
 		s.current.AcceptReadyAt = now
 		update.AcceptReadyObserved = true
+	}
+	if preview.Arbitration.SemanticReady && s.current.SemanticReadyAt.IsZero() {
+		s.current.SemanticReadyAt = now
+		update.SemanticReadyObserved = true
+	}
+	if preview.Arbitration.SlotReady && s.current.SlotReadyAt.IsZero() {
+		s.current.SlotReadyAt = now
+		update.SlotReadyObserved = true
 	}
 
 	if endpointReason := strings.TrimSpace(preview.EndpointReason); endpointReason != "" {
@@ -240,6 +264,20 @@ func (t inputPreviewTrace) AcceptReadyLatencyMs() int64 {
 	return t.AcceptReadyAt.Sub(t.StartedAt).Milliseconds()
 }
 
+func (t inputPreviewTrace) SemanticReadyLatencyMs() int64 {
+	if t.StartedAt.IsZero() || t.SemanticReadyAt.IsZero() {
+		return 0
+	}
+	return t.SemanticReadyAt.Sub(t.StartedAt).Milliseconds()
+}
+
+func (t inputPreviewTrace) SlotReadyLatencyMs() int64 {
+	if t.StartedAt.IsZero() || t.SlotReadyAt.IsZero() {
+		return 0
+	}
+	return t.SlotReadyAt.Sub(t.StartedAt).Milliseconds()
+}
+
 func (t inputPreviewTrace) ElapsedMs(now time.Time) int64 {
 	if t.StartedAt.IsZero() || now.IsZero() {
 		return 0
@@ -272,6 +310,12 @@ func appendInputPreviewTraceLogAttrs(attrs []any, trace inputPreviewTrace, now t
 	if !trace.AcceptReadyAt.IsZero() {
 		attrs = append(attrs, "preview_accept_ready_latency_ms", trace.AcceptReadyLatencyMs())
 	}
+	if !trace.SemanticReadyAt.IsZero() {
+		attrs = append(attrs, "preview_semantic_ready_latency_ms", trace.SemanticReadyLatencyMs())
+	}
+	if !trace.SlotReadyAt.IsZero() {
+		attrs = append(attrs, "preview_slot_ready_latency_ms", trace.SlotReadyLatencyMs())
+	}
 	if !trace.EndpointCandidateAt.IsZero() {
 		attrs = append(attrs, "preview_endpoint_candidate_latency_ms", trace.EndpointCandidateLatencyMs())
 	}
@@ -302,11 +346,29 @@ func appendInputPreviewTraceLogAttrs(attrs []any, trace inputPreviewTrace, now t
 	if taskFamily := strings.TrimSpace(trace.TaskFamily); taskFamily != "" {
 		attrs = append(attrs, "preview_task_family", taskFamily)
 	}
+	if trace.SemanticConfidence > 0 {
+		attrs = append(attrs, "preview_semantic_confidence", trace.SemanticConfidence)
+	}
 	if trace.SlotConstraintRequired {
 		attrs = append(attrs, "preview_slot_constraint_required", true)
 	}
+	if slotDomain := strings.TrimSpace(trace.SlotDomain); slotDomain != "" {
+		attrs = append(attrs, "preview_slot_domain", slotDomain)
+	}
+	if slotStatus := strings.TrimSpace(trace.SlotStatus); slotStatus != "" {
+		attrs = append(attrs, "preview_slot_status", slotStatus)
+	}
 	if actionability := strings.TrimSpace(trace.SlotActionability); actionability != "" {
 		attrs = append(attrs, "preview_slot_actionability", actionability)
+	}
+	if trace.SlotConfidence > 0 {
+		attrs = append(attrs, "preview_slot_confidence", trace.SlotConfidence)
+	}
+	if len(trace.SlotMissing) > 0 {
+		attrs = append(attrs, "preview_slot_missing", append([]string(nil), trace.SlotMissing...))
+	}
+	if len(trace.SlotAmbiguous) > 0 {
+		attrs = append(attrs, "preview_slot_ambiguous", append([]string(nil), trace.SlotAmbiguous...))
 	}
 	if trace.BaseWaitMs > 0 {
 		attrs = append(attrs, "preview_base_wait_ms", trace.BaseWaitMs)

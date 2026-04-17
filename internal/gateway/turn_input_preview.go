@@ -16,6 +16,8 @@ type inputPreviewObservation struct {
 	CandidateReadyObserved    bool
 	DraftReadyObserved        bool
 	AcceptReadyObserved       bool
+	SemanticReadyObserved     bool
+	SlotReadyObserved         bool
 	EndpointCandidateObserved bool
 	CommitSuggested           bool
 	Trace                     inputPreviewTrace
@@ -60,6 +62,8 @@ func (r *connectionRuntime) pushInputPreviewAudio(ctx context.Context, payload [
 			CandidateReadyObserved:    update.CandidateReadyObserved,
 			DraftReadyObserved:        update.DraftReadyObserved,
 			AcceptReadyObserved:       update.AcceptReadyObserved,
+			SemanticReadyObserved:     update.SemanticReadyObserved,
+			SlotReadyObserved:         update.SlotReadyObserved,
 			EndpointCandidateObserved: update.EndpointCandidateObserved,
 			CommitSuggested:           observation.CommitSuggested,
 			Trace:                     trace,
@@ -93,6 +97,8 @@ func (r *connectionRuntime) pollInputPreview(now time.Time) inputPreviewObservat
 		CandidateReadyObserved:    update.CandidateReadyObserved,
 		DraftReadyObserved:        update.DraftReadyObserved,
 		AcceptReadyObserved:       update.AcceptReadyObserved,
+		SemanticReadyObserved:     update.SemanticReadyObserved,
+		SlotReadyObserved:         update.SlotReadyObserved,
 		EndpointCandidateObserved: update.EndpointCandidateObserved,
 		CommitSuggested:           observation.CommitSuggested,
 		Trace:                     trace,

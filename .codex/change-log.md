@@ -1127,3 +1127,20 @@
     - `docs/architecture/semantic-slot-parser-profile-aware-prompt-zh-2026-04-17.md`
   - validated with:
     - `go test ./internal/voice ./internal/gateway ./internal/app`
+
+- 为端侧联调补齐当前 shared voice runtime 的第一轮高价值 observability：
+  - 新增 `LoggingSemanticTurnJudge` / `LoggingSemanticSlotParser`，把 semantic judge 与 slot parser 的 start / success / error 摘要打到 `info/error`
+  - app wiring 现在默认把 voice LLM semantic judge 与 slot parser 包进日志包装器，且 slot parser 继续透传 transcription hints 能力
+  - gateway preview trace 现在进一步记录 `semantic_ready / slot_ready` 首达时延，以及 `semantic_confidence / slot_domain / slot_status / slot_missing / slot_ambiguous`
+  - native realtime 与 `xiaozhi` compat 现在会记录：
+    - `session.start` / `hello` / `listen` / `audio.commit` 的关键 ingress/negotiation 摘要
+    - accepted turn 送入 responder 前的 `gateway turn request prepared`
+  - playback-ack 日志现在会显式展开 `response_id / playback_id / segment_id / played_duration_ms / cleared_reason`
+  - 同步补充：
+    - `docs/architecture/voice-interaction-research-dialogue-log-zh-2026-04.md`
+    - `.codex/project-memory.md`
+    - `.codex/issues-and-resolutions.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/gateway ./internal/app`
+    - `go test ./...`
+    - `make test-go-integration`

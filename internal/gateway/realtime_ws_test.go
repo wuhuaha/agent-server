@@ -1284,7 +1284,7 @@ func TestRealtimeWSLogsAcceptedBargeIn(t *testing.T) {
 
 	logs := logBuffer.String()
 	for _, want := range []string{
-		`"msg":"gateway barge-in preview updated"`,
+		`"msg":"gateway barge-in updated"`,
 		`"msg":"gateway barge-in accepted"`,
 		`"barge_in_reason":"accepted_takeover_lexicon"`,
 		`"barge_in_acoustic_ready":true`,

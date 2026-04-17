@@ -853,3 +853,18 @@
   - rewrote the shared slot-parser prompt so `task_family` stays the default policy center and raw vertical hints enter only through explicit profile/prompt-hint injection
   - added `NewProfileAwareSemanticSlotParser(...)` and wired `voice.entity_catalog_profile` into that opt-in injection path rather than leaving vertical prompt bias in the shared default
 - Status: resolved for the current convergence slice. The runtime early gate is now more semantic and less purely lexical, while the slot-parser prompt path is generic by default and profile-aware only when explicitly enabled.
+
+### Device Joint-Debug Still Lacked Runtime-Owned Breadcrumbs Across Semantic And Accept Phases
+
+- Problem: although gateway traces already covered `preview -> accept -> response.start -> speaking`, the most failure-prone phase-1 device diagnostics were still too opaque:
+  - semantic judge / slot parser launch and result timing were almost black-box
+  - preview traces did not show when `semantic_ready` or `slot_ready` first arrived
+  - realtime / `xiaozhi` ingress logs still lacked clear `session.start / hello / listen / commit` negotiation breadcrumbs
+  - playback-ack logs kept the raw payload, but not enough explicit identifiers for fast grep
+- Resolution:
+  - added `LoggingSemanticTurnJudge` and `LoggingSemanticSlotParser`
+  - extended preview traces with `semantic_ready / slot_ready` latencies plus semantic/slot confidence and slot summary fields
+  - logged native realtime `session.start` negotiation, explicit `audio.commit` ingress, and `turn request prepared`
+  - logged `xiaozhi` hello negotiation, listen ingress, compat session startup, and `turn request prepared`
+  - expanded playback-ack logging with explicit `response_id / playback_id / segment_id / played_duration_ms / cleared_reason`
+- Status: resolved for the current joint-debug baseline. The first RTOS/device联调 now has one shared info-level breadcrumb path instead of requiring ad hoc temporary patches.

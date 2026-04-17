@@ -1845,3 +1845,66 @@
 ### 本轮验证
 
 - `go test ./internal/voice ./internal/gateway ./internal/app`
+
+---
+
+## 2026-04-17 端侧联调可观测性基线补充
+
+### 本轮关注点
+
+- 在开始 RTOS / 设备侧联调前，把“语音链路是否真的工作”拆成可 grep、可关联、可复盘的 breadcrumb。
+- 当前进程默认 logger 只有 `info` 级别可见，因此这轮不适合堆很多 `debug`，而应优先补低噪声的一次性 `info` 日志。
+
+### 本轮结论
+
+- 第一轮联调可观测性应优先补四类节点：
+  - `session.start / hello / listen / audio.commit` 等入站控制事件协商与入口状态
+  - preview 生命周期里更语义化的首达时刻：`semantic ready` / `slot ready`
+  - `SemanticTurnJudge` / `SemanticSlotParser` 的 start / success / error 摘要
+  - accepted turn 发给 responder 前的 `turn request prepared` 摘要
+- playback-ack 作为事实层信号，日志里不应只剩整包 `payload`，还应显式带出：
+  - `response_id`
+  - `playback_id`
+  - `segment_id`
+  - `played_duration_ms` / `cleared_reason`
+- 这轮 baseline 仍保持 shared runtime 边界：
+  - gateway 负责 transport ingress / egress 与 trace 汇总
+  - `internal/voice` 负责 semantic / slot / playback truth 语义节点
+  - 不把排障逻辑散落回 adapter-local 分支
+
+### 本轮实现落点
+
+- runtime 语义日志包装：
+  - `internal/voice/logging_semantic_judge.go`
+  - `internal/voice/logging_semantic_slot_parser.go`
+- wiring：
+  - `internal/app/app.go`
+- preview trace / lifecycle：
+  - `internal/gateway/preview_trace.go`
+  - `internal/gateway/turn_input_preview.go`
+  - `internal/gateway/preview_logging.go`
+- gateway ingress / prepared-request / playback-ack：
+  - `internal/gateway/realtime_ws.go`
+  - `internal/gateway/xiaozhi_ws.go`
+  - `internal/gateway/turn_request_logging.go`
+  - `internal/gateway/voice_collaboration.go`
+
+### 当前收益
+
+- 联调时可以更快区分：
+  - 事件没进来
+  - preview 没启动
+  - semantic / slot 没触发
+  - turn request 已准备但 responder / TTS 还没往后走
+- preview trace 现在除 `candidate / draft / accept` 外，还能直接看到：
+  - `preview_semantic_ready_latency_ms`
+  - `preview_slot_ready_latency_ms`
+  - `preview_semantic_confidence`
+  - `preview_slot_domain / status / missing / ambiguous`
+- `xiaozhi` 与 native realtime 两条入口现在都有更明确的握手/会话/监听状态日志，便于端侧比对。
+
+### 本轮验证
+
+- `go test ./internal/voice ./internal/gateway ./internal/app`
+- `go test ./...`
+- `make test-go-integration`

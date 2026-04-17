@@ -180,6 +180,9 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 	if got := trace.AcceptReadyLatencyMs(); got != 120 {
 		t.Fatalf("expected accept-ready latency 120ms, got %d", got)
 	}
+	if got := trace.SemanticReadyLatencyMs(); got != 120 {
+		t.Fatalf("expected semantic-ready latency 120ms, got %d", got)
+	}
 	if !trace.CandidateReady || !trace.AcceptReady || trace.DraftReady {
 		t.Fatalf("expected candidate/accept ready state to persist, got %+v", trace)
 	}
@@ -197,17 +200,24 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 		CommitSuggested: true,
 		EndpointReason:  "preview_tail_silence",
 		Arbitration: voice.TurnArbitration{
-			CandidateReady:   true,
-			DraftReady:       true,
-			AcceptReady:      true,
-			AcceptCandidate:  true,
-			AcceptNow:        true,
-			BaseWaitMs:       320,
-			EffectiveWaitMs:  320,
-			Reason:           "preview_tail_silence",
-			SemanticReady:    true,
-			SemanticIntent:   voice.SemanticIntentQuestion,
-			SemanticComplete: true,
+			CandidateReady:    true,
+			DraftReady:        true,
+			AcceptReady:       true,
+			AcceptCandidate:   true,
+			AcceptNow:         true,
+			BaseWaitMs:        320,
+			EffectiveWaitMs:   320,
+			Reason:            "preview_tail_silence",
+			SemanticReady:     true,
+			SemanticIntent:    voice.SemanticIntentQuestion,
+			SemanticComplete:  true,
+			SlotReady:         true,
+			SlotComplete:      true,
+			SlotDomain:        voice.SemanticSlotDomainUnknown,
+			SlotStatus:        voice.SemanticSlotStatusComplete,
+			SlotActionability: voice.SemanticSlotActionabilityActCandidate,
+			SlotMissing:       []string{"none"},
+			SlotAmbiguous:     []string{"target"},
 		},
 	}, startedAt.Add(420*time.Millisecond))
 	if update.FirstPartialObserved {
@@ -221,6 +231,12 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 	}
 	if !update.DraftReadyObserved {
 		t.Fatal("expected draft-ready observation to be recorded")
+	}
+	if update.SemanticReadyObserved {
+		t.Fatal("expected semantic-ready to stay one-shot")
+	}
+	if !update.SlotReadyObserved {
+		t.Fatal("expected slot-ready observation to be recorded")
 	}
 	if update.AcceptReadyObserved {
 		t.Fatal("expected accept-ready to stay one-shot")
@@ -236,6 +252,9 @@ func TestInputPreviewTraceTracksPreviewMilestones(t *testing.T) {
 	}
 	if got := trace.EndpointCandidateLatencyMs(); got != 420 {
 		t.Fatalf("expected endpoint candidate latency 420ms, got %d", got)
+	}
+	if got := trace.SlotReadyLatencyMs(); got != 420 {
+		t.Fatalf("expected slot-ready latency 420ms, got %d", got)
 	}
 	if got := trace.CommitSuggestedLatencyMs(); got != 420 {
 		t.Fatalf("expected commit latency 420ms, got %d", got)
@@ -269,6 +288,8 @@ func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.
 		CandidateReadyAt:       startedAt.Add(90 * time.Millisecond),
 		DraftReadyAt:           startedAt.Add(140 * time.Millisecond),
 		AcceptReadyAt:          startedAt.Add(90 * time.Millisecond),
+		SemanticReadyAt:        startedAt.Add(95 * time.Millisecond),
+		SlotReadyAt:            startedAt.Add(145 * time.Millisecond),
 		EndpointCandidateAt:    startedAt.Add(240 * time.Millisecond),
 		CommitSuggestedAt:      startedAt.Add(260 * time.Millisecond),
 		AudioBytes:             3200,
@@ -281,10 +302,16 @@ func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.
 		SemanticIntent:         voice.SemanticIntentQuestion,
 		SemanticSlotReadiness:  voice.SemanticSlotReadinessNotApplicable,
 		TaskFamily:             voice.SemanticTaskFamilyKnowledgeQuery,
+		SemanticConfidence:     0.92,
 		SlotReady:              true,
 		SlotComplete:           false,
+		SlotDomain:             voice.SemanticSlotDomainUnknown,
+		SlotStatus:             voice.SemanticSlotStatusAmbiguous,
 		SlotConstraintRequired: false,
 		SlotActionability:      voice.SemanticSlotActionabilityClarifyNeeded,
+		SlotConfidence:         0.81,
+		SlotMissing:            []string{"location"},
+		SlotAmbiguous:          []string{"target"},
 		BaseWaitMs:             320,
 		PunctuationAdjustMs:    -100,
 		SemanticWaitDeltaMs:    -140,
@@ -298,12 +325,20 @@ func TestAppendInputPreviewTraceLogAttrsIncludesFusedEndpointMetrics(t *testing.
 		"preview_candidate_ready_latency_ms",
 		"preview_draft_ready_latency_ms",
 		"preview_accept_ready_latency_ms",
+		"preview_semantic_ready_latency_ms",
+		"preview_slot_ready_latency_ms",
 		"preview_effective_wait_ms",
 		"preview_semantic_wait_delta_ms",
 		"preview_punctuation_adjust_ms",
 		"preview_slot_guard_adjust_ms",
 		"preview_accept_reason",
 		"preview_slot_actionability",
+		"preview_slot_domain",
+		"preview_slot_status",
+		"preview_slot_missing",
+		"preview_slot_ambiguous",
+		"preview_semantic_confidence",
+		"preview_slot_confidence",
 		"preview_semantic_intent",
 		"preview_semantic_slot_readiness",
 		"preview_task_family",
