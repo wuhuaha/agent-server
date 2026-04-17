@@ -147,6 +147,10 @@ Current planning note:
   - speaking-time interruption now uses an acoustic-first verifier that can enter `duck_only` before transcript text is ready
   - stable-prefix, preview turn-stage, lexical completeness, and takeover lexicon now act as semantic confirmation for escalation to `hard_interrupt`
   - runtime logs now include structured interruption evidence such as `barge_in_acoustic_ready`, `barge_in_semantic_ready`, `barge_in_turn_stage`, `barge_in_intrusion_score`, and `barge_in_takeover_score`
+- the latest slot-post-processing convergence slice now makes the generic boundary explicit:
+  - `internal/voice` keeps the mechanisms: recent-context ranking, provider-neutral ASR hints, value normalization, and abstract risk gating
+  - the current smart-home plus desktop seed data is now treated as an optional built-in profile (`voice.entity_catalog_profile=seed_companion`) instead of a permanent runtime assumption
+  - high-risk confirmation now depends on abstract annotations from catalog or policy data, not lexical business-term hardcoding inside the runtime
 - the third slice of that optimization order is now also landed without widening the public protocol:
   - the shared speech planner now produces structured internal clauses with boundary kind, prosody hint, launchability, and estimated duration
   - planner synthesis now uses a buffered clause queue so one slow TTS build does not block later text deltas as easily

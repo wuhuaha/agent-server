@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"strings"
+
+	"agent-server/internal/voice"
 )
 
 type VoiceConfig struct {
@@ -28,6 +30,7 @@ type VoiceConfig struct {
 	LLMSlotParserTimeoutMs         int
 	LLMSlotParserMinRunes          int
 	LLMSlotParserMinStableForMs    int
+	EntityCatalogProfile           string
 	SpeechPlannerEnabled           bool
 	SpeechPlannerMinChunkRunes     int
 	SpeechPlannerTargetChunkRunes  int
@@ -113,6 +116,7 @@ func loadVoiceConfig() VoiceConfig {
 		LLMSlotParserTimeoutMs:        getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_TIMEOUT_MS", 280),
 		LLMSlotParserMinRunes:         getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_RUNES", 4),
 		LLMSlotParserMinStableForMs:   getenvInt("AGENT_SERVER_VOICE_LLM_SLOT_PARSER_MIN_STABLE_FOR_MS", 160),
+		EntityCatalogProfile:          getenv("AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE", ""),
 		SpeechPlannerEnabled:          getenvBool("AGENT_SERVER_VOICE_SPEECH_PLANNER_ENABLED", true),
 		SpeechPlannerMinChunkRunes:    getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_MIN_CHUNK_RUNES", 6),
 		SpeechPlannerTargetChunkRunes: getenvInt("AGENT_SERVER_VOICE_SPEECH_PLANNER_TARGET_CHUNK_RUNES", 24),
@@ -200,6 +204,10 @@ func applyVoiceDefaults(cfg *Config) {
 	if cfg.Voice.LLMSlotParserMinStableForMs <= 0 {
 		cfg.Voice.LLMSlotParserMinStableForMs = 160
 	}
+	cfg.Voice.EntityCatalogProfile = normalizeVoiceEntityCatalogProfile(cfg.Voice.EntityCatalogProfile)
+	if cfg.Voice.EntityCatalogProfile == "" {
+		cfg.Voice.EntityCatalogProfile = voice.BuiltInEntityCatalogProfileSeedCompanion
+	}
 	if cfg.Voice.SpeechPlannerMinChunkRunes <= 0 {
 		cfg.Voice.SpeechPlannerMinChunkRunes = 6
 	}
@@ -237,6 +245,9 @@ func validateVoiceConfig(cfg Config) error {
 	if cfg.Voice.LLMSlotParserEnabled {
 		problems = append(problems, validateVoiceLLMProvider("voice.llm_slot_parser", cfg.Voice.LLMSlotParserLLM)...)
 	}
+	if !isSupportedVoiceEntityCatalogProfile(cfg.Voice.EntityCatalogProfile) {
+		problems = append(problems, "voice.entity_catalog_profile must be off or seed_companion")
+	}
 	if len(problems) == 0 {
 		return nil
 	}
@@ -262,6 +273,28 @@ func normalizeVoiceLLMProvider(provider string) string {
 		return "openai_compat"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func normalizeVoiceEntityCatalogProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "auto":
+		return ""
+	case "off", "none", "disabled":
+		return "off"
+	case "seed", "demo", voice.BuiltInEntityCatalogProfileSeedCompanion:
+		return voice.BuiltInEntityCatalogProfileSeedCompanion
+	default:
+		return strings.ToLower(strings.TrimSpace(profile))
+	}
+}
+
+func isSupportedVoiceEntityCatalogProfile(profile string) bool {
+	switch normalizeVoiceEntityCatalogProfile(profile) {
+	case "", "off", voice.BuiltInEntityCatalogProfileSeedCompanion:
+		return true
+	default:
+		return false
 	}
 }
 

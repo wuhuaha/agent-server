@@ -1009,3 +1009,18 @@
     - `plan.md`
   - validated with:
     - `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`
+
+- 收敛了语音语义后处理边界，避免智能家居 seed 逻辑继续腐化 shared runtime：
+  - `TranscriptionRequest` 现已支持 provider-neutral 的 `hotwords` / `hint_phrases`，`ASRResponder` 会把 recent-context hints 同时注入 preview stream 与 final transcription 主链
+  - `EntityCatalogGrounder` 现已支持 session recent-context ranking 与 runtime-owned ASR hints，但具体 seed data 被收敛到 optional built-in profile `seed_companion`
+  - `slot_value_normalizer` 的 risk gating 现只消费抽象风险注解，不再靠运行时代码里的业务词面列表直接判高风险
+  - `internal/app` 新增 `voice.entity_catalog_profile` 配置，当前可显式选择 `seed_companion` 或 `off`
+  - documented the durable boundary in:
+    - `docs/adr/0044-slot-post-processing-keeps-mechanism-generic-and-seed-data-profiled.md`
+    - `docs/architecture/voice-runtime-slot-post-processing-boundary-zh-2026-04-17.md`
+    - `docs/architecture/overview.md`
+    - `plan.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|HTTPTranscriber|TurnDetector|ASRResponder|ConfigValidate'`
+    - `go test ./internal/voice ./internal/app ./internal/agent ./internal/gateway ./internal/session`
+    - `make test-go`

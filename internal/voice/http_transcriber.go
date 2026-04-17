@@ -21,13 +21,15 @@ type HTTPTranscriber struct {
 }
 
 type httpTranscriptionRequest struct {
-	SessionID    string `json:"session_id"`
-	DeviceID     string `json:"device_id"`
-	Codec        string `json:"codec"`
-	SampleRateHz int    `json:"sample_rate_hz"`
-	Channels     int    `json:"channels"`
-	Language     string `json:"language"`
-	AudioBase64  string `json:"audio_base64"`
+	SessionID    string   `json:"session_id"`
+	DeviceID     string   `json:"device_id"`
+	Codec        string   `json:"codec"`
+	SampleRateHz int      `json:"sample_rate_hz"`
+	Channels     int      `json:"channels"`
+	Language     string   `json:"language"`
+	AudioBase64  string   `json:"audio_base64"`
+	Hotwords     []string `json:"hotwords,omitempty"`
+	HintPhrases  []string `json:"hint_phrases,omitempty"`
 }
 
 type httpTranscriptionResponse struct {
@@ -53,14 +55,16 @@ type httpTranscriptionResponse struct {
 }
 
 type httpStreamingStartRequest struct {
-	SessionID    string `json:"session_id"`
-	TurnID       string `json:"turn_id"`
-	TraceID      string `json:"trace_id"`
-	DeviceID     string `json:"device_id"`
-	Codec        string `json:"codec"`
-	SampleRateHz int    `json:"sample_rate_hz"`
-	Channels     int    `json:"channels"`
-	Language     string `json:"language"`
+	SessionID    string   `json:"session_id"`
+	TurnID       string   `json:"turn_id"`
+	TraceID      string   `json:"trace_id"`
+	DeviceID     string   `json:"device_id"`
+	Codec        string   `json:"codec"`
+	SampleRateHz int      `json:"sample_rate_hz"`
+	Channels     int      `json:"channels"`
+	Language     string   `json:"language"`
+	Hotwords     []string `json:"hotwords,omitempty"`
+	HintPhrases  []string `json:"hint_phrases,omitempty"`
 }
 
 type httpStreamingPushRequest struct {
@@ -108,6 +112,8 @@ func (t HTTPTranscriber) Transcribe(ctx context.Context, req TranscriptionReques
 		Channels:     req.Channels,
 		Language:     firstNonEmpty(req.Language, t.Language, "auto"),
 		AudioBase64:  base64.StdEncoding.EncodeToString(req.AudioPCM),
+		Hotwords:     normalizedHintValues(req.Hotwords),
+		HintPhrases:  normalizedHintValues(req.HintPhrases),
 	}
 	var decoded httpTranscriptionResponse
 	if err := t.postJSON(ctx, t.Endpoint, payload, &decoded); err != nil {
@@ -134,6 +140,8 @@ func (t HTTPTranscriber) StartStream(ctx context.Context, req TranscriptionReque
 		SampleRateHz: req.SampleRateHz,
 		Channels:     req.Channels,
 		Language:     firstNonEmpty(req.Language, t.Language, "auto"),
+		Hotwords:     normalizedHintValues(req.Hotwords),
+		HintPhrases:  normalizedHintValues(req.HintPhrases),
 	}, &decoded); err != nil {
 		return nil, err
 	}
@@ -156,6 +164,23 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizedHintValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func (t HTTPTranscriber) streamEndpoint(route string) (string, error) {

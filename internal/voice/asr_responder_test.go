@@ -24,10 +24,35 @@ func (f fakeTranscriber) Transcribe(context.Context, TranscriptionRequest) (Tran
 	return f.result, nil
 }
 
+type recordingHintTranscriber struct {
+	result    TranscriptionResult
+	lastReq   TranscriptionRequest
+	callCount int
+}
+
+func (t *recordingHintTranscriber) Transcribe(_ context.Context, req TranscriptionRequest) (TranscriptionResult, error) {
+	t.lastReq = req
+	t.callCount++
+	return t.result, nil
+}
+
 type fakeStreamingTranscriber struct {
 	result TranscriptionResult
 	err    error
 	chunks [][]byte
+}
+
+type recordingPreviewHintTranscriber struct {
+	lastReq TranscriptionRequest
+}
+
+func (t *recordingPreviewHintTranscriber) Transcribe(context.Context, TranscriptionRequest) (TranscriptionResult, error) {
+	return TranscriptionResult{}, nil
+}
+
+func (t *recordingPreviewHintTranscriber) StartStream(_ context.Context, req TranscriptionRequest, _ TranscriptionDeltaSink) (StreamingTranscriptionSession, error) {
+	t.lastReq = req
+	return &fakeStreamingTranscriptionSession{parent: &fakeStreamingTranscriber{}}, nil
 }
 
 type countingTranscriber struct {
@@ -705,6 +730,107 @@ func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {
 	}
 	if got := executor.inputs[0].Metadata["speech.transcriber_mode"]; got != "fake_stream" {
 		t.Fatalf("unexpected transcriber mode metadata %q", got)
+	}
+}
+
+func TestASRResponderPassesRuntimeOwnedASRHintsFromSlotParser(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	sessionID := "sess_asr_hint_propagation"
+	grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   sessionID,
+		PartialText: "打开客厅灯",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityClarifyNeeded,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.9,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+
+	transcriber := &recordingHintTranscriber{result: TranscriptionResult{Text: "把灯调亮一点"}}
+	responder := NewASRResponder(transcriber, "auto", "pcm16le", 16000, 1, false).
+		WithSlotParser(NewGroundedSemanticSlotParser(fixedSemanticSlotParser{
+			result: SemanticSlotParseResult{
+				Domain:        SemanticSlotDomainSmartHome,
+				Intent:        "set_attribute",
+				SlotStatus:    SemanticSlotStatusPartial,
+				Actionability: SemanticSlotActionabilityDraftOK,
+				Confidence:    0.8,
+				Reason:        "value_present_target_unclear",
+				Source:        "test",
+			},
+		}, grounder), 80*time.Millisecond, 4, 0).
+		WithTurnExecutor(staticTurnExecutor{text: "好的"})
+
+	_, err := responder.Respond(context.Background(), TurnRequest{
+		SessionID:       sessionID,
+		DeviceID:        "rtos-001",
+		AudioPCM:        make([]byte, 3200),
+		AudioBytes:      3200,
+		InputFrames:     5,
+		InputCodec:      "pcm16le",
+		InputSampleRate: 16000,
+		InputChannels:   1,
+	})
+	if err != nil {
+		t.Fatalf("Respond failed: %v", err)
+	}
+	if transcriber.callCount != 1 {
+		t.Fatalf("expected exactly one transcribe call, got %d", transcriber.callCount)
+	}
+	if len(transcriber.lastReq.Hotwords) == 0 || transcriber.lastReq.Hotwords[0] != "客厅灯" {
+		t.Fatalf("expected recent-context hotwords to propagate into transcription request, got %+v", transcriber.lastReq)
+	}
+}
+
+func TestASRResponderPassesRuntimeOwnedASRHintsIntoPreviewStream(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	sessionID := "sess_preview_hint_propagation"
+	grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   sessionID,
+		PartialText: "打开客厅灯",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityClarifyNeeded,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.9,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+
+	transcriber := &recordingPreviewHintTranscriber{}
+	responder := NewASRResponder(transcriber, "auto", "pcm16le", 16000, 1, false).
+		WithSlotParser(NewGroundedSemanticSlotParser(fixedSemanticSlotParser{
+			result: SemanticSlotParseResult{
+				Domain:        SemanticSlotDomainSmartHome,
+				Intent:        "set_attribute",
+				SlotStatus:    SemanticSlotStatusPartial,
+				Actionability: SemanticSlotActionabilityDraftOK,
+				Confidence:    0.8,
+				Reason:        "value_present_target_unclear",
+				Source:        "test",
+			},
+		}, grounder), 80*time.Millisecond, 4, 0)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    sessionID,
+		DeviceID:     "rtos-001",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	_ = preview.Close()
+
+	if len(transcriber.lastReq.Hotwords) == 0 || transcriber.lastReq.Hotwords[0] != "客厅灯" {
+		t.Fatalf("expected recent-context hotwords to propagate into preview stream request, got %+v", transcriber.lastReq)
 	}
 }
 

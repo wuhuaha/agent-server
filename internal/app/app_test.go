@@ -353,6 +353,18 @@ func TestConfigValidateAllowsSlotParserOpenAICompatWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsUnknownVoiceEntityCatalogProfile(t *testing.T) {
+	err := Config{
+		Voice: VoiceConfig{
+			Provider:             "funasr_http",
+			EntityCatalogProfile: "unknown_profile",
+		},
+	}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "voice.entity_catalog_profile") {
+		t.Fatalf("expected entity catalog profile validation error, got %v", err)
+	}
+}
+
 func TestConfigValidateRejectsXiaozhiWithoutPCM16LERealtimeOutput(t *testing.T) {
 	err := Config{
 		Xiaozhi: XiaozhiCompatConfig{

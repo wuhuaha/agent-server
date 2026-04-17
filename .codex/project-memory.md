@@ -469,3 +469,9 @@
     - unique catalog hits may promote or clarify readiness
     - explicit multi-hit alias collisions may downgrade toward `clarify_needed`
     - catalog misses must not, by themselves, negate the parser because the catalog is intentionally incomplete during the research stage
+
+- The slot post-processing boundary is now explicitly converged for the generic agent-server direction:
+  - `internal/voice` may keep the mechanisms: recent-context ranking, provider-neutral ASR hints, value normalization, and risk gating
+  - concrete smart-home / desktop seed data is no longer treated as a permanent runtime assumption; it now sits behind the optional built-in profile `voice.entity_catalog_profile=seed_companion`
+  - runtime risk gating now consumes abstract annotations such as `risk_level` instead of lexical business-term hardcoding
+  - if a deployment wants a more generic voice runtime, it can disable that built-in seed profile with `voice.entity_catalog_profile=off` while keeping `SemanticSlotParser` itself enabled

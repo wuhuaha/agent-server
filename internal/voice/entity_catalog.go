@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -16,6 +17,13 @@ const (
 	entityTypeDevice      = "device"
 	entityTypeDeviceGroup = "device_group"
 	entityTypeApp         = "app"
+)
+
+const (
+	// BuiltInEntityCatalogProfileSeedCompanion keeps current smart-home and
+	// desktop-assistant seed data as an optional runtime profile instead of a
+	// hardwired architecture assumption.
+	BuiltInEntityCatalogProfileSeedCompanion = "seed_companion"
 )
 
 type SemanticSlotGrounder interface {
@@ -45,6 +53,14 @@ func (p groundedSemanticSlotParser) ParsePreview(ctx context.Context, req Semant
 	return p.grounder.GroundPreview(req, result), nil
 }
 
+func (p groundedSemanticSlotParser) TranscriptionHintsForSession(sessionID string) TranscriptionHints {
+	provider, ok := p.grounder.(TranscriptionHintProvider)
+	if !ok {
+		return TranscriptionHints{}
+	}
+	return provider.TranscriptionHintsForSession(sessionID)
+}
+
 type EntityCatalogItem struct {
 	EntityID              string
 	Namespace             string
@@ -52,6 +68,7 @@ type EntityCatalogItem struct {
 	CanonicalName         string
 	RoomID                string
 	DeviceGroup           string
+	RiskLevel             string
 	Aliases               []string
 	CommonMisrecognitions []string
 }
@@ -70,6 +87,7 @@ func NewEntityCatalog(items []EntityCatalogItem) EntityCatalog {
 			CanonicalName:         strings.TrimSpace(item.CanonicalName),
 			RoomID:                strings.TrimSpace(item.RoomID),
 			DeviceGroup:           strings.TrimSpace(item.DeviceGroup),
+			RiskLevel:             normalizeSemanticRiskLevel(item.RiskLevel),
 			Aliases:               cloneStringSlice(item.Aliases),
 			CommonMisrecognitions: cloneStringSlice(item.CommonMisrecognitions),
 		}
@@ -85,7 +103,20 @@ func (c EntityCatalog) Len() int {
 	return len(c.items)
 }
 
-func DefaultDemoEntityCatalog() EntityCatalog {
+func (c EntityCatalog) itemByID(entityID string) (EntityCatalogItem, bool) {
+	entityID = strings.TrimSpace(entityID)
+	if entityID == "" {
+		return EntityCatalogItem{}, false
+	}
+	for _, item := range c.items {
+		if item.EntityID == entityID {
+			return item, true
+		}
+	}
+	return EntityCatalogItem{}, false
+}
+
+func DefaultSeedEntityCatalog() EntityCatalog {
 	return NewEntityCatalog([]EntityCatalogItem{
 		{
 			EntityID:      "room_living_room",
@@ -173,6 +204,15 @@ func DefaultDemoEntityCatalog() EntityCatalog {
 			Aliases:       []string{"书房窗帘", "窗帘"},
 		},
 		{
+			EntityID:      "device_group_entry_door_lock",
+			Namespace:     entityNamespaceSmartHome,
+			EntityType:    entityTypeDeviceGroup,
+			CanonicalName: "入户门锁",
+			DeviceGroup:   "door_lock",
+			RiskLevel:     SemanticRiskLevelHigh,
+			Aliases:       []string{"入户门锁", "门锁", "大门锁"},
+		},
+		{
 			EntityID:      "app_vscode",
 			Namespace:     entityNamespaceDesktopAssistant,
 			EntityType:    entityTypeApp,
@@ -196,20 +236,79 @@ func DefaultDemoEntityCatalog() EntityCatalog {
 	})
 }
 
+func DefaultDemoEntityCatalog() EntityCatalog {
+	return DefaultSeedEntityCatalog()
+}
+
+func NewBuiltInEntityCatalogGrounder(profile string) (EntityCatalogGrounder, bool) {
+	switch normalizeBuiltInEntityCatalogProfile(profile) {
+	case BuiltInEntityCatalogProfileSeedCompanion:
+		return NewEntityCatalogGrounder(DefaultSeedEntityCatalog()), true
+	default:
+		return EntityCatalogGrounder{}, false
+	}
+}
+
+func normalizeBuiltInEntityCatalogProfile(profile string) string {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "off", "none", "disabled":
+		return ""
+	case "seed", "demo", BuiltInEntityCatalogProfileSeedCompanion:
+		return BuiltInEntityCatalogProfileSeedCompanion
+	default:
+		return strings.ToLower(strings.TrimSpace(profile))
+	}
+}
+
 type EntityCatalogGrounder struct {
 	catalog EntityCatalog
+	recent  *entityCatalogRecentStore
 }
 
 func NewEntityCatalogGrounder(catalog EntityCatalog) EntityCatalogGrounder {
-	return EntityCatalogGrounder{catalog: catalog}
+	return EntityCatalogGrounder{
+		catalog: catalog,
+		recent: &entityCatalogRecentStore{
+			bySession: make(map[string]entityCatalogSessionContext),
+		},
+	}
 }
 
 func NewDefaultEntityCatalogGrounder() EntityCatalogGrounder {
-	return NewEntityCatalogGrounder(DefaultDemoEntityCatalog())
+	return NewEntityCatalogGrounder(DefaultSeedEntityCatalog())
 }
 
 func (g EntityCatalogGrounder) CatalogSize() int {
 	return g.catalog.Len()
+}
+
+func (g EntityCatalogGrounder) TranscriptionHintsForSession(sessionID string) TranscriptionHints {
+	if g.recent == nil || strings.TrimSpace(sessionID) == "" {
+		return TranscriptionHints{}
+	}
+	context := g.recent.load(sessionID)
+	if context == nil {
+		return TranscriptionHints{}
+	}
+	hotwords := make([]string, 0, 6)
+	for _, entityID := range context.RecentEntityIDs {
+		if item, ok := g.catalog.itemByID(entityID); ok {
+			hotwords = appendEntityHint(hotwords, append([]string{item.CanonicalName}, item.Aliases...)...)
+		}
+	}
+	for _, roomID := range context.RecentRoomIDs {
+		if item, ok := g.catalog.itemByID(roomID); ok {
+			hotwords = appendEntityHint(hotwords, append([]string{item.CanonicalName}, item.Aliases...)...)
+		}
+	}
+	hotwords = limitDistinctHints(hotwords, 8)
+	if len(hotwords) == 0 {
+		return TranscriptionHints{}
+	}
+	return TranscriptionHints{
+		Hotwords:    hotwords,
+		HintPhrases: limitDistinctHints(hotwords, 4),
+	}
 }
 
 func (g EntityCatalogGrounder) GroundPreview(req SemanticSlotParseRequest, result SemanticSlotParseResult) SemanticSlotParseResult {
@@ -224,12 +323,13 @@ func (g EntityCatalogGrounder) GroundPreview(req SemanticSlotParseRequest, resul
 	changed := false
 	switch normalizeSemanticSlotDomain(result.Domain) {
 	case SemanticSlotDomainSmartHome:
-		grounded, changed = g.groundSmartHome(bestText, grounded)
+		grounded, changed = g.groundSmartHome(req.SessionID, bestText, grounded)
 	case SemanticSlotDomainDesktopAssistant:
-		grounded, changed = g.groundDesktopAssistant(bestText, grounded)
+		grounded, changed = g.groundDesktopAssistant(req.SessionID, bestText, grounded)
 	default:
 		return result
 	}
+	grounded = postProcessSemanticSlotResult(req, grounded)
 	if changed {
 		grounded.Source = appendSemanticSource(grounded.Source, "entity_catalog_grounder")
 	}
@@ -240,9 +340,10 @@ type entityCatalogMatch struct {
 	Item     EntityCatalogItem
 	Alias    string
 	AliasLen int
+	Score    int
 }
 
-func (g EntityCatalogGrounder) groundSmartHome(text string, result SemanticSlotParseResult) (SemanticSlotParseResult, bool) {
+func (g EntityCatalogGrounder) groundSmartHome(sessionID, text string, result SemanticSlotParseResult) (SemanticSlotParseResult, bool) {
 	roomMatches := mostSpecificCatalogMatches(g.matchEntities(text, entityNamespaceSmartHome, entityTypeRoom))
 	targetMatches := g.matchEntities(text, entityNamespaceSmartHome, entityTypeDevice, entityTypeDeviceGroup)
 	if len(roomMatches) == 1 {
@@ -251,6 +352,8 @@ func (g EntityCatalogGrounder) groundSmartHome(text string, result SemanticSlotP
 			targetMatches = filtered
 		}
 	}
+	roomMatches = g.preferSessionContextMatches(sessionID, roomMatches)
+	targetMatches = g.preferSessionContextMatches(sessionID, targetMatches)
 	targetMatches = mostSpecificCatalogMatches(targetMatches)
 
 	groundedLocation, locationAmbiguous := singleCatalogMatch(roomMatches)
@@ -266,12 +369,14 @@ func (g EntityCatalogGrounder) groundSmartHome(text string, result SemanticSlotP
 	if groundedLocation != nil {
 		updated.Grounded = true
 		updated.CanonicalLocation = groundedLocation.CanonicalName
+		updated.RiskLevel = strongerSemanticRiskLevel(updated.RiskLevel, groundedLocation.RiskLevel)
 		delete(missing, "location")
 		delete(ambiguous, "location")
 	}
 	if groundedTarget != nil {
 		updated.Grounded = true
 		updated.CanonicalTarget = groundedTarget.CanonicalName
+		updated.RiskLevel = strongerSemanticRiskLevel(updated.RiskLevel, groundedTarget.RiskLevel)
 		delete(missing, "target")
 		delete(ambiguous, "target")
 	}
@@ -306,11 +411,15 @@ func (g EntityCatalogGrounder) groundSmartHome(text string, result SemanticSlotP
 			updated.Actionability = SemanticSlotActionabilityDraftOK
 		}
 	}
+	if groundedLocation != nil || groundedTarget != nil {
+		g.noteSessionGrounding(sessionID, groundedLocation, groundedTarget)
+	}
 	return updated, true
 }
 
-func (g EntityCatalogGrounder) groundDesktopAssistant(text string, result SemanticSlotParseResult) (SemanticSlotParseResult, bool) {
+func (g EntityCatalogGrounder) groundDesktopAssistant(sessionID, text string, result SemanticSlotParseResult) (SemanticSlotParseResult, bool) {
 	appMatches := mostSpecificCatalogMatches(g.matchEntities(text, entityNamespaceDesktopAssistant, entityTypeApp))
+	appMatches = g.preferSessionContextMatches(sessionID, appMatches)
 	groundedApp, appAmbiguous := singleCatalogMatch(appMatches)
 	if groundedApp == nil && !appAmbiguous {
 		return result, false
@@ -322,6 +431,7 @@ func (g EntityCatalogGrounder) groundDesktopAssistant(text string, result Semant
 	if groundedApp != nil {
 		updated.Grounded = true
 		updated.CanonicalTarget = groundedApp.CanonicalName
+		updated.RiskLevel = strongerSemanticRiskLevel(updated.RiskLevel, groundedApp.RiskLevel)
 		delete(missing, "target_app")
 		delete(missing, "target")
 		delete(ambiguous, "target_app")
@@ -346,6 +456,9 @@ func (g EntityCatalogGrounder) groundDesktopAssistant(text string, result Semant
 	}
 	updated.MissingSlots = semanticSlotListFromSet(missing)
 	updated.AmbiguousSlots = semanticSlotListFromSet(ambiguous)
+	if groundedApp != nil {
+		g.noteSessionGrounding(sessionID, nil, groundedApp)
+	}
 	return updated, true
 }
 
@@ -415,12 +528,194 @@ func dedupeCatalogMatches(matches []entityCatalogMatch) []entityCatalogMatch {
 		deduped = append(deduped, match)
 	}
 	sort.Slice(deduped, func(i, j int) bool {
+		if deduped[i].Score != deduped[j].Score {
+			return deduped[i].Score > deduped[j].Score
+		}
 		if deduped[i].AliasLen != deduped[j].AliasLen {
 			return deduped[i].AliasLen > deduped[j].AliasLen
 		}
 		return deduped[i].Item.EntityID < deduped[j].Item.EntityID
 	})
 	return deduped
+}
+
+type entityCatalogRecentStore struct {
+	mu        sync.Mutex
+	bySession map[string]entityCatalogSessionContext
+}
+
+type entityCatalogSessionContext struct {
+	LastNamespace   string
+	LastRoomID      string
+	LastEntityID    string
+	LastDeviceGroup string
+	RecentEntityIDs []string
+	RecentRoomIDs   []string
+}
+
+func (g EntityCatalogGrounder) preferSessionContextMatches(sessionID string, matches []entityCatalogMatch) []entityCatalogMatch {
+	if len(matches) <= 1 || g.recent == nil || strings.TrimSpace(sessionID) == "" {
+		return matches
+	}
+	context := g.recent.load(sessionID)
+	if context == nil {
+		return matches
+	}
+	scored := append([]entityCatalogMatch(nil), matches...)
+	for index := range scored {
+		scored[index].Score = scoreEntityCatalogMatch(*context, scored[index])
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].Score != scored[j].Score {
+			return scored[i].Score > scored[j].Score
+		}
+		if scored[i].AliasLen != scored[j].AliasLen {
+			return scored[i].AliasLen > scored[j].AliasLen
+		}
+		return scored[i].Item.EntityID < scored[j].Item.EntityID
+	})
+	if len(scored) >= 2 && scored[0].Score > scored[1].Score && scored[0].Score > 0 {
+		return []entityCatalogMatch{scored[0]}
+	}
+	return scored
+}
+
+func scoreEntityCatalogMatch(context entityCatalogSessionContext, match entityCatalogMatch) int {
+	score := 0
+	if match.Item.Namespace != "" && match.Item.Namespace == context.LastNamespace {
+		score += 5
+	}
+	if match.Item.EntityID != "" {
+		for index, entityID := range context.RecentEntityIDs {
+			if entityID == match.Item.EntityID {
+				score += maxInt(60-(index*15), 10)
+				break
+			}
+		}
+	}
+	if match.Item.RoomID != "" {
+		for index, roomID := range context.RecentRoomIDs {
+			if roomID == match.Item.RoomID {
+				score += maxInt(30-(index*10), 10)
+				break
+			}
+		}
+	}
+	if context.LastDeviceGroup != "" && match.Item.DeviceGroup == context.LastDeviceGroup {
+		score += 15
+	}
+	if context.LastEntityID != "" && match.Item.EntityID == context.LastEntityID {
+		score += 80
+	}
+	if context.LastRoomID != "" && match.Item.RoomID == context.LastRoomID {
+		score += 20
+	}
+	return score
+}
+
+func (g EntityCatalogGrounder) noteSessionGrounding(sessionID string, locationItem, targetItem *EntityCatalogItem) {
+	if g.recent == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	g.recent.note(sessionID, locationItem, targetItem)
+}
+
+func (s *entityCatalogRecentStore) load(sessionID string) *entityCatalogSessionContext {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	context, ok := s.bySession[strings.TrimSpace(sessionID)]
+	if !ok {
+		return nil
+	}
+	cloned := context
+	cloned.RecentEntityIDs = append([]string(nil), context.RecentEntityIDs...)
+	cloned.RecentRoomIDs = append([]string(nil), context.RecentRoomIDs...)
+	return &cloned
+}
+
+func (s *entityCatalogRecentStore) note(sessionID string, locationItem, targetItem *EntityCatalogItem) {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.TrimSpace(sessionID)
+	context := s.bySession[key]
+	if targetItem != nil {
+		context.LastNamespace = targetItem.Namespace
+		context.LastEntityID = targetItem.EntityID
+		context.LastDeviceGroup = targetItem.DeviceGroup
+		context.RecentEntityIDs = prependUniqueString(context.RecentEntityIDs, targetItem.EntityID, 4)
+		if targetItem.RoomID != "" {
+			context.LastRoomID = targetItem.RoomID
+			context.RecentRoomIDs = prependUniqueString(context.RecentRoomIDs, targetItem.RoomID, 4)
+		}
+	}
+	if locationItem != nil {
+		context.LastNamespace = locationItem.Namespace
+		context.LastRoomID = locationItem.EntityID
+		context.RecentRoomIDs = prependUniqueString(context.RecentRoomIDs, locationItem.EntityID, 4)
+	}
+	s.bySession[key] = context
+}
+
+func prependUniqueString(values []string, value string, maxLen int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	next := make([]string, 0, len(values)+1)
+	next = append(next, value)
+	for _, existing := range values {
+		if strings.TrimSpace(existing) == value {
+			continue
+		}
+		next = append(next, existing)
+		if maxLen > 0 && len(next) >= maxLen {
+			break
+		}
+	}
+	return next
+}
+
+func appendEntityHint(values []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		values = append(values, trimmed)
+	}
+	return values
+}
+
+func limitDistinctHints(values []string, maxLen int) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		filtered = append(filtered, trimmed)
+		if maxLen > 0 && len(filtered) >= maxLen {
+			break
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func mostSpecificCatalogMatches(matches []entityCatalogMatch) []entityCatalogMatch {

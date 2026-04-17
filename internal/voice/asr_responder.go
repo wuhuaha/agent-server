@@ -60,6 +60,7 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		req.SampleRateHz,
 		req.Channels,
 	)
+	hints := r.transcriptionHints(req.SessionID)
 	stream, err := streaming.StartStream(ctx, TranscriptionRequest{
 		SessionID:    req.SessionID,
 		DeviceID:     req.DeviceID,
@@ -67,6 +68,8 @@ func (r ASRResponder) StartInputPreview(ctx context.Context, req InputPreviewReq
 		SampleRateHz: req.SampleRateHz,
 		Channels:     req.Channels,
 		Language:     firstNonEmpty(req.Language, r.Language),
+		Hotwords:     hints.Hotwords,
+		HintPhrases:  hints.HintPhrases,
 	}, TranscriptionDeltaSinkFunc(func(_ context.Context, delta TranscriptionDelta) error {
 		detector.ObserveTranscriptionDelta(time.Now(), delta)
 		return nil
@@ -346,6 +349,7 @@ func (r ASRResponder) executeTurnWithPlannedSpeech(ctx context.Context, req Turn
 }
 
 func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {
+	hints := r.transcriptionHints(req.SessionID)
 	transcriptionReq := TranscriptionRequest{
 		SessionID:    req.SessionID,
 		TurnID:       req.TurnID,
@@ -356,6 +360,8 @@ func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (Tra
 		SampleRateHz: req.InputSampleRate,
 		Channels:     req.InputChannels,
 		Language:     r.Language,
+		Hotwords:     hints.Hotwords,
+		HintPhrases:  hints.HintPhrases,
 	}
 	if streaming, ok := r.Transcriber.(StreamingTranscriber); ok {
 		stream, err := streaming.StartStream(ctx, transcriptionReq, nil)
@@ -370,6 +376,14 @@ func (r ASRResponder) transcribeAudio(ctx context.Context, req TurnRequest) (Tra
 		}
 	}
 	return r.Transcriber.Transcribe(ctx, transcriptionReq)
+}
+
+func (r ASRResponder) transcriptionHints(sessionID string) TranscriptionHints {
+	provider, ok := r.SlotParser.(TranscriptionHintProvider)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return TranscriptionHints{}
+	}
+	return provider.TranscriptionHintsForSession(sessionID)
 }
 
 func (r ASRResponder) transcriptionForTurn(ctx context.Context, req TurnRequest) (TranscriptionResult, error) {
@@ -555,32 +569,37 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 		ClientType: s.previewRequest.ClientType,
 		UserText:   candidate,
 		Metadata: map[string]string{
-			"voice.preview.prewarm":                 "true",
-			"voice.preview.partial_text":            strings.TrimSpace(snapshot.PartialText),
-			"voice.preview.stable_prefix":           candidate,
-			"voice.preview.utterance_complete":      strconv.FormatBool(snapshot.UtteranceComplete),
-			"voice.preview.turn_stage":              string(snapshot.Arbitration.Stage),
-			"voice.preview.stable_for_ms":           strconv.Itoa(snapshot.Arbitration.StableForMs),
-			"voice.preview.stability_percent":       strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
-			"voice.preview.commit_suggested":        strconv.FormatBool(snapshot.CommitSuggested),
-			"voice.preview.endpoint_candidate":      strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
-			"voice.preview.endpoint_reason":         strings.TrimSpace(snapshot.EndpointReason),
-			"voice.preview.semantic_ready":          strconv.FormatBool(snapshot.Arbitration.SemanticReady),
-			"voice.preview.semantic_complete":       strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
-			"voice.preview.semantic_intent":         strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
-			"voice.preview.semantic_confidence":     strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
-			"voice.preview.slot_ready":              strconv.FormatBool(snapshot.Arbitration.SlotReady),
-			"voice.preview.slot_complete":           strconv.FormatBool(snapshot.Arbitration.SlotComplete),
-			"voice.preview.slot_grounded":           strconv.FormatBool(snapshot.Arbitration.SlotGrounded),
-			"voice.preview.slot_domain":             strings.TrimSpace(snapshot.Arbitration.SlotDomain),
-			"voice.preview.slot_intent":             strings.TrimSpace(snapshot.Arbitration.SlotIntent),
-			"voice.preview.slot_status":             strings.TrimSpace(snapshot.Arbitration.SlotStatus),
-			"voice.preview.slot_actionability":      strings.TrimSpace(snapshot.Arbitration.SlotActionability),
-			"voice.preview.slot_clarify_needed":     strconv.FormatBool(snapshot.Arbitration.SlotClarifyNeeded),
-			"voice.preview.slot_canonical_target":   strings.TrimSpace(snapshot.Arbitration.SlotCanonicalTarget),
-			"voice.preview.slot_canonical_location": strings.TrimSpace(snapshot.Arbitration.SlotCanonicalLocation),
-			"voice.preview.slot_missing":            encodeSpeechStringList(snapshot.Arbitration.SlotMissing),
-			"voice.preview.slot_ambiguous":          encodeSpeechStringList(snapshot.Arbitration.SlotAmbiguous),
+			"voice.preview.prewarm":                    "true",
+			"voice.preview.partial_text":               strings.TrimSpace(snapshot.PartialText),
+			"voice.preview.stable_prefix":              candidate,
+			"voice.preview.utterance_complete":         strconv.FormatBool(snapshot.UtteranceComplete),
+			"voice.preview.turn_stage":                 string(snapshot.Arbitration.Stage),
+			"voice.preview.stable_for_ms":              strconv.Itoa(snapshot.Arbitration.StableForMs),
+			"voice.preview.stability_percent":          strconv.Itoa(int(snapshot.Arbitration.Stability * 100)),
+			"voice.preview.commit_suggested":           strconv.FormatBool(snapshot.CommitSuggested),
+			"voice.preview.endpoint_candidate":         strconv.FormatBool(snapshot.Arbitration.AcceptCandidate),
+			"voice.preview.endpoint_reason":            strings.TrimSpace(snapshot.EndpointReason),
+			"voice.preview.semantic_ready":             strconv.FormatBool(snapshot.Arbitration.SemanticReady),
+			"voice.preview.semantic_complete":          strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
+			"voice.preview.semantic_intent":            strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
+			"voice.preview.semantic_confidence":        strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
+			"voice.preview.slot_ready":                 strconv.FormatBool(snapshot.Arbitration.SlotReady),
+			"voice.preview.slot_complete":              strconv.FormatBool(snapshot.Arbitration.SlotComplete),
+			"voice.preview.slot_grounded":              strconv.FormatBool(snapshot.Arbitration.SlotGrounded),
+			"voice.preview.slot_domain":                strings.TrimSpace(snapshot.Arbitration.SlotDomain),
+			"voice.preview.slot_intent":                strings.TrimSpace(snapshot.Arbitration.SlotIntent),
+			"voice.preview.slot_status":                strings.TrimSpace(snapshot.Arbitration.SlotStatus),
+			"voice.preview.slot_actionability":         strings.TrimSpace(snapshot.Arbitration.SlotActionability),
+			"voice.preview.slot_clarify_needed":        strconv.FormatBool(snapshot.Arbitration.SlotClarifyNeeded),
+			"voice.preview.slot_canonical_target":      strings.TrimSpace(snapshot.Arbitration.SlotCanonicalTarget),
+			"voice.preview.slot_canonical_location":    strings.TrimSpace(snapshot.Arbitration.SlotCanonicalLocation),
+			"voice.preview.slot_normalized_value":      strings.TrimSpace(snapshot.Arbitration.SlotNormalizedValue),
+			"voice.preview.slot_normalized_unit":       strings.TrimSpace(snapshot.Arbitration.SlotNormalizedValueUnit),
+			"voice.preview.slot_risk_level":            strings.TrimSpace(snapshot.Arbitration.SlotRiskLevel),
+			"voice.preview.slot_risk_reason":           strings.TrimSpace(snapshot.Arbitration.SlotRiskReason),
+			"voice.preview.slot_risk_confirm_required": strconv.FormatBool(snapshot.Arbitration.SlotRiskConfirmRequired),
+			"voice.preview.slot_missing":               encodeSpeechStringList(snapshot.Arbitration.SlotMissing),
+			"voice.preview.slot_ambiguous":             encodeSpeechStringList(snapshot.Arbitration.SlotAmbiguous),
 		},
 	}
 	go func() {

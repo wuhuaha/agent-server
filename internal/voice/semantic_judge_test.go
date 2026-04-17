@@ -180,6 +180,39 @@ func TestMergeSemanticSlotParsePropagatesGroundedCanonicalSummary(t *testing.T) 
 	}
 }
 
+func TestMergeSemanticSlotParsePropagatesNormalizedValueAndRiskSummary(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "把门锁打开",
+		StablePrefix: "把门锁打开",
+		Arbitration: TurnArbitration{
+			Stage:          TurnArbitrationStageWaitForMore,
+			PrewarmAllowed: false,
+			DraftAllowed:   false,
+		},
+	}
+	merged := mergeSemanticSlotParse(snapshot, SemanticSlotParseResult{
+		CandidateKey:        semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		Domain:              SemanticSlotDomainSmartHome,
+		Intent:              "device_control",
+		SlotStatus:          SemanticSlotStatusComplete,
+		Actionability:       SemanticSlotActionabilityClarifyNeeded,
+		Grounded:            true,
+		CanonicalTarget:     "入户门锁",
+		RiskLevel:           SemanticRiskLevelHigh,
+		RiskReason:          "catalog_high_risk_target",
+		RiskConfirmRequired: true,
+		Confidence:          0.92,
+		Reason:              "catalog_high_risk_target",
+		Source:              "test",
+	})
+	if merged.Arbitration.SlotRiskLevel != SemanticRiskLevelHigh || !merged.Arbitration.SlotRiskConfirmRequired {
+		t.Fatalf("expected risk summary to propagate, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SlotRiskReason != "catalog_high_risk_target" {
+		t.Fatalf("expected risk reason to propagate, got %+v", merged.Arbitration)
+	}
+}
+
 func TestMergeSemanticSlotParseCanPullDraftBackToWaitMore(t *testing.T) {
 	snapshot := InputPreview{
 		PartialText:  "把客厅灯",

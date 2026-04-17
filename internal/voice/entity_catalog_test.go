@@ -98,3 +98,128 @@ func TestEntityCatalogGrounderSupportsDesktopAssistantAlias(t *testing.T) {
 		t.Fatalf("expected target_app to be cleared, got %+v", result.MissingSlots)
 	}
 }
+
+func TestEntityCatalogGrounderUsesSessionRecentContextToBreakGenericTargetTie(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	sessionID := "sess_recent_context"
+
+	first := grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   sessionID,
+		PartialText: "打开客厅灯",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityClarifyNeeded,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.86,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+	if first.CanonicalTarget != "客厅灯" {
+		t.Fatalf("expected first command to ground 客厅灯, got %+v", first)
+	}
+
+	second := grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   sessionID,
+		PartialText: "把灯调亮一点",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "set_attribute",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityDraftOK,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.9,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+
+	if second.CanonicalTarget != "客厅灯" {
+		t.Fatalf("expected recent session context to prefer 客厅灯, got %+v", second)
+	}
+	if second.SlotStatus != SemanticSlotStatusComplete || second.Actionability != SemanticSlotActionabilityActCandidate {
+		t.Fatalf("expected recent-context disambiguation to promote act_candidate, got %+v", second)
+	}
+}
+
+func TestEntityCatalogGrounderBuildsASRHintsFromRecentContext(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	sessionID := "sess_asr_hints"
+	grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   sessionID,
+		PartialText: "打开客厅灯",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityClarifyNeeded,
+		MissingSlots:  []string{"target"},
+		Confidence:    0.86,
+		Reason:        "missing_target_need_clarify",
+		Source:        "test",
+	})
+
+	hints := grounder.TranscriptionHintsForSession(sessionID)
+	if len(hints.Hotwords) == 0 {
+		t.Fatalf("expected non-empty recent-context hotwords, got %+v", hints)
+	}
+	if hints.Hotwords[0] != "客厅灯" {
+		t.Fatalf("expected latest entity to lead hotwords, got %+v", hints)
+	}
+}
+
+func TestEntityCatalogGrounderNormalizesValueAndClearsMissingValue(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	result := grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   "sess_value_normalize",
+		PartialText: "把客厅空调调到26度",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "set_temperature",
+		SlotStatus:    SemanticSlotStatusPartial,
+		Actionability: SemanticSlotActionabilityDraftOK,
+		MissingSlots:  []string{"target", "value"},
+		Confidence:    0.88,
+		Reason:        "missing_target_and_value",
+		Source:        "test",
+	})
+
+	if result.CanonicalTarget != "客厅空调" {
+		t.Fatalf("expected target to ground to 客厅空调, got %+v", result)
+	}
+	if result.NormalizedValue != "26" || result.NormalizedValueUnit != "temperature_celsius" {
+		t.Fatalf("expected normalized temperature value, got %+v", result)
+	}
+	if len(result.MissingSlots) != 0 {
+		t.Fatalf("expected normalized value to clear missing slots, got %+v", result.MissingSlots)
+	}
+	if result.SlotStatus != SemanticSlotStatusComplete || result.Actionability != SemanticSlotActionabilityActCandidate {
+		t.Fatalf("expected normalized value to promote completion, got %+v", result)
+	}
+}
+
+func TestEntityCatalogGrounderAddsHighRiskConfirmationForDoorLock(t *testing.T) {
+	grounder := NewDefaultEntityCatalogGrounder()
+	result := grounder.GroundPreview(SemanticSlotParseRequest{
+		SessionID:   "sess_risk_lock",
+		PartialText: "把门锁打开",
+	}, SemanticSlotParseResult{
+		Domain:        SemanticSlotDomainSmartHome,
+		Intent:        "device_control",
+		SlotStatus:    SemanticSlotStatusComplete,
+		Actionability: SemanticSlotActionabilityActCandidate,
+		Confidence:    0.9,
+		Reason:        "required_slots_grounded",
+		Source:        "test",
+	})
+
+	if result.CanonicalTarget != "入户门锁" {
+		t.Fatalf("expected lock target to ground, got %+v", result)
+	}
+	if result.RiskLevel != SemanticRiskLevelHigh || !result.RiskConfirmRequired {
+		t.Fatalf("expected high risk confirmation to be required, got %+v", result)
+	}
+	if result.Actionability != SemanticSlotActionabilityClarifyNeeded || !result.ClarifyNeeded {
+		t.Fatalf("expected high risk action to downgrade to clarify_needed, got %+v", result)
+	}
+}

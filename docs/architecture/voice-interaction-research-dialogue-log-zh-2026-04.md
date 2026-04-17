@@ -1340,3 +1340,50 @@
   - `打开客厅灯` 这类命令更容易提前进入 `act_candidate`
   - `把灯调亮一点` 这类泛称更容易进入“立即澄清”而不是继续盲等
   - `打开 VS Code` 这类桌面助理别名可以更早稳定归一到 canonical app
+
+
+## Round 027｜2026-04-17｜边界收敛：slot post-processing 保持机制通用，seed 数据改为 profile
+
+### 用户诉求
+
+- 明确收敛方向：
+  - 项目应是通用 `ai agent server`
+  - 语音 agent 是其中一个能力
+  - 智能家居只是当前应用方向，不应让 runtime 被过多硬编码腐化
+
+### 本轮结论
+
+- 需要把“能力增强”与“业务硬编码”拆开：
+  - `internal/voice` 可以继续拥有 grounding / recent-context ranking / ASR hints / value normalization / risk gating
+  - 但具体 smart-home / desktop 实体、alias、风险对象，不应继续被当成 shared runtime 的永久默认知识
+- 风险机制尤其需要收敛：
+  - runtime 可以保留“高风险动作需要 clarify / confirm”的机制
+  - 但“什么对象是高风险”不应再从运行时代码中的中文词面列表直接推断
+  - 更合理的来源应该是 catalog / policy annotations
+
+### 本轮实现内容
+
+- built-in entity catalog 现在明确为 optional profile：
+  - `seed_companion`
+  - 可通过 `voice.entity_catalog_profile` 或环境变量显式打开 / 关闭
+- recent-context ranking 继续保留，但输出收敛为 provider-neutral 的 ASR hints：
+  - `hotwords`
+  - `hint_phrases`
+- `slot_value_normalizer` 的 risk gating 现在只吃抽象风险注解，不再靠业务词面直接升高风险
+- 新增回归测试，确保：
+  - preview 与 final transcription 都能拿到 runtime-owned hints
+  - lexical business term 本身不会触发 runtime 高风险误判
+
+### 验证
+
+- `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|HTTPTranscriber|TurnDetector|ASRResponder|ConfigValidate'`
+- `go test ./internal/voice ./internal/app ./internal/agent ./internal/gateway ./internal/session`
+- `make test-go`
+
+### 与主线的关系
+
+- 这一轮不是削弱语音智能，而是防止 shared runtime 架构继续偏向某个 seed app。
+- 收敛后的收益是：
+  - 当前 smart-home demo 能力继续可用
+  - 通用 agent server 的边界更清晰
+  - 后续可把 catalog / policy / domain data 继续外置，而不需要推翻现有语音主链

@@ -108,6 +108,7 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 			LLMSlotParserTimeoutMs:      260,
 			LLMSlotParserMinRunes:       5,
 			LLMSlotParserMinStableForMs: 180,
+			EntityCatalogProfile:        voice.BuiltInEntityCatalogProfileSeedCompanion,
 			EmitPlaceholderAudio:        true,
 		},
 	})
@@ -167,6 +168,36 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.SlotParserMinStableFor != 180*time.Millisecond {
 		t.Fatalf("expected slot parser min stable_for 180ms, got %s", asrResponder.SlotParserMinStableFor)
+	}
+}
+
+func TestBuildResponderCanDisableBuiltInEntityCatalogGrounding(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := withRealtimeDefaults(Config{
+		Voice: VoiceConfig{
+			Provider:             "funasr_http",
+			ASRURL:               "http://127.0.0.1:8091/v1/asr/transcribe",
+			ASRLanguage:          "zh",
+			LLMSlotParserEnabled: true,
+			LLMSlotParserLLM: VoiceLLMProviderConfig{
+				Provider: "openai_compat",
+				BaseURL:  "http://127.0.0.1:8012/v1",
+				Model:    "Qwen/Qwen3-4B-Instruct-2507",
+			},
+			EntityCatalogProfile: "off",
+		},
+	})
+
+	responder := buildResponder(cfg, logger, agent.NewBootstrapTurnExecutor(), agent.NewInMemoryMemoryStore(4), nil)
+	asrResponder, ok := responder.(voice.ASRResponder)
+	if !ok {
+		t.Fatalf("expected ASRResponder, got %T", responder)
+	}
+	if asrResponder.SlotParser == nil {
+		t.Fatal("expected llm slot parser to stay configured")
+	}
+	if got := fmt.Sprintf("%T", asrResponder.SlotParser); strings.Contains(got, "groundedSemanticSlotParser") {
+		t.Fatalf("expected slot parser grounding to stay disabled, got %s", got)
 	}
 }
 

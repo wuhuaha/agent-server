@@ -766,3 +766,14 @@
   - preview arbitration now carries additive grounding summaries such as `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`
   - the grounding layer follows a positive-evidence rule so catalog misses do not incorrectly negate parser output while the MVP catalog is still intentionally incomplete
 - Status: resolved for the first grounding MVP. Dynamic bias generation, session-scoped ranking, and canonical value normalization are still follow-up work.
+
+
+### Seed Smart-Home Logic Started To Leak Into Shared Voice Runtime Mechanisms
+
+- Problem: after grounding, normalization, and risk-awareness began to land, there was a growing risk that seed smart-home examples such as `门锁` or other business terms would keep spreading through `internal/voice` as hardcoded runtime logic. That would blur the architecture boundary and make the repository look like a domain backend instead of a generic `ai agent server`.
+- Resolution:
+  - converged runtime ownership around generic mechanisms only: recent-context ranking, provider-neutral ASR hints, value normalization, and risk gating
+  - moved built-in seed entities behind the explicit optional profile `voice.entity_catalog_profile=seed_companion`
+  - made risk gating consume abstract catalog/policy annotations such as `risk_level` instead of lexical business-term matching in runtime code
+  - added regression tests to ensure lexical terms alone no longer escalate risk inside `slot_value_normalizer`
+- Status: resolved for the current convergence slice. Future work may still externalize more seed-domain normalization data into catalog/profile annotations.

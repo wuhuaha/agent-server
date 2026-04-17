@@ -60,22 +60,27 @@ type SemanticSlotParseRequest struct {
 }
 
 type SemanticSlotParseResult struct {
-	CandidateKey      string
-	PartialText       string
-	StablePrefix      string
-	Domain            string
-	Intent            string
-	SlotStatus        string
-	Actionability     string
-	ClarifyNeeded     bool
-	Grounded          bool
-	CanonicalTarget   string
-	CanonicalLocation string
-	MissingSlots      []string
-	AmbiguousSlots    []string
-	Confidence        float64
-	Reason            string
-	Source            string
+	CandidateKey        string
+	PartialText         string
+	StablePrefix        string
+	Domain              string
+	Intent              string
+	SlotStatus          string
+	Actionability       string
+	ClarifyNeeded       bool
+	Grounded            bool
+	CanonicalTarget     string
+	CanonicalLocation   string
+	NormalizedValue     string
+	NormalizedValueUnit string
+	RiskLevel           string
+	RiskReason          string
+	RiskConfirmRequired bool
+	MissingSlots        []string
+	AmbiguousSlots      []string
+	Confidence          float64
+	Reason              string
+	Source              string
 }
 
 type LLMSemanticSlotParser struct {
@@ -367,6 +372,11 @@ func mergeSemanticSlotParse(snapshot InputPreview, result SemanticSlotParseResul
 	arbitration.SlotClarifyNeeded = result.ClarifyNeeded
 	arbitration.SlotCanonicalTarget = strings.TrimSpace(result.CanonicalTarget)
 	arbitration.SlotCanonicalLocation = strings.TrimSpace(result.CanonicalLocation)
+	arbitration.SlotNormalizedValue = strings.TrimSpace(result.NormalizedValue)
+	arbitration.SlotNormalizedValueUnit = strings.TrimSpace(result.NormalizedValueUnit)
+	arbitration.SlotRiskLevel = normalizeSemanticRiskLevel(result.RiskLevel)
+	arbitration.SlotRiskReason = normalizeSemanticReason(result.RiskReason)
+	arbitration.SlotRiskConfirmRequired = result.RiskConfirmRequired
 	arbitration.SlotMissing = append([]string(nil), normalizeSemanticSlotList(result.MissingSlots)...)
 	arbitration.SlotAmbiguous = append([]string(nil), normalizeSemanticSlotList(result.AmbiguousSlots)...)
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -24,6 +25,8 @@ func TestHTTPTranscriber(t *testing.T) {
 		if got := payload["codec"]; got != "pcm16le" {
 			t.Fatalf("expected codec pcm16le, got %v", got)
 		}
+		expectJSONStringSlice(t, payload, "hotwords", []string{"OpenAI", "xiaozhi"})
+		expectJSONStringSlice(t, payload, "hint_phrases", []string{"turn on the lights", "set a timer"})
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"text":            "hello from worker",
 			"segments":        []string{"hello from worker"},
@@ -49,6 +52,8 @@ func TestHTTPTranscriber(t *testing.T) {
 		Codec:        "pcm16le",
 		SampleRateHz: 16000,
 		Channels:     1,
+		Hotwords:     []string{" OpenAI ", "", "xiaozhi "},
+		HintPhrases:  []string{" turn on the lights ", "set a timer"},
 	})
 	if err != nil {
 		t.Fatalf("transcribe failed: %v", err)
@@ -99,6 +104,8 @@ func TestHTTPTranscriberStreamingLifecycle(t *testing.T) {
 			if got := payload["turn_id"]; got != "turn_test" {
 				t.Fatalf("unexpected turn id %v", got)
 			}
+			expectJSONStringSlice(t, payload, "hotwords", []string{"runtime", "entity catalog"})
+			expectJSONStringSlice(t, payload, "hint_phrases", []string{"recent context", "dynamic bias"})
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"stream_id": "strm_test",
 				"mode":      "stream_preview_batch",
@@ -161,6 +168,8 @@ func TestHTTPTranscriberStreamingLifecycle(t *testing.T) {
 		SampleRateHz: 16000,
 		Channels:     1,
 		Language:     "zh",
+		Hotwords:     []string{" runtime ", "entity catalog"},
+		HintPhrases:  []string{" recent context ", "dynamic bias"},
 	}, sink)
 	if err != nil {
 		t.Fatalf("StartStream failed: %v", err)
@@ -324,5 +333,28 @@ func TestHTTPTranscriberStreamingCloseCallsWorkerCloseRoute(t *testing.T) {
 	}
 	if len(paths) != 2 || paths[1] != "/v1/asr/stream/close" {
 		t.Fatalf("unexpected paths %+v", paths)
+	}
+}
+
+func expectJSONStringSlice(t *testing.T, payload map[string]any, key string, want []string) {
+	t.Helper()
+	raw, ok := payload[key]
+	if !ok {
+		t.Fatalf("expected %s in payload", key)
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("expected %s to be []any, got %T", key, raw)
+	}
+	got := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("expected %s items to be strings, got %T", key, item)
+		}
+		got = append(got, text)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected %s %v", key, got)
 	}
 }
