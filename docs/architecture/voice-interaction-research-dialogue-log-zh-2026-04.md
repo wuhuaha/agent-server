@@ -1302,3 +1302,41 @@
   - LLM 可感知用户当前语气与环境噪声弱信号
   - 标点恢复结果开始变成可解释、可复用的运行时上下文
   - 后续若继续做 TTS 情感风格或 interruption 音频事件抑制，已经有了统一 metadata 基座
+
+
+## Round 026｜2026-04-17｜Step4 落地：`SemanticSlotParser -> entity catalog / alias / canonical grounding`
+
+### 用户诉求
+
+- 继续沿着 slot completeness 主线推进下一步：
+  - 不再停留在“知道缺槽”，而是把 `SemanticSlotParser` 接到更强的 `entity catalog / alias / canonical grounding` 上
+
+### 本轮实现内容
+
+- 在 `internal/voice` 新增 runtime-owned 的 `EntityCatalogGrounder`，并通过 `NewGroundedSemanticSlotParser(...)` 接到 slot parser 之后：
+  - grounding 仍在 shared voice runtime 内完成
+  - gateway / adapter 不直接拥有实体目录，也不负责 canonicalization
+- 当前先落地一个 seed catalog MVP，覆盖：
+  - `smart_home`：房间、灯、筒灯、空调、窗帘等高频 demo 实体
+  - `desktop_assistant`：`Visual Studio Code`、浏览器、终端等 app 实体
+- grounding 规则刻意保持保守：
+  - 唯一 alias 命中时，允许 promotion 到更强的 `slot_status / actionability`
+  - 多 alias 冲突时，允许降级到 `clarify_needed`
+  - **catalog miss 不单独否定 parser 结果**，因为当前 catalog 仍是研究期 seed 版本
+- preview 仲裁现在新增可解释摘要：
+  - `slot_grounded`
+  - `slot_canonical_target`
+  - `slot_canonical_location`
+- 这些摘要也进入 preview prewarm metadata，便于后续 runtime 继续复用
+
+### 验证
+
+- `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`
+
+### 与主线的关系
+
+- 这一步把 `slot completeness` 从“结构化语义”进一步推进到“可执行对象映射”。
+- 对当前实时语音 demo 的直接收益是：
+  - `打开客厅灯` 这类命令更容易提前进入 `act_candidate`
+  - `把灯调亮一点` 这类泛称更容易进入“立即澄清”而不是继续盲等
+  - `打开 VS Code` 这类桌面助理别名可以更早稳定归一到 canonical app

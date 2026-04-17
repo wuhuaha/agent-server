@@ -756,3 +756,13 @@
   - the built-in prompt-section provider now emits a `voice_input_context` section that converts `speech.emotion`, `speech.audio_events`, punctuation hints, and endpoint hints into weak but actionable reply-shaping context
   - the consumption path stays provider-neutral and runtime-owned; gateways still do not interpret FunASR-specific outputs themselves
 - Status: resolved for the first metadata-consumption MVP. Future work can extend this into TTS style control and richer interruption-side audio-event use.
+
+
+### Slot Completeness Could Tell That A Target Was Missing But Still Could Not Canonicalize Alias Mentions
+
+- Problem: after the first `SemanticSlotParser` slice, the runtime could already say `clarify_needed` or `missing target`, but it still had no runtime-owned way to turn mentions such as `客厅灯` or `VS Code` into canonical entities, nor to distinguish “target truly missing” from “target heard but still ambiguous”.
+- Resolution: landed a first `EntityCatalogGrounder` inside `internal/voice`, wired as a post-parser layer through `NewGroundedSemanticSlotParser(...)`:
+  - seed smart-home and desktop-assistant entities now provide alias-based positive grounding and explicit ambiguity detection
+  - preview arbitration now carries additive grounding summaries such as `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`
+  - the grounding layer follows a positive-evidence rule so catalog misses do not incorrectly negate parser output while the MVP catalog is still intentionally incomplete
+- Status: resolved for the first grounding MVP. Dynamic bias generation, session-scoped ranking, and canonical value normalization are still follow-up work.

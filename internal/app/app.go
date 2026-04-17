@@ -370,7 +370,12 @@ func buildVoiceSemanticSlotParser(cfg Config, logger *slog.Logger) (voice.Semant
 		"min_runes", cfg.Voice.LLMSlotParserMinRunes,
 		"min_stable_for_ms", cfg.Voice.LLMSlotParserMinStableForMs,
 	)
-	return voice.NewLLMSemanticSlotParser(model), timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
+	grounder := voice.NewDefaultEntityCatalogGrounder()
+	logger.Info(
+		"voice entity catalog grounding enabled",
+		"catalog_items", grounder.CatalogSize(),
+	)
+	return voice.NewGroundedSemanticSlotParser(voice.NewLLMSemanticSlotParser(model), grounder), timeout, cfg.Voice.LLMSlotParserMinRunes, minStableFor
 }
 
 func buildResponder(cfg Config, logger *slog.Logger, turnExecutor agent.TurnExecutor, memoryStore agent.MemoryStore, synthesizer voice.Synthesizer) voice.Responder {

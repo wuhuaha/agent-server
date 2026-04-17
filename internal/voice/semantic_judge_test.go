@@ -149,6 +149,37 @@ func TestMergeSemanticSlotParsePromotesClarifyDraft(t *testing.T) {
 	}
 }
 
+func TestMergeSemanticSlotParsePropagatesGroundedCanonicalSummary(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "打开客厅灯",
+		StablePrefix: "打开客厅灯",
+		Arbitration: TurnArbitration{
+			Stage:          TurnArbitrationStageWaitForMore,
+			PrewarmAllowed: false,
+			DraftAllowed:   false,
+		},
+	}
+	merged := mergeSemanticSlotParse(snapshot, SemanticSlotParseResult{
+		CandidateKey:      semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		Domain:            SemanticSlotDomainSmartHome,
+		Intent:            "device_control",
+		SlotStatus:        SemanticSlotStatusComplete,
+		Actionability:     SemanticSlotActionabilityActCandidate,
+		Grounded:          true,
+		CanonicalTarget:   "客厅灯",
+		CanonicalLocation: "客厅",
+		Confidence:        0.88,
+		Reason:            "catalog_target_grounded",
+		Source:            "test",
+	})
+	if !merged.Arbitration.SlotGrounded {
+		t.Fatalf("expected grounded summary to propagate, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.SlotCanonicalTarget != "客厅灯" || merged.Arbitration.SlotCanonicalLocation != "客厅" {
+		t.Fatalf("expected canonical summaries to propagate, got %+v", merged.Arbitration)
+	}
+}
+
 func TestMergeSemanticSlotParseCanPullDraftBackToWaitMore(t *testing.T) {
 	snapshot := InputPreview{
 		PartialText:  "把客厅灯",

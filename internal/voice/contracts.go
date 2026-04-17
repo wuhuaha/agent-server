@@ -217,36 +217,39 @@ const (
 )
 
 type TurnArbitration struct {
-	Stage              TurnArbitrationStage
-	Reason             string
-	Stability          float64
-	StableForMs        int
-	AudioMs            int
-	SilenceMs          int
-	RequiredSilenceMs  int
-	PrewarmAllowed     bool
-	DraftAllowed       bool
-	AcceptCandidate    bool
-	AcceptNow          bool
-	EndpointHinted     bool
-	SemanticReady      bool
-	SemanticComplete   bool
-	SemanticIntent     string
-	SemanticReason     string
-	SemanticSource     string
-	SemanticConfidence float64
-	SlotReady          bool
-	SlotComplete       bool
-	SlotDomain         string
-	SlotIntent         string
-	SlotStatus         string
-	SlotActionability  string
-	SlotReason         string
-	SlotSource         string
-	SlotConfidence     float64
-	SlotClarifyNeeded  bool
-	SlotMissing        []string
-	SlotAmbiguous      []string
+	Stage                 TurnArbitrationStage
+	Reason                string
+	Stability             float64
+	StableForMs           int
+	AudioMs               int
+	SilenceMs             int
+	RequiredSilenceMs     int
+	PrewarmAllowed        bool
+	DraftAllowed          bool
+	AcceptCandidate       bool
+	AcceptNow             bool
+	EndpointHinted        bool
+	SemanticReady         bool
+	SemanticComplete      bool
+	SemanticIntent        string
+	SemanticReason        string
+	SemanticSource        string
+	SemanticConfidence    float64
+	SlotReady             bool
+	SlotComplete          bool
+	SlotGrounded          bool
+	SlotDomain            string
+	SlotIntent            string
+	SlotStatus            string
+	SlotActionability     string
+	SlotReason            string
+	SlotSource            string
+	SlotConfidence        float64
+	SlotClarifyNeeded     bool
+	SlotCanonicalTarget   string
+	SlotCanonicalLocation string
+	SlotMissing           []string
+	SlotAmbiguous         []string
 }
 
 type InputPreviewSession interface {

@@ -119,6 +119,7 @@ The detailed task breakdown for this track now lives in:
 - `docs/architecture/voice-architecture-blueprint-zh-2026-04-16.md`
 - `docs/architecture/voice-architecture-execution-roadmap-zh-2026-04-16.md`
 - `docs/architecture/llm-semantic-turn-taking-and-interruption-zh-2026-04-17.md`
+- `docs/architecture/entity-catalog-grounding-runtime-mvp-zh-2026-04-17.md`
 - `docs/architecture/full-duplex-voice-assessment-zh-2026-04-10.md`
 - `docs/architecture/local-open-source-full-duplex-roadmap-zh-2026-04-10.md`
 - `docs/protocols/realtime-voice-client-collaboration-proposal-v0-zh-2026-04-16.md`
@@ -138,6 +139,10 @@ Current planning note:
   - keep the heuristic acoustic/timing floor for realtime safety
   - let an optional runtime-owned LLM semantic judge advise `utterance_complete`, `correction`, `backchannel`, and `takeover` interpretation on mature preview candidates
   - use that judgement to improve `draft_allowed` promotion and speaking-time interruption policy without letting adapters or protocol peers call providers directly
+- the next entity-grounding slice of that same semantic path is now also landed:
+  - `SemanticSlotParser` output now passes through a runtime-owned `EntityCatalogGrounder` inside `internal/voice`
+  - preview arbitration may now carry additive summaries such as `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`
+  - grounding uses a positive-evidence rule: unique catalog hits may promote readiness, explicit multi-hit ambiguity may force `clarify_needed`, and catalog misses do not by themselves negate the parser because the current seed catalog is intentionally incomplete
 - the second slice of that optimization order is now landed without widening the public protocol:
   - speaking-time interruption now uses an acoustic-first verifier that can enter `duck_only` before transcript text is ready
   - stable-prefix, preview turn-stage, lexical completeness, and takeover lexicon now act as semantic confirmation for escalation to `hard_interrupt`

@@ -461,3 +461,11 @@
   - `speech.emotion`, `speech.audio_events`, final-text punctuation hints, and endpoint hints now flow into the shared agent prompt path through a built-in `voice_input_context` section
   - punctuation-derived hints now include at least `speech.text_terminal_punctuation` and `speech.text_clause_count`
   - this keeps FunASR enrichment runtime-owned and provider-neutral instead of teaching gateways or adapters model-specific behavior
+
+- The next semantic-depth slice is now also landed on that same shared boundary:
+  - `SemanticSlotParser` output may now pass through a runtime-owned `EntityCatalogGrounder` before it merges into `TurnArbitration`
+  - the current grounding summaries of record are `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`
+  - the seed catalog currently covers a small smart-home + desktop-assistant MVP only, so grounding follows a positive-evidence rule:
+    - unique catalog hits may promote or clarify readiness
+    - explicit multi-hit alias collisions may downgrade toward `clarify_needed`
+    - catalog misses must not, by themselves, negate the parser because the catalog is intentionally incomplete during the research stage

@@ -997,3 +997,15 @@
   - the shared agent-runtime prompt path now consumes `speech.emotion`, `speech.audio_events`, punctuation hints, and endpoint hints through a new built-in `voice_input_context` prompt section
   - this keeps FunASR punctuation / emotion / audio-events runtime-owned and provider-neutral instead of leaking model-specific behavior into gateways
   - validated with `go test ./internal/voice ./internal/agent ./internal/app -run 'Speech|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector|Prompt'`
+
+- Landed the next slot-grounding slice of the tiered voice-intelligence path:
+  - added a runtime-owned `EntityCatalogGrounder` behind `internal/voice.NewGroundedSemanticSlotParser(...)`, so entity alias/canonical grounding stays between slot parsing and preview arbitration instead of leaking into gateways or prompts
+  - preview arbitration and preview prewarm metadata now carry additive grounding summaries such as `slot_grounded`, `slot_canonical_target`, and `slot_canonical_location`
+  - the current seed catalog covers high-frequency smart-home and desktop-assistant entities only, and grounding uses a positive-evidence rule: unique catalog hits may promote readiness, explicit multi-hit ambiguity may force `clarify_needed`, and catalog misses do not negate the parser because the catalog is intentionally incomplete in the research stage
+  - documented the durable boundary in:
+    - `docs/adr/0043-runtime-owned-entity-grounding-follows-slot-parsing.md`
+    - `docs/architecture/entity-catalog-grounding-runtime-mvp-zh-2026-04-17.md`
+    - `docs/architecture/overview.md`
+    - `plan.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/app -run 'EntityCatalog|Semantic|Slot|BuildResponder|PreviewSession|ConfigValidate|TurnDetector'`

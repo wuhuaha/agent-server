@@ -1,8 +1,10 @@
 package app
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +155,9 @@ func TestBuildResponderSupportsFunASRHTTPPreviewThresholds(t *testing.T) {
 	}
 	if asrResponder.SlotParser == nil {
 		t.Fatal("expected llm slot parser to be configured")
+	}
+	if got := fmt.Sprintf("%T", asrResponder.SlotParser); !strings.Contains(got, "groundedSemanticSlotParser") {
+		t.Fatalf("expected slot parser to be wrapped with entity grounding, got %s", got)
 	}
 	if asrResponder.SlotParserTimeout != 260*time.Millisecond {
 		t.Fatalf("expected slot parser timeout 260ms, got %s", asrResponder.SlotParserTimeout)

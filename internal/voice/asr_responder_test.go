@@ -611,6 +611,58 @@ func TestASRResponderPreviewSessionPollIncludesSlotParserResult(t *testing.T) {
 	t.Fatal("expected preview poll to include slot parser result")
 }
 
+func TestASRResponderPreviewSessionPollIncludesGroundedSlotSummary(t *testing.T) {
+	responder := NewASRResponder(previewStreamingTranscriber{text: "打开客厅灯"}, "auto", "pcm16le", 16000, 1, false).
+		WithSlotParser(NewGroundedSemanticSlotParser(fixedSemanticSlotParser{
+			result: SemanticSlotParseResult{
+				Domain:        SemanticSlotDomainSmartHome,
+				Intent:        "device_control",
+				SlotStatus:    SemanticSlotStatusPartial,
+				Actionability: SemanticSlotActionabilityClarifyNeeded,
+				ClarifyNeeded: true,
+				MissingSlots:  []string{"target"},
+				Confidence:    0.9,
+				Reason:        "missing_target_need_clarify",
+				Source:        "test",
+			},
+		}, NewDefaultEntityCatalogGrounder()), 80*time.Millisecond, 4, 0)
+
+	preview, err := responder.StartInputPreview(context.Background(), InputPreviewRequest{
+		SessionID:    "sess_slot_grounded_preview",
+		DeviceID:     "rtos-001",
+		ClientType:   "rtos",
+		Codec:        "pcm16le",
+		SampleRateHz: 16000,
+		Channels:     1,
+	})
+	if err != nil {
+		t.Fatalf("StartInputPreview failed: %v", err)
+	}
+	if _, err := preview.PushAudio(context.Background(), make([]byte, 1280)); err != nil {
+		t.Fatalf("PushAudio failed: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		snapshot := preview.Poll(time.Now())
+		if snapshot.Arbitration.SlotGrounded {
+			if snapshot.Arbitration.SlotCanonicalTarget != "客厅灯" {
+				t.Fatalf("expected canonical target 客厅灯, got %+v", snapshot.Arbitration)
+			}
+			if snapshot.Arbitration.SlotCanonicalLocation != "客厅" {
+				t.Fatalf("expected canonical location 客厅, got %+v", snapshot.Arbitration)
+			}
+			if snapshot.Arbitration.Stage != TurnArbitrationStageDraftAllowed {
+				t.Fatalf("expected grounded slot parse to promote draft_allowed, got %+v", snapshot.Arbitration)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("expected preview poll to include grounded slot parser result")
+}
+
 func TestASRResponderUsesStreamingTranscriberWhenAvailable(t *testing.T) {
 	executor := &capturingTurnExecutor{}
 	streaming := &fakeStreamingTranscriber{result: TranscriptionResult{
