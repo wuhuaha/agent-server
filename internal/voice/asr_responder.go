@@ -604,6 +604,8 @@ func (s *asrInputPreviewSession) maybePrewarm(snapshot InputPreview) {
 			"voice.preview.semantic_ready":             strconv.FormatBool(snapshot.Arbitration.SemanticReady),
 			"voice.preview.semantic_complete":          strconv.FormatBool(snapshot.Arbitration.SemanticComplete),
 			"voice.preview.semantic_intent":            strings.TrimSpace(snapshot.Arbitration.SemanticIntent),
+			"voice.preview.task_family":                strings.TrimSpace(snapshot.Arbitration.TaskFamily),
+			"voice.preview.slot_constraint_required":   strconv.FormatBool(snapshot.Arbitration.SlotConstraintRequired),
 			"voice.preview.semantic_confidence":        strconv.FormatFloat(snapshot.Arbitration.SemanticConfidence, 'f', 3, 64),
 			"voice.preview.slot_ready":                 strconv.FormatBool(snapshot.Arbitration.SlotReady),
 			"voice.preview.slot_complete":              strconv.FormatBool(snapshot.Arbitration.SlotComplete),

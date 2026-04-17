@@ -821,3 +821,24 @@
   - moved semantic rollout normalize/support helpers fully back under `internal/voice` so app bootstrap no longer owned duplicate policy logic
   - updated docs, env examples, and architecture records to match the new generic-by-default stance
 - Status: resolved for the current convergence slice. Household behavior remains available, but now only through explicit opt-in runtime configuration.
+
+### Household Demo Still Lacked A Clear Explicit Profile Entry
+
+- Problem: after switching the repository defaults back to generic, the docs and sample env files still did not provide one obvious place to enable the current household demo. That created a drift risk: people could reintroduce household variables directly into `.env.example` or the generic systemd baseline because there was no first-class overlay file to point at.
+- Resolution:
+  - added `profiles/household-demo.env.example` as the explicit opt-in overlay for the current household demo
+  - kept `AGENT_SERVER_AGENT_SKILLS=household_control` as the only required line in that overlay
+  - kept `household_control_screen`, `小欧管家`, `simulation`, and `seed_companion` as commented optional lines so the generic baseline stays clean
+  - updated `README.md`, `docs/architecture/runtime-configuration.md`, `docs/architecture/overview.md`, `.env.example`, and `deploy/systemd/agent-server-agentd.env.example` to point operators at the overlay instead of telling them to mutate shared defaults
+- Status: resolved for the current config-surface slice. Future vertical demos should follow the same `generic baseline + explicit overlay` pattern.
+
+### Slot Completeness Was About To Become A Universal Draft Gate
+
+- Problem: after introducing semantic completeness and slot parsing, the runtime still lacked one generic abstraction between raw slot-parser domains and early-processing policy. Without that layer, `utterance complete` tended to promote `draft_allowed` too eagerly for command-like turns, while the opposite fix risked making slot completeness a universal hard gate that would unnecessarily slow down question-answer and dialogue turns.
+- Resolution:
+  - introduced runtime-owned `task_family` as the shared policy abstraction for early gating
+  - added lexical / semantic / slot-driven task-family inference inside `internal/voice`
+  - marked only `structured_command` as `slot_constraint_required=true`, so command previews can prewarm early but wait for slot readiness before draft promotion
+  - kept `knowledge_query` and `dialogue` on the faster early-draft path
+  - surfaced `task_family` and `slot_constraint_required` into preview traces and prewarm metadata so rollout tuning remains observable
+- Status: resolved for the current early-gate slice. The shared runtime now has a generic way to keep command turns conservative without dragging all other turn families into the same slot-wait policy.

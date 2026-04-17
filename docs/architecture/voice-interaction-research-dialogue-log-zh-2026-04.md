@@ -1731,3 +1731,54 @@
   - `docs/adr/0047-generic-runtime-defaults-avoid-domain-lock-in.md`
 - 新增健康审视文档：
   - `docs/architecture/architecture-and-code-health-review-zh-2026-04-17.md`
+
+---
+
+## 2026-04-17 task-family aware 早处理门槛补充
+
+### 本轮关注点
+
+- 在“统一早处理门槛”研究继续落地时，避免 shared runtime 走向两个极端：
+  - 只要 `utterance complete` 就过早 draft
+  - 或者把 `slot completeness` 误做成所有轮次都必须满足的 universal hard gate
+
+### 本轮结论
+
+- 当前最合适的折中层不是 raw domain，而是更通用的 `task_family`：
+  - `dialogue`
+  - `knowledge_query`
+  - `structured_command`
+  - `structured_query`
+  - `correction`
+  - `backchannel`
+- `slot completeness` 应该是 task-aware 约束，而不是 universal gate：
+  - `structured_command` 默认需要 `slot_constraint_required=true`
+  - `knowledge_query` / `dialogue` 继续允许更早 draft
+- 也就是说，命令型 preview 可以先 `prewarm`，但不应仅因“像是说完了”就直接 `draft_allowed`；它需要等 slot parser 给出更强后验。
+
+### 本轮实现落点
+
+- 新增：
+  - `internal/voice/semantic_task_family.go`
+- 主链调整：
+  - `internal/voice/turn_detector.go`
+  - `internal/voice/semantic_judge.go`
+  - `internal/voice/semantic_slot_parser.go`
+  - `internal/voice/contracts.go`
+  - `internal/voice/asr_responder.go`
+  - `internal/gateway/preview_trace.go`
+- 新增 durable 文档：
+  - `docs/adr/0049-task-family-aware-early-gate-keeps-slot-constraints-generic.md`
+  - `docs/architecture/task-family-aware-early-processing-gate-zh-2026-04-17.md`
+
+### 当前收益
+
+- 结构化命令不会再因为 lexical complete 就被过早推进到 draft。
+- 问答 / 闲聊不会被 slot completeness 无意义拖慢。
+- preview trace 与 prewarm metadata 现在可直接看到：
+  - `task_family`
+  - `slot_constraint_required`
+
+### 本轮验证
+
+- `go test ./internal/voice ./internal/app ./internal/gateway`

@@ -368,6 +368,10 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 	arbitration.SemanticReady = true
 	arbitration.SemanticComplete = judgement.UtteranceStatus == SemanticUtteranceComplete
 	arbitration.SemanticIntent = normalizeSemanticIntent(judgement.InterruptionIntent)
+	if arbitration.TaskFamily == "" || arbitration.TaskFamily == SemanticTaskFamilyUnknown {
+		arbitration.TaskFamily = inferSemanticTaskFamily(snapshot, judgement)
+	}
+	arbitration.SlotConstraintRequired = taskFamilyRequiresSlotReadiness(arbitration.TaskFamily)
 	arbitration.SemanticReason = normalizeSemanticReason(judgement.Reason)
 	arbitration.SemanticSource = strings.TrimSpace(judgement.Source)
 	arbitration.SemanticConfidence = clampUnit(judgement.Confidence)
@@ -389,14 +393,20 @@ func mergeSemanticJudgement(snapshot InputPreview, judgement SemanticTurnJudgeme
 			if arbitration.SemanticIntent != SemanticIntentBackchannel {
 				snapshot.UtteranceComplete = true
 				arbitration.PrewarmAllowed = true
-				arbitration.DraftAllowed = true
-				if arbitration.Stage == TurnArbitrationStagePreviewOnly ||
-					arbitration.Stage == TurnArbitrationStageWaitForMore ||
-					arbitration.Stage == TurnArbitrationStagePrewarmAllowed {
-					arbitration.Stage = TurnArbitrationStageDraftAllowed
-				}
-				if strings.TrimSpace(arbitration.Reason) == "" {
-					arbitration.Reason = "semantic_complete"
+				if arbitration.SlotConstraintRequired && !arbitration.SlotReady {
+					if strings.TrimSpace(arbitration.Reason) == "" {
+						arbitration.Reason = "semantic_complete_wait_slot_guard"
+					}
+				} else {
+					arbitration.DraftAllowed = true
+					if arbitration.Stage == TurnArbitrationStagePreviewOnly ||
+						arbitration.Stage == TurnArbitrationStageWaitForMore ||
+						arbitration.Stage == TurnArbitrationStagePrewarmAllowed {
+						arbitration.Stage = TurnArbitrationStageDraftAllowed
+					}
+					if strings.TrimSpace(arbitration.Reason) == "" {
+						arbitration.Reason = "semantic_complete"
+					}
 				}
 			}
 		}

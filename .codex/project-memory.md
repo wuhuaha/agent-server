@@ -527,3 +527,14 @@
 - Household control remains a supported built-in vertical, but only as explicit opt-in through `AGENT_SERVER_AGENT_SKILLS=household_control`, optional `AGENT_SERVER_AGENT_PERSONA=household_control_screen`, and optional `voice.entity_catalog_profile=seed_companion`.
 - Config drift on agent vertical settings should now fail fast: unknown `agent.persona` and unknown builtin `agent.skills` are configuration errors rather than silent fallback/ignore paths.
 - Normalize/support logic for semantic-judge rollout belongs to `internal/voice`; app bootstrap may assemble the config, but it should not maintain a second copy of rollout-policy normalization rules.
+
+- Demo bring-up must now follow the same boundary as runtime defaults:
+  - `.env.example` and `deploy/systemd/agent-server-agentd.env.example` stay generic
+  - the current household demo is enabled through the explicit overlay `profiles/household-demo.env.example`
+  - only `AGENT_SERVER_AGENT_SKILLS=household_control` is mandatory for that overlay; `household_control_screen`, `小欧管家`, `simulation`, and `seed_companion` remain optional demo enhancers rather than shared defaults
+
+- The shared voice runtime now treats early-processing policy as `task_family`-aware rather than raw-domain-aware:
+  - `task_family` is the generic policy layer (`dialogue`, `knowledge_query`, `structured_command`, `structured_query`, `correction`, `backchannel`)
+  - raw slot-parser domains such as `smart_home` and `desktop_assistant` remain useful evidence, but they no longer directly own the early-draft policy
+  - only `structured_command` currently implies `slot_constraint_required=true`
+  - therefore command-like previews may `prewarm` early yet still wait for slot readiness before `draft_allowed`, while question/dialogue turns keep the faster draft path

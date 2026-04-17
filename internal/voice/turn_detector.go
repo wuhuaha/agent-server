@@ -202,6 +202,8 @@ func NormalizeSilenceTurnDetectorConfig(cfg SilenceTurnDetectorConfig) SilenceTu
 
 func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArbitration {
 	stability := previewTextStabilityRatio(input.partialText, input.stablePrefix)
+	bestText := strings.TrimSpace(firstNonEmpty(input.partialText, input.stablePrefix))
+	taskFamily := inferLexicalTaskFamily(bestText)
 	arbitration := TurnArbitration{
 		Stage:             TurnArbitrationStagePreviewOnly,
 		Reason:            strings.TrimSpace(input.endpointReason),
@@ -211,10 +213,12 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		SilenceMs:         durationMs(input.silence),
 		RequiredSilenceMs: durationMs(input.baseWait),
 		EndpointHinted:    strings.TrimSpace(input.endpointReason) != "",
+		TaskFamily:        taskFamily,
 	}
 	if strings.TrimSpace(input.partialText) == "" {
 		return arbitration
 	}
+	arbitration.SlotConstraintRequired = taskFamilyRequiresSlotReadiness(taskFamily)
 	arbitration.MinAudioMs = a.cfg.MinAudioMs
 	arbitration.BaseWaitMs = durationMs(input.baseWait)
 	arbitration.RuleAdjustMs = a.ruleAdjustMs(input.partialText)
@@ -243,13 +247,20 @@ func (a MultiSignalTurnArbitrator) Arbitrate(input turnArbitrationInput) TurnArb
 		stability >= defaultDraftStableRatio &&
 		input.stableFor >= time.Duration(defaultDraftStableForMs)*time.Millisecond {
 		arbitration.PrewarmAllowed = true
-		arbitration.DraftAllowed = true
+		if !arbitration.SlotConstraintRequired {
+			arbitration.DraftAllowed = true
+		}
 	}
 	if input.utteranceComplete {
 		// 一旦 live partial 自身已经像一句完整话，就允许更激进的可撤销前推；
 		// 更细的稳定前缀驻留时间只影响“未完整 utterance 时能否先做低风险 prewarm”。
 		arbitration.PrewarmAllowed = true
-		arbitration.DraftAllowed = true
+		if !arbitration.SlotConstraintRequired {
+			arbitration.DraftAllowed = true
+		}
+		if arbitration.SlotConstraintRequired && strings.TrimSpace(arbitration.Reason) == "" {
+			arbitration.Reason = "lexical_structured_wait_slot_guard"
+		}
 	}
 	snapshot := InputPreview{
 		PartialText:       input.partialText,
@@ -451,7 +462,7 @@ func recomputeTurnArbitration(snapshot InputPreview, arbitration TurnArbitration
 		arbitration.BaseWaitMs = defaultTurnDetectorSilenceMs
 	}
 	arbitration.CandidateReady = bestText != "" && arbitration.AudioMs >= minAudioMs
-	arbitration.DraftReady = arbitration.DraftAllowed
+	arbitration.DraftReady = arbitration.CandidateReady && arbitration.DraftAllowed
 	totalWait := arbitration.BaseWaitMs + arbitration.RuleAdjustMs + arbitration.PunctuationAdjustMs + arbitration.SemanticWaitDeltaMs + arbitration.SlotGuardAdjustMs
 	arbitration.EffectiveWaitMs = clampInt(totalWait, defaultTurnDetectorMinWaitMs, defaultTurnDetectorMaxWaitMs)
 	arbitration.RequiredSilenceMs = arbitration.EffectiveWaitMs

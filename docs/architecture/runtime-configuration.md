@@ -100,6 +100,7 @@ Current runtime note:
 - when `AGENT_SERVER_AGENT_LLM_PROVIDER` is unset or `auto`, the runtime chooses `deepseek_chat` if a DeepSeek key is present; otherwise it stays on `bootstrap`
 - when `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT` is empty, the runtime injects a built-in assistant persona selected by `AGENT_SERVER_AGENT_PERSONA`
 - the repository defaults are intentionally generic: no built-in vertical skill is enabled by default, and household behavior must be opted into explicitly through `AGENT_SERVER_AGENT_SKILLS` and, if desired, `AGENT_SERVER_AGENT_PERSONA=household_control_screen`
+- the repository now also keeps the household demo bring-up path as an explicit overlay file, `profiles/household-demo.env.example`, so local and systemd examples do not need to mutate the shared generic baseline
 - prompt composition inside the shared runtime is now layered as:
   - core persona section
   - runtime output-contract section
@@ -204,6 +205,13 @@ Current directly usable machine-local long-running setup:
 1. install and enable the worker plus `agentd` services with `sudo env PATH="$PATH" bash scripts/install-local-systemd-stack.sh`
 2. optionally expose `80/443` through `nginx` with `sudo PUBLIC_IP=<your-public-ip> bash scripts/install-local-nginx-proxy.sh`
 3. adjust `/etc/agent-server/funasr-worker.env` or `/etc/agent-server/agentd.env` when local runtime defaults need to persist across reboots
+
+Current household demo overlay note:
+
+- keep `.env.example` and `deploy/systemd/agent-server-agentd.env.example` as generic baselines
+- use `profiles/household-demo.env.example` as the explicit vertical overlay when you want the current household demo path
+- the only required line in that overlay is `AGENT_SERVER_AGENT_SKILLS=household_control`
+- `AGENT_SERVER_AGENT_PERSONA=household_control_screen` and `AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE=seed_companion` remain optional demo enhancers, not generic defaults
 
 When `AGENT_SERVER_VOICE_PROVIDER=funasr_http`, the local launcher now waits for the worker health endpoint to reach `status=ok` before it execs `agentd`.
 That readiness gate uses:

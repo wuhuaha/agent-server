@@ -36,6 +36,8 @@ Domain-specific behavior should enter this layer through runtime skills, not by 
 
 The repository defaults now follow that same boundary more strictly: the built-in default persona is `general_assistant`, the default execution mode is `dry_run`, and no vertical runtime skill is enabled implicitly. Product-specific behavior such as household control must be opted into explicitly through runtime skills and persona selection rather than smuggled in through bootstrap defaults.
 
+That same rule now also applies to operational bring-up artifacts: the generic baseline env files stay generic, while the current household demo entry lives in an explicit overlay file (`profiles/household-demo.env.example`) instead of drifting back into shared defaults.
+
 ### 3. Voice Runtime
 
 Provides built-in voice capabilities such as turn detection, ASR, TTS, and stream control. It prepares spoken turns for the `Agent Runtime Core` and renders spoken output afterward.
@@ -101,6 +103,8 @@ The current long-term voice direction now explicitly converges on a `server-prim
 The next service-side optimization priority is now explicit on top of that same architecture: do not widen the transport or model surface first. Instead, keep the cascade boundary and strengthen `internal/voice` with a multi-signal turn arbitrator, acoustic-first interruption verification, layered reversible early-processing, clause-aware output planning, finer playback-truth alignment, and runtime-owned dynamic biasing for domain entities.
 
 The current endpoint-fusion direction is now also explicit at the control-flow level: keep the controller stage-based and runtime-owned. In practice that means `internal/voice` should combine acoustic base wait, preview maturity, punctuation/clause evidence, semantic wait-time adjustments, and slot/risk guards through explicit readiness stages such as `candidate_ready`, `draft_ready`, and `accept_ready`, instead of collapsing everything into one gateway rule set or one black-box score.
+
+The latest early-gate refinement adds one more generic layer to that same runtime-owned path: `task_family`. Raw slot-parser domains such as `smart_home`, `desktop_assistant`, and `general_chat` are still preserved, but early-processing policy now prefers a more generic interaction-mode abstraction such as `structured_command`, `structured_query`, `knowledge_query`, or `dialogue`. In practice this means `structured_command` previews may stay at `prewarm_allowed` until slot readiness arrives, while `knowledge_query` and dialogue-style turns can still draft earlier without letting slot completeness become a universal hard gate.
 
 The current observability baseline on that same path is also one step deeper: gateway preview traces now record not only first partial and endpoint-candidate timing, but also the first time a preview becomes `candidate_ready`, `draft_ready`, or `accept_ready`, together with fused wait-budget fields such as `base_wait_ms`, `semantic_wait_delta_ms`, `slot_guard_adjust_ms`, `effective_wait_ms`, plus hold/accept reasons. That keeps quality tuning and rollout comparison grounded in runtime evidence rather than only in final accept labels.
 
@@ -200,6 +204,8 @@ The control plane can also host same-service debug surfaces such as the built-in
 - [流式 ASR 与语义端点融合研究（2026-04-17）](streaming-asr-and-semantic-endpointing-research-zh-2026-04-17.md)
 - [融合式 streaming endpoint controller 方案（2026-04-17）](streaming-asr-dynamic-vad-fusion-pipeline-zh-2026-04-17.md)
 - [LLM 辅助语义完整性判断与 dynamic VAD 融合研究（2026-04-17）](llm-assisted-semantic-completeness-and-dynamic-vad-zh-2026-04-17.md)
+- [Household Demo 显式 Profile 入口（2026-04-17）](household-demo-profile-zh-2026-04-17.md)
+- [task-family aware 的早处理门槛实现说明（2026-04-17）](task-family-aware-early-processing-gate-zh-2026-04-17.md)
 - [端到端时延预算与主观体感映射（2026-04-16）](latency-budget-and-subjective-feel-zh-2026-04-16.md)
 - [播放事实回传与 heard-text 真相链（2026-04-16）](playback-facts-and-heard-text-truth-chain-zh-2026-04-16.md)
 - [分层 LLM + FunASR 增强策略研究（2026-04-17）](voice-multi-llm-and-funasr-strategy-zh-2026-04-17.md)

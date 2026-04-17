@@ -204,6 +204,12 @@ Current planning note:
   - the new local worker exposes an OpenAI-compatible `chat/completions` surface behind the existing `deepseek_chat` executor path
   - the current machine-first model target is `Qwen/Qwen3-4B-Instruct-2507`, not `8B`, because this V100 host already shares one GPU across ASR, TTS, and now LLM
   - the built-in prompt now includes current local time/date context so relative-date questions such as `明天周几` do not depend only on model priors
+- the repository bring-up surface now also follows the generic-boundary rule end to end:
+  - `.env.example` and `deploy/systemd/agent-server-agentd.env.example` stay generic
+  - the current household demo is enabled only through the explicit overlay `profiles/household-demo.env.example`
+- the current unified early-processing gate has now landed its first task-aware runtime form:
+  - `internal/voice` uses `task_family` as the generic early-gate abstraction instead of raw slot-parser domains
+  - only `structured_command` currently implies `slot_constraint_required`, so command turns may prewarm early while still waiting on slot readiness before `draft_allowed`
 - for this host's unprivileged deployment loop, `scripts/run-agentd-local.sh` now supports a repo-local override binary at `.runtime/bin/agentd`, which lets `systemd` restart onto a new user-built binary even when `/etc/agent-server/agentd.env` still points at the root-owned default path
 - after the baseline Docker slice, the next deployment follow-up should add real compose validation on a Docker-installed machine, then separate GPU worker packaging and CI image smoke coverage without collapsing runtime boundaries
 - the Codex harness now uses a thin root `plan.md`, an execution-log archive under `docs/codex/`, and shared GitHub templates that require boundary plus validation context

@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"testing"
+	"time"
 
 	"agent-server/internal/agent"
 )
@@ -64,6 +65,39 @@ func TestMergeSemanticJudgementPromotesDraftAllowed(t *testing.T) {
 	}
 	if !merged.Arbitration.DraftAllowed || !merged.Arbitration.PrewarmAllowed {
 		t.Fatalf("expected semantic merge to allow prewarm and draft, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.TaskFamily != SemanticTaskFamilyKnowledgeQuery {
+		t.Fatalf("expected knowledge_query task family, got %+v", merged.Arbitration)
+	}
+}
+
+func TestMergeSemanticJudgementKeepsStructuredCommandAtPrewarmUntilSlotsArrive(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:       "打开客厅灯",
+		StablePrefix:      "打开客厅灯",
+		UtteranceComplete: false,
+		Arbitration: TurnArbitration{
+			Stage:          TurnArbitrationStageWaitForMore,
+			PrewarmAllowed: false,
+			DraftAllowed:   false,
+		},
+	}
+	merged := mergeSemanticJudgement(snapshot, SemanticTurnJudgement{
+		CandidateKey:       semanticCandidateKey(snapshot.StablePrefix, snapshot.PartialText),
+		UtteranceStatus:    SemanticUtteranceComplete,
+		InterruptionIntent: SemanticIntentRequest,
+		Confidence:         0.88,
+		Reason:             "device_control_complete",
+		Source:             "test",
+	})
+	if !merged.Arbitration.PrewarmAllowed {
+		t.Fatalf("expected structured command to allow prewarm, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.DraftAllowed {
+		t.Fatalf("expected structured command to wait for slot guard before draft, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.TaskFamily != SemanticTaskFamilyStructuredCommand || !merged.Arbitration.SlotConstraintRequired {
+		t.Fatalf("expected structured command task family with slot guard, got %+v", merged.Arbitration)
 	}
 }
 
@@ -134,7 +168,7 @@ func TestMergeSemanticJudgementKeepsCorrectionPendingConservative(t *testing.T) 
 
 func TestLLMSemanticSlotParserDecodesJSONResponse(t *testing.T) {
 	parser := NewLLMSemanticSlotParser(staticSemanticChatModel{
-		text: "```json\n{\"domain\":\"smart_home\",\"intent\":\"device_control\",\"slot_status\":\"complete\",\"actionability\":\"act_candidate\",\"clarify_needed\":false,\"missing_slots\":[],\"ambiguous_slots\":[],\"confidence\":0.88,\"reason\":\"required_slots_grounded\"}\n```",
+		text: "```json\n{\"domain\":\"smart_home\",\"task_family\":\"structured_command\",\"intent\":\"device_control\",\"slot_status\":\"complete\",\"actionability\":\"act_candidate\",\"clarify_needed\":false,\"missing_slots\":[],\"ambiguous_slots\":[],\"confidence\":0.88,\"reason\":\"required_slots_grounded\"}\n```",
 	})
 	result, err := parser.ParsePreview(context.Background(), SemanticSlotParseRequest{
 		SessionID:   "sess_slot",
@@ -145,6 +179,9 @@ func TestLLMSemanticSlotParserDecodesJSONResponse(t *testing.T) {
 	}
 	if result.Domain != SemanticSlotDomainSmartHome {
 		t.Fatalf("expected smart_home domain, got %+v", result)
+	}
+	if result.TaskFamily != SemanticTaskFamilyStructuredCommand {
+		t.Fatalf("expected structured_command task family, got %+v", result)
 	}
 	if result.Intent != "device_control" {
 		t.Fatalf("expected device_control intent, got %+v", result)
@@ -181,6 +218,9 @@ func TestMergeSemanticSlotParsePromotesClarifyDraft(t *testing.T) {
 	}
 	if !merged.Arbitration.DraftAllowed || !merged.Arbitration.SlotClarifyNeeded {
 		t.Fatalf("expected draft + clarify flags, got %+v", merged.Arbitration)
+	}
+	if merged.Arbitration.TaskFamily != SemanticTaskFamilyStructuredCommand || !merged.Arbitration.SlotConstraintRequired {
+		t.Fatalf("expected structured command task family to propagate, got %+v", merged.Arbitration)
 	}
 	if got := merged.Arbitration.SlotMissing; len(got) != 1 || got[0] != "target" {
 		t.Fatalf("expected missing target slot, got %+v", got)
@@ -311,5 +351,22 @@ func TestMergeSemanticSlotParseAddsSlotGuardDelay(t *testing.T) {
 	}
 	if merged.Arbitration.AcceptCandidate || merged.Arbitration.AcceptNow {
 		t.Fatalf("expected slot guard to keep preview conservative, got %+v", merged.Arbitration)
+	}
+}
+
+func TestShouldParseSemanticSlotsLaunchesEarlyForStructuredCommands(t *testing.T) {
+	snapshot := InputPreview{
+		PartialText:  "打开客厅灯",
+		StablePrefix: "打开客厅灯",
+		Arbitration: TurnArbitration{
+			AudioMs:                320,
+			StableForMs:            40,
+			CandidateReady:         true,
+			TaskFamily:             SemanticTaskFamilyStructuredCommand,
+			SlotConstraintRequired: true,
+		},
+	}
+	if !shouldParseSemanticSlots(snapshot, 2, 160*time.Millisecond) {
+		t.Fatalf("expected structured command candidate to launch slot parser early, got %+v", snapshot.Arbitration)
 	}
 }

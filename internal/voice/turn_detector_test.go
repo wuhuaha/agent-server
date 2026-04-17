@@ -178,11 +178,45 @@ func TestSilenceTurnDetectorPromotesStableCompletePreviewBeforeAccept(t *testing
 	if snapshot.Arbitration.Stage != TurnArbitrationStageAcceptCandidate {
 		t.Fatalf("expected accept candidate stage, got %q", snapshot.Arbitration.Stage)
 	}
+	if !snapshot.Arbitration.CandidateReady || snapshot.Arbitration.DraftReady || !snapshot.Arbitration.AcceptReady {
+		t.Fatalf("expected command preview to stay candidate/accept ready but wait on draft, got %+v", snapshot.Arbitration)
+	}
+	if !snapshot.Arbitration.PrewarmAllowed || snapshot.Arbitration.DraftAllowed {
+		t.Fatalf("expected structured command preview to allow only prewarm before slot guard, got %+v", snapshot.Arbitration)
+	}
+	if snapshot.Arbitration.TaskFamily != SemanticTaskFamilyStructuredCommand || !snapshot.Arbitration.SlotConstraintRequired {
+		t.Fatalf("expected structured command task family with slot guard, got %+v", snapshot.Arbitration)
+	}
+}
+
+func TestSilenceTurnDetectorStillAllowsEarlyDraftForKnowledgeQuery(t *testing.T) {
+	detector := NewSilenceTurnDetector(
+		SilenceTurnDetectorConfig{
+			MinAudioMs:            100,
+			SilenceMs:             300,
+			LexicalEndpointMode:   turnDetectorLexicalModeConservative,
+			IncompleteHoldMs:      600,
+			EndpointHintSilenceMs: 120,
+		},
+		16000,
+		1,
+	)
+	startedAt := time.Now()
+	detector.ObserveAudio(startedAt, 6400)
+	detector.ObserveTranscriptionDelta(startedAt, TranscriptionDelta{
+		Kind: TranscriptionDeltaKindPartial,
+		Text: "明天周几",
+	})
+
+	snapshot := detector.Snapshot(startedAt.Add(220 * time.Millisecond))
 	if !snapshot.Arbitration.CandidateReady || !snapshot.Arbitration.DraftReady || !snapshot.Arbitration.AcceptReady {
-		t.Fatalf("expected candidate/draft/accept readiness to be true, got %+v", snapshot.Arbitration)
+		t.Fatalf("expected knowledge query to stay candidate/draft/accept ready, got %+v", snapshot.Arbitration)
 	}
 	if !snapshot.Arbitration.PrewarmAllowed || !snapshot.Arbitration.DraftAllowed {
-		t.Fatalf("expected stable complete preview to allow prewarm and draft, got %+v", snapshot.Arbitration)
+		t.Fatalf("expected knowledge query to allow early draft, got %+v", snapshot.Arbitration)
+	}
+	if snapshot.Arbitration.TaskFamily != SemanticTaskFamilyKnowledgeQuery || snapshot.Arbitration.SlotConstraintRequired {
+		t.Fatalf("expected knowledge_query task family without slot guard, got %+v", snapshot.Arbitration)
 	}
 }
 

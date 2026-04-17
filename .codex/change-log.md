@@ -1101,3 +1101,17 @@
     - `docs/architecture/architecture-and-code-health-review-zh-2026-04-17.md`
   - validated with:
     - `go test ./internal/agent ./internal/app`
+
+- 把当前 household demo 能力进一步整理成显式 profile/env 入口，避免示例配置再次把 shared runtime 拉回 vertical default：
+  - 新增 `profiles/household-demo.env.example`，只强制开启 `AGENT_SERVER_AGENT_SKILLS=household_control`，其余 `persona` / `assistant_name` / `simulation` / `seed_companion` 保持注释态可选项
+  - `.env.example` 现在显式写出 `AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE=off`，并注释说明 household demo overlay 应从独立 profile 文件开启
+  - `deploy/systemd/agent-server-agentd.env.example` 现在也明确保持 generic baseline，并指向 `profiles/household-demo.env.example` 作为机器本地的显式 overlay 来源
+  - 新增 `docs/architecture/household-demo-profile-zh-2026-04-17.md` 与 ADR `0048`，同步更新 `README.md`、`docs/architecture/overview.md`、`docs/architecture/runtime-configuration.md`
+
+- 在 shared voice runtime 中落地第一版 task-family-aware 早处理门槛，避免把 slot completeness 误做成所有语句都必须满足的硬约束：
+  - 新增 `internal/voice/semantic_task_family.go`，把 early gate 的政策抽象收口到通用 `task_family`，而不是直接拿 `smart_home / desktop_assistant / general_chat` 这些 raw domain 做政策中心
+  - `TurnArbitration` 现已显式携带 `task_family` 与 `slot_constraint_required`，并通过 preview trace / prewarm metadata 暴露到可观测链路
+  - `turn_detector`、`semantic_judge`、`semantic_slot_parser` 现在会协同执行“structured command 先 prewarm、等 slot guard 再 draft；knowledge query / dialogue 继续尽早 draft”的差异化策略
+  - 同步新增 ADR `0049` 与实现说明 `docs/architecture/task-family-aware-early-processing-gate-zh-2026-04-17.md`，并补充 `docs/architecture/overview.md`
+  - validated with:
+    - `go test ./internal/voice ./internal/app ./internal/gateway`

@@ -64,6 +64,7 @@ type SemanticSlotParseResult struct {
 	PartialText         string
 	StablePrefix        string
 	Domain              string
+	TaskFamily          string
 	Intent              string
 	SlotStatus          string
 	Actionability       string
@@ -131,6 +132,7 @@ func semanticSlotParserPrompt() string {
 
 请只输出一段 JSON，对象字段必须只有：
 - domain: "unknown" | "smart_home" | "desktop_assistant" | "general_chat"
+- task_family: "unknown" | "dialogue" | "knowledge_query" | "structured_command" | "structured_query" | "correction" | "backchannel"
 - intent: 一个简短 snake_case 标签；不确定时输出 "unknown"
 - slot_status: "unknown" | "partial" | "complete" | "ambiguous" | "not_applicable"
 - actionability: "observe_only" | "wait_more" | "draft_ok" | "clarify_needed" | "act_candidate"
@@ -144,11 +146,17 @@ func semanticSlotParserPrompt() string {
 1. smart_home 关注 action / target / location / attribute / value / mode / duration 这类槽位。
 2. desktop_assistant 关注 action / target_app / query / window_name / system_setting / value 这类槽位。
 3. 如果用户像是在闲聊、开放问答、情感表达，而不是要执行命令，优先输出 domain="general_chat" 且 slot_status="not_applicable"。
-4. clarify_needed 表示“这句话本身大致说完了，但如果现在接收这一轮，更合理的是马上澄清，而不是继续傻等更多语音”。
-5. wait_more 表示尾部槽位仍明显没说完，或补充仍在进行中，不应过早提升。
-6. act_candidate 表示主要必填槽位已经足够完整，可作为后续执行或工具规划候选，但这仍不是最终 accept。
-7. 不确定时，优先 domain="unknown"、slot_status="unknown"、actionability="observe_only"。
-8. 不要输出解释文本，不要使用 markdown 代码块。`)
+4. task_family 是比 domain 更通用的早处理抽象：
+   - 开放问答/闲聊 -> "dialogue" 或 "knowledge_query"
+   - 对设备/应用/结构化对象的操作 -> "structured_command"
+   - 对设备/应用/结构化对象的状态查询 -> "structured_query"
+   - 附和/短确认 -> "backchannel"
+   - 改口/纠正/重说 -> "correction"
+5. clarify_needed 表示“这句话本身大致说完了，但如果现在接收这一轮，更合理的是马上澄清，而不是继续傻等更多语音”。
+6. wait_more 表示尾部槽位仍明显没说完，或补充仍在进行中，不应过早提升。
+7. act_candidate 表示主要必填槽位已经足够完整，可作为后续执行或工具规划候选，但这仍不是最终 accept。
+8. 不确定时，优先 domain="unknown"、task_family="unknown"、slot_status="unknown"、actionability="observe_only"。
+9. 不要输出解释文本，不要使用 markdown 代码块。`)
 }
 
 func semanticSlotParserUserMessage(req SemanticSlotParseRequest) string {
@@ -168,6 +176,7 @@ func semanticSlotParserUserMessage(req SemanticSlotParseRequest) string {
 
 type semanticSlotParserJSON struct {
 	Domain         string   `json:"domain"`
+	TaskFamily     string   `json:"task_family"`
 	Intent         string   `json:"intent"`
 	SlotStatus     string   `json:"slot_status"`
 	Actionability  string   `json:"actionability"`
@@ -194,6 +203,7 @@ func decodeSemanticSlotParseResult(raw string) (SemanticSlotParseResult, error) 
 	}
 	return SemanticSlotParseResult{
 		Domain:         normalizeSemanticSlotDomain(decoded.Domain),
+		TaskFamily:     normalizeSemanticTaskFamily(decoded.TaskFamily),
 		Intent:         normalizeSemanticSlotLabel(decoded.Intent, "unknown"),
 		SlotStatus:     normalizeSemanticSlotStatus(decoded.SlotStatus),
 		Actionability:  normalizeSemanticSlotActionability(decoded.Actionability),
@@ -339,8 +349,14 @@ func shouldParseSemanticSlots(snapshot InputPreview, minRunes int, minStableFor 
 	if snapshot.Arbitration.SemanticIntent == SemanticIntentBackchannel && snapshot.Arbitration.SemanticConfidence >= semanticJudgeMediumConfidence {
 		return false
 	}
+	if snapshot.Arbitration.SlotConstraintRequired && snapshot.Arbitration.CandidateReady {
+		return true
+	}
 	stableFor := time.Duration(snapshot.Arbitration.StableForMs) * time.Millisecond
 	if stableFor >= minStableFor {
+		return true
+	}
+	if inferLexicalTaskFamily(bestText) == SemanticTaskFamilyStructuredCommand && snapshot.Arbitration.CandidateReady {
 		return true
 	}
 	if snapshot.Arbitration.DraftAllowed || snapshot.Arbitration.AcceptCandidate || snapshot.Arbitration.AcceptNow {
@@ -363,6 +379,8 @@ func mergeSemanticSlotParse(snapshot InputPreview, result SemanticSlotParseResul
 	arbitration.SlotComplete = result.SlotStatus == SemanticSlotStatusComplete
 	arbitration.SlotGrounded = result.Grounded
 	arbitration.SlotDomain = normalizeSemanticSlotDomain(result.Domain)
+	arbitration.TaskFamily = inferSlotTaskFamily(snapshot, result)
+	arbitration.SlotConstraintRequired = taskFamilyRequiresSlotReadiness(arbitration.TaskFamily)
 	arbitration.SlotIntent = normalizeSemanticSlotLabel(result.Intent, "unknown")
 	arbitration.SlotStatus = normalizeSemanticSlotStatus(result.SlotStatus)
 	arbitration.SlotActionability = normalizeSemanticSlotActionability(result.Actionability)

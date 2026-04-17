@@ -182,6 +182,8 @@ Default env files are created under:
 - `/etc/agent-server/funasr-worker.env`
 - `/etc/agent-server/agentd.env`
 
+Those generated files stay generic by default. If you want the current household demo behavior on the long-running stack, append the selected lines from `profiles/household-demo.env.example` into `/etc/agent-server/agentd.env` instead of changing the repository baseline examples.
+
 After installation, useful checks are:
 
 ```bash
@@ -340,6 +342,7 @@ AGENT_SERVER_AGENT_LLM_PROVIDER=auto
 AGENT_SERVER_AGENT_PERSONA=general_assistant
 AGENT_SERVER_AGENT_EXECUTION_MODE=dry_run
 AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧助手
+AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE=off
 AGENT_SERVER_AGENT_DEEPSEEK_BASE_URL=https://api.deepseek.com
 AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
 ```
@@ -361,6 +364,12 @@ Household behavior remains available, but now as an explicit opt-in vertical:
 
 - `AGENT_SERVER_AGENT_SKILLS=household_control`
 - `AGENT_SERVER_AGENT_PERSONA=household_control_screen`
+
+To keep the repository defaults generic while still making that vertical easy to bring up, the current household demo now lives in an explicit overlay file:
+
+- `profiles/household-demo.env.example`
+
+That overlay always enables `AGENT_SERVER_AGENT_SKILLS=household_control`, while persona, assistant name, execution mode, and `seed_companion` grounding stay optional lines you can uncomment when you really want the old demo flavor.
 
 The runtime keeps persona and execution mode separated:
 
@@ -384,10 +393,23 @@ export AGENT_SERVER_AGENT_DEEPSEEK_MODEL=deepseek-chat
 If you want a smart-home demo profile instead, enable it explicitly:
 
 ```bash
-export AGENT_SERVER_AGENT_SKILLS=household_control
-export AGENT_SERVER_AGENT_PERSONA=household_control_screen
-export AGENT_SERVER_AGENT_EXECUTION_MODE=simulation
-export AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧管家
+cp .env.example .env.household
+cat profiles/household-demo.env.example >> .env.household
+set -a
+source ./.env.household
+set +a
+make run
+```
+
+Optional richer household-demo overlay:
+
+```bash
+cat >> .env.household <<'EOF'
+AGENT_SERVER_AGENT_PERSONA=household_control_screen
+AGENT_SERVER_AGENT_ASSISTANT_NAME=小欧管家
+AGENT_SERVER_AGENT_EXECUTION_MODE=simulation
+AGENT_SERVER_VOICE_ENTITY_CATALOG_PROFILE=seed_companion
+EOF
 ```
 
 If you want to override the built-in persona template, set `AGENT_SERVER_AGENT_LLM_SYSTEM_PROMPT`. The runtime will replace `{{assistant_name}}` with `AGENT_SERVER_AGENT_ASSISTANT_NAME`, and will still append the configured execution-mode policy.

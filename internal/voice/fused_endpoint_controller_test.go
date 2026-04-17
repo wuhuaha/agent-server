@@ -128,8 +128,8 @@ func TestFusedEndpointSlotIncompleteCommandStaysConservativeLonger(t *testing.T)
 	if !candidateReadyStyle(base) {
 		t.Fatalf("expected lexically complete command preview to reach candidate-ready style, got %+v", base.Arbitration)
 	}
-	if !draftReadyStyle(base) {
-		t.Fatalf("expected lexically complete command preview to reach draft-ready style, got %+v", base.Arbitration)
+	if draftReadyStyle(base) {
+		t.Fatalf("expected structured command preview to wait on slot guard before draft, got %+v", base.Arbitration)
 	}
 	if !acceptReadyStyle(base) {
 		t.Fatalf("command preview should already be structurally accept-ready before silence closes the turn, got %+v", base.Arbitration)

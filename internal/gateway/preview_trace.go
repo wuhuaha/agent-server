@@ -11,37 +11,39 @@ import (
 )
 
 type inputPreviewTrace struct {
-	PreviewID           string
-	SessionID           string
-	StartedAt           time.Time
-	SpeechStartedAt     time.Time
-	FirstPartialAt      time.Time
-	CandidateReadyAt    time.Time
-	DraftReadyAt        time.Time
-	AcceptReadyAt       time.Time
-	EndpointCandidateAt time.Time
-	CommitSuggestedAt   time.Time
-	AudioBytes          int
-	LastPartialText     string
-	EndpointReason      string
-	TurnStage           string
-	CandidateReady      bool
-	DraftReady          bool
-	AcceptReady         bool
-	SemanticReady       bool
-	SemanticComplete    bool
-	SemanticIntent      string
-	SlotReady           bool
-	SlotComplete        bool
-	SlotActionability   string
-	BaseWaitMs          int
-	RuleAdjustMs        int
-	PunctuationAdjustMs int
-	SemanticWaitDeltaMs int
-	SlotGuardAdjustMs   int
-	EffectiveWaitMs     int
-	HoldReason          string
-	AcceptReason        string
+	PreviewID              string
+	SessionID              string
+	StartedAt              time.Time
+	SpeechStartedAt        time.Time
+	FirstPartialAt         time.Time
+	CandidateReadyAt       time.Time
+	DraftReadyAt           time.Time
+	AcceptReadyAt          time.Time
+	EndpointCandidateAt    time.Time
+	CommitSuggestedAt      time.Time
+	AudioBytes             int
+	LastPartialText        string
+	EndpointReason         string
+	TurnStage              string
+	CandidateReady         bool
+	DraftReady             bool
+	AcceptReady            bool
+	SemanticReady          bool
+	SemanticComplete       bool
+	SemanticIntent         string
+	TaskFamily             string
+	SlotConstraintRequired bool
+	SlotReady              bool
+	SlotComplete           bool
+	SlotActionability      string
+	BaseWaitMs             int
+	RuleAdjustMs           int
+	PunctuationAdjustMs    int
+	SemanticWaitDeltaMs    int
+	SlotGuardAdjustMs      int
+	EffectiveWaitMs        int
+	HoldReason             string
+	AcceptReason           string
 }
 
 type inputPreviewTraceUpdate struct {
@@ -121,6 +123,8 @@ func (s *inputPreviewTraceState) ObservePreview(sessionID string, preview voice.
 	s.current.SemanticReady = preview.Arbitration.SemanticReady
 	s.current.SemanticComplete = preview.Arbitration.SemanticComplete
 	s.current.SemanticIntent = strings.TrimSpace(preview.Arbitration.SemanticIntent)
+	s.current.TaskFamily = strings.TrimSpace(preview.Arbitration.TaskFamily)
+	s.current.SlotConstraintRequired = preview.Arbitration.SlotConstraintRequired
 	s.current.SlotReady = preview.Arbitration.SlotReady
 	s.current.SlotComplete = preview.Arbitration.SlotComplete
 	s.current.SlotActionability = strings.TrimSpace(preview.Arbitration.SlotActionability)
@@ -289,6 +293,12 @@ func appendInputPreviewTraceLogAttrs(attrs []any, trace inputPreviewTrace, now t
 	)
 	if intent := strings.TrimSpace(trace.SemanticIntent); intent != "" {
 		attrs = append(attrs, "preview_semantic_intent", intent)
+	}
+	if taskFamily := strings.TrimSpace(trace.TaskFamily); taskFamily != "" {
+		attrs = append(attrs, "preview_task_family", taskFamily)
+	}
+	if trace.SlotConstraintRequired {
+		attrs = append(attrs, "preview_slot_constraint_required", true)
 	}
 	if actionability := strings.TrimSpace(trace.SlotActionability); actionability != "" {
 		attrs = append(attrs, "preview_slot_actionability", actionability)
